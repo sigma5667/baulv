@@ -1,6 +1,14 @@
-import os
 from pydantic_settings import BaseSettings
 from pathlib import Path
+
+
+def _fix_postgres_url(url: str) -> str:
+    """Convert postgres:// or postgresql:// to postgresql+asyncpg:// for asyncpg."""
+    if url.startswith("postgres://"):
+        return url.replace("postgres://", "postgresql+asyncpg://", 1)
+    if url.startswith("postgresql://") and "+asyncpg" not in url:
+        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return url
 
 
 class Settings(BaseSettings):
@@ -32,17 +40,10 @@ class Settings(BaseSettings):
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    def model_post_init(self, __context) -> None:
         # Railway provides postgres:// but asyncpg needs postgresql+asyncpg://
-        if self.database_url.startswith("postgres://"):
-            self.database_url = self.database_url.replace(
-                "postgres://", "postgresql+asyncpg://", 1
-            )
-        elif self.database_url.startswith("postgresql://") and "+asyncpg" not in self.database_url:
-            self.database_url = self.database_url.replace(
-                "postgresql://", "postgresql+asyncpg://", 1
-            )
+        # Use object.__setattr__ because pydantic models are frozen after init
+        object.__setattr__(self, "database_url", _fix_postgres_url(self.database_url))
 
     @property
     def upload_path(self) -> Path:
