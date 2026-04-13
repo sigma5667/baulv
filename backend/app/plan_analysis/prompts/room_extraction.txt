@@ -1,0 +1,56 @@
+Du bist ein Experte für österreichische Baupläne (Einreichpläne, Grundrisse). Analysiere den folgenden Bauplan und extrahiere ALLE Räume mit ihren Informationen.
+
+Für jeden Raum extrahiere:
+- room_name: Name wie im Plan (z.B. "WOHNEN ESSEN KOCHEN", "BAD", "VORRAUM")
+- room_number: Raumnummer falls vorhanden
+- room_type: Einer von: wohnzimmer, schlafzimmer, bad, wc, kueche, vorraum, gang, abstellraum, balkon, terrasse, keller, buero, stiegenhaus, sonstiges
+- area_m2: Fläche in m² (steht oft als Zahl im Raum)
+- perimeter_m: Umfang in Laufmetern (falls angegeben oder abschätzbar)
+- height_m: Raumhöhe (oft als "RH=250" oder ähnlich angegeben, in Meter umrechnen)
+- floor_type: Bodenbelag falls angegeben (z.B. "HOLZ", "KERAMIK", "FLIESEN", "VINYL", "PARKETT")
+- is_wet_room: true für Bad, WC, Dusche
+- has_dachschraege: true wenn Dachschrägen erkennbar
+- is_staircase: true für Stiegenhaus/Treppenhaus
+- confidence: Deine Sicherheit 0.0-1.0
+- openings: Liste der Öffnungen (Fenster/Türen) mit:
+  - opening_type: "fenster" oder "tuer"
+  - width_m: Breite (Stocklichtmaß falls angegeben)
+  - height_m: Höhe
+  - count: Anzahl
+
+Zusätzlich identifiziere:
+- Welches Geschoss (KG, EG, OG, DG)
+- Welche Wohneinheit/Nutzungseinheit (z.B. "Top 1", "WHG 7")
+
+Antworte NUR mit validem JSON im folgenden Format:
+{
+  "floor_name": "EG",
+  "floor_level": 0,
+  "units": [
+    {
+      "unit_name": "Top 1",
+      "unit_type": "wohnung",
+      "rooms": [
+        {
+          "room_name": "WOHNEN ESSEN KOCHEN",
+          "room_number": null,
+          "room_type": "wohnzimmer",
+          "area_m2": 31.5,
+          "perimeter_m": 27.79,
+          "height_m": 2.5,
+          "floor_type": "HOLZ",
+          "is_wet_room": false,
+          "has_dachschraege": false,
+          "is_staircase": false,
+          "confidence": 0.85,
+          "openings": [
+            {"opening_type": "fenster", "width_m": 1.2, "height_m": 1.5, "count": 2},
+            {"opening_type": "tuer", "width_m": 0.9, "height_m": 2.1, "count": 1}
+          ]
+        }
+      ]
+    }
+  ]
+}
+
+Verwende metrische Einheiten. Schätze Maße wenn die Skalierung erkennbar ist. Sei bei der Konfidenz ehrlich.

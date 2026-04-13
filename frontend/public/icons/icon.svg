@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="76.8" fill="#2563eb"/>
+  <!-- Building body -->
+  <rect x="156" y="160" width="200" height="240" rx="4" fill="#fff"/>
+  <!-- Roof -->
+  <polygon points="136,164 256,68 376,164" fill="#fff"/>
+  <!-- Windows row 1 -->
+  <rect x="180" y="185" width="45" height="38" rx="4" fill="#2563eb"/>
+  <rect x="287" y="185" width="45" height="38" rx="4" fill="#2563eb"/>
+  <!-- Windows row 2 -->
+  <rect x="180" y="243" width="45" height="38" rx="4" fill="#2563eb"/>
+  <rect x="287" y="243" width="45" height="38" rx="4" fill="#2563eb"/>
+  <!-- Windows row 3 -->
+  <rect x="180" y="301" width="45" height="38" rx="4" fill="#2563eb"/>
+  <rect x="287" y="301" width="45" height="38" rx="4" fill="#2563eb"/>
+  <!-- Door -->
+  <rect x="231" y="348" width="50" height="52" rx="4" fill="#f97316"/>
+  <!-- LV text -->
+  <text x="256" y="456" text-anchor="middle" font-family="Arial,sans-serif" font-weight="bold" font-size="56" fill="#fff">LV</text>
+</svg>
