@@ -76,15 +76,25 @@ async def calculate_lv(
     4. Run deterministic calculation
     5. Store positions + Berechnungsnachweise in DB
     """
-    # Load LV
-    lv = await db.get(Leistungsverzeichnis, lv_id)
+    # Load LV with gruppen eagerly loaded (required for async session)
+    stmt = (
+        select(Leistungsverzeichnis)
+        .where(Leistungsverzeichnis.id == lv_id)
+        .options(selectinload(Leistungsverzeichnis.gruppen))
+    )
+    result = await db.execute(stmt)
+    lv = result.scalars().first()
     if not lv:
         raise ValueError(f"LV {lv_id} not found")
 
     # Load rooms
     rooms = await load_rooms_for_project(lv.project_id, db)
     if not rooms:
-        raise ValueError("No rooms found for this project. Please add rooms first.")
+        raise ValueError(
+            "Keine Räume für dieses Projekt gefunden. "
+            "Bitte laden Sie zuerst einen Bauplan hoch und analysieren Sie ihn, "
+            "oder erstellen Sie Räume manuell über Gebäude → Stockwerk → Einheit → Raum."
+        )
 
     # Get calculator
     calculator = TradeRegistry.get(lv.trade)

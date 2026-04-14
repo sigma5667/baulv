@@ -13,6 +13,8 @@ import {
   Plus,
   BookOpen,
   Check,
+  AlertTriangle,
+  X,
 } from "lucide-react";
 import api from "../api/client";
 import { fetchProjectLVs, fetchLV, createLV, calculateLV, generateTexts, exportLV, updateONormSelection } from "../api/lv";
@@ -23,11 +25,23 @@ const TRADES = [
   { value: "malerarbeiten", label: "Malerarbeiten", onorm: "B 2230-1" },
 ];
 
+function getErrorMessage(err: unknown): string {
+  if (err && typeof err === "object" && "response" in err) {
+    const resp = (err as any).response;
+    if (resp?.data?.detail) return resp.data.detail;
+    if (resp?.status === 403) return "Diese Funktion erfordert ein Upgrade Ihres Plans.";
+    if (resp?.status === 401) return "Bitte melden Sie sich erneut an.";
+  }
+  return "Ein unerwarteter Fehler ist aufgetreten.";
+}
+
 export function LVEditorPage() {
   const { id: projectId, lvId } = useParams<{ id: string; lvId?: string }>();
   const queryClient = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
   const [showOnormPicker, setShowOnormPicker] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   const { data: lvs = [] } = useQuery({
     queryKey: ["lvs", projectId],
@@ -53,15 +67,29 @@ export function LVEditorPage() {
 
   const calcMutation = useMutation({
     mutationFn: () => calculateLV(activeLvId!),
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["lv", activeLvId] });
+      setErrorMsg(null);
+      setSuccessMsg(
+        `Berechnung abgeschlossen: ${data.positions_calculated} Positionen berechnet.`
+      );
+    },
+    onError: (err) => {
+      setSuccessMsg(null);
+      setErrorMsg(getErrorMessage(err));
     },
   });
 
   const textMutation = useMutation({
     mutationFn: () => generateTexts(activeLvId!),
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["lv", activeLvId] });
+      setErrorMsg(null);
+      setSuccessMsg(`AI-Texte generiert: ${data.positions_updated} Positionen aktualisiert.`);
+    },
+    onError: (err) => {
+      setSuccessMsg(null);
+      setErrorMsg(getErrorMessage(err));
     },
   });
 
@@ -75,13 +103,18 @@ export function LVEditorPage() {
 
   const handleExport = async () => {
     if (!activeLvId) return;
-    const blob = await exportLV(activeLvId);
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `LV_${activeLV?.trade ?? "export"}.xlsx`;
-    a.click();
-    URL.revokeObjectURL(url);
+    try {
+      setErrorMsg(null);
+      const blob = await exportLV(activeLvId);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `LV_${activeLV?.trade ?? "export"}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setErrorMsg(getErrorMessage(err));
+    }
   };
 
   return (
@@ -190,6 +223,26 @@ export function LVEditorPage() {
               {lv.trade}
             </Link>
           ))}
+        </div>
+      )}
+
+      {/* Error / success banners */}
+      {errorMsg && (
+        <div className="mx-6 mt-4 flex items-start gap-3 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span className="flex-1">{errorMsg}</span>
+          <button onClick={() => setErrorMsg(null)} className="shrink-0">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+      {successMsg && (
+        <div className="mx-6 mt-4 flex items-start gap-3 rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+          <Check className="mt-0.5 h-4 w-4 shrink-0" />
+          <span className="flex-1">{successMsg}</span>
+          <button onClick={() => setSuccessMsg(null)} className="shrink-0">
+            <X className="h-4 w-4" />
+          </button>
         </div>
       )}
 

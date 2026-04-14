@@ -48,17 +48,17 @@ const FEATURES = [
 const PLANS = [
   {
     name: "Basis",
-    price: "Kostenlos",
-    interval: "",
+    price: "49",
+    interval: "/Monat",
     features: ["3 aktive Projekte", "ÖNORM-Bibliothek", "Manueller LV-Editor", "PDF-Export"],
-    cta: "Kostenlos starten",
+    cta: "14 Tage kostenlos testen",
     href: "/register",
     popular: false,
   },
   {
     name: "Pro",
-    price: "Kostenlos",
-    interval: "",
+    price: "149",
+    interval: "/Monat",
     features: [
       "Unbegrenzte Projekte",
       "KI-Plananalyse",
@@ -67,13 +67,13 @@ const PLANS = [
       "Excel + PDF Export",
       "Prioritäts-Support",
     ],
-    cta: "Kostenlos starten",
+    cta: "14 Tage kostenlos testen",
     href: "/register",
     popular: true,
   },
   {
     name: "Enterprise",
-    price: "Kostenlos",
+    price: "Auf Anfrage",
     interval: "",
     features: [
       "Alles aus Pro",
@@ -83,8 +83,8 @@ const PLANS = [
       "Individuelle Konfiguration",
       "Dedizierter Support",
     ],
-    cta: "Kostenlos starten",
-    href: "/register",
+    cta: "Kontakt aufnehmen",
+    href: "mailto:kontakt@baulv.at?subject=Enterprise-Plan%20Anfrage",
     popular: false,
   },
 ];
@@ -285,11 +285,11 @@ export function LandingPage() {
                 )}
                 <h3 className="text-xl font-bold">{plan.name}</h3>
                 <div className="mt-3 mb-6">
-                  {plan.price === "Kostenlos" ? (
-                    <span className="text-4xl font-bold text-green-600">Kostenlos</span>
+                  {plan.price === "Auf Anfrage" ? (
+                    <span className="text-2xl font-bold">Auf Anfrage</span>
                   ) : (
                     <>
-                      <span className="text-4xl font-bold">€{plan.price}</span>
+                      <span className="text-4xl font-bold">&euro;{plan.price}</span>
                       <span className="text-muted-foreground">{plan.interval}</span>
                     </>
                   )}
@@ -302,17 +302,27 @@ export function LandingPage() {
                     </li>
                   ))}
                 </ul>
-                <Link
-                  to={plan.href}
-                  className={`flex w-full items-center justify-center gap-2 rounded-md px-4 py-3 text-sm font-medium ${
-                    plan.popular
-                      ? "bg-primary text-primary-foreground hover:bg-primary/90"
-                      : "border hover:bg-accent"
-                  }`}
-                >
-                  {plan.cta}
-                  <ArrowRight className="h-4 w-4" />
-                </Link>
+                {plan.href.startsWith("mailto:") ? (
+                  <a
+                    href={plan.href}
+                    className="flex w-full items-center justify-center gap-2 rounded-md border px-4 py-3 text-sm font-medium hover:bg-accent"
+                  >
+                    {plan.cta}
+                    <ArrowRight className="h-4 w-4" />
+                  </a>
+                ) : (
+                  <Link
+                    to={plan.href}
+                    className={`flex w-full items-center justify-center gap-2 rounded-md px-4 py-3 text-sm font-medium ${
+                      plan.popular
+                        ? "bg-primary text-primary-foreground hover:bg-primary/90"
+                        : "border hover:bg-accent"
+                    }`}
+                  >
+                    {plan.cta}
+                    <ArrowRight className="h-4 w-4" />
+                  </Link>
+                )}
               </div>
             ))}
           </div>
@@ -324,13 +334,13 @@ export function LandingPage() {
         <div className="mx-auto max-w-3xl px-6 text-center">
           <h2 className="text-3xl font-bold">Bereit, Ihre Ausschreibungen zu revolutionieren?</h2>
           <p className="mt-4 text-blue-100">
-            Starten Sie kostenlos mit dem Basis-Plan und upgraden Sie jederzeit.
+            Testen Sie BauLV 14 Tage kostenlos und upgraden Sie jederzeit.
           </p>
           <Link
             to="/register"
             className="mt-8 inline-flex items-center gap-2 rounded-lg bg-white px-8 py-3 text-base font-semibold text-blue-700 shadow-lg hover:bg-blue-50"
           >
-            Jetzt kostenlos starten
+            14 Tage kostenlos testen
             <ArrowRight className="h-5 w-5" />
           </Link>
         </div>

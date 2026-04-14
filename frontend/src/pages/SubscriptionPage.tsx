@@ -8,8 +8,8 @@ const PLANS = [
   {
     id: "basis",
     name: "Basis",
-    price: "Kostenlos",
-    interval: "",
+    price: "49",
+    interval: "Monat",
     features: [
       "3 aktive Projekte",
       "ÖNORM-Bibliothek",
@@ -28,8 +28,8 @@ const PLANS = [
   {
     id: "pro",
     name: "Pro",
-    price: "Kostenlos",
-    interval: "",
+    price: "149",
+    interval: "Monat",
     popular: true,
     features: [
       "Unbegrenzte Projekte",
@@ -49,7 +49,7 @@ const PLANS = [
   {
     id: "enterprise",
     name: "Enterprise",
-    price: "Kostenlos",
+    price: "Auf Anfrage",
     interval: "",
     features: [
       "Alles aus Pro, plus:",
@@ -160,11 +160,11 @@ export function SubscriptionPage() {
 
               <h3 className="text-lg font-bold">{plan.name}</h3>
               <div className="mt-2 mb-4">
-                {plan.price === "Kostenlos" ? (
-                  <span className="text-3xl font-bold text-green-600">Kostenlos</span>
+                {plan.price === "Auf Anfrage" ? (
+                  <span className="text-2xl font-bold">Auf Anfrage</span>
                 ) : (
                   <>
-                    <span className="text-3xl font-bold">€{plan.price}</span>
+                    <span className="text-3xl font-bold">&euro;{plan.price}</span>
                     <span className="text-muted-foreground">/{plan.interval}</span>
                   </>
                 )}
