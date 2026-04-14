@@ -21,6 +21,41 @@ from app.db.models.calculation import Berechnungsnachweis
 import app.calculation_engine.trades  # noqa: F401
 
 
+def _code_to_sort_order(code: str) -> int:
+    """Pack a hierarchical code like ``'01.02.003'`` into a sortable int.
+
+    Each dot-separated segment is treated as a base-1000 digit:
+
+    * ``'01.01.001'`` →   1_001_001
+    * ``'01.01.010'`` →   1_001_010
+    * ``'01.02.001'`` →   1_002_001
+    * ``'02'``        →   2
+
+    Compared to ``int(code.replace('.', ''))`` this preserves correct
+    ordering when segments have differing widths — the previous approach
+    accidentally sorted ``'01.10.1'`` before ``'01.2.1'`` (because
+    ``'01101'`` < ``'01210'`` lexically but as an int the carry breaks the
+    hierarchy entirely once any segment hits two digits).
+
+    Non-numeric segments fall back to 0 so this never raises. Each segment
+    is clamped to [0, 999] so a malformed code can't bleed into higher
+    positions and collide with unrelated codes.
+    """
+    result = 0
+    for part in code.split("."):
+        part = part.strip()
+        try:
+            n = int(part)
+        except ValueError:
+            n = 0
+        if n < 0:
+            n = 0
+        elif n > 999:
+            n = 999
+        result = result * 1000 + n
+    return result
+
+
 async def load_rooms_for_project(project_id: UUID, db: AsyncSession) -> list[RoomWithOpenings]:
     """Load all rooms with openings for a project, building the hierarchy."""
     stmt = (
@@ -117,7 +152,7 @@ async def calculate_lv(
                 lv_id=lv_id,
                 nummer=pos_qty.gruppe_nummer,
                 bezeichnung=pos_qty.gruppe_name,
-                sort_order=int(pos_qty.gruppe_nummer),
+                sort_order=_code_to_sort_order(pos_qty.gruppe_nummer),
             )
             db.add(gruppe)
             await db.flush()
@@ -132,7 +167,7 @@ async def calculate_lv(
             kurztext=pos_qty.short_text,
             einheit=pos_qty.unit,
             menge=float(pos_qty.total_quantity),
-            sort_order=int(pos_qty.position_code.replace(".", "")),
+            sort_order=_code_to_sort_order(pos_qty.position_code),
         )
         db.add(position)
         await db.flush()

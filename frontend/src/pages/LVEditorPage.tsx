@@ -28,9 +28,20 @@ const TRADES = [
 function getErrorMessage(err: unknown): string {
   if (err && typeof err === "object" && "response" in err) {
     const resp = (err as any).response;
-    if (resp?.data?.detail) return resp.data.detail;
+    const detail: string | undefined = resp?.data?.detail;
+    // Special-case: backend signals "no rooms" via a ValueError → 400.
+    if (detail && /keine\s+r[äa]ume/i.test(detail)) {
+      return "Bitte zuerst Plananalyse durchführen — es wurden noch keine Räume für dieses Projekt erfasst.";
+    }
+    if (detail) return detail;
     if (resp?.status === 403) return "Diese Funktion erfordert ein Upgrade Ihres Plans.";
     if (resp?.status === 401) return "Bitte melden Sie sich erneut an.";
+    if (resp?.status === 404) return "Ressource nicht gefunden (404).";
+    if (resp?.status >= 500) return `Serverfehler (${resp.status}). Bitte versuchen Sie es später erneut.`;
+  }
+  if (err && typeof err === "object" && "message" in err) {
+    const msg = (err as any).message;
+    if (typeof msg === "string" && msg.length > 0) return `Netzwerkfehler: ${msg}`;
   }
   return "Ein unerwarteter Fehler ist aufgetreten.";
 }
@@ -66,7 +77,12 @@ export function LVEditorPage() {
   });
 
   const calcMutation = useMutation({
-    mutationFn: () => calculateLV(activeLvId!),
+    mutationFn: async () => {
+      if (!activeLvId) {
+        throw new Error("Kein LV ausgewählt.");
+      }
+      return calculateLV(activeLvId);
+    },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["lv", activeLvId] });
       setErrorMsg(null);
@@ -75,10 +91,30 @@ export function LVEditorPage() {
       );
     },
     onError: (err) => {
+      // Always log so failures are debuggable in the browser console.
+      // eslint-disable-next-line no-console
+      console.error("[LV] calculate failed:", err);
       setSuccessMsg(null);
       setErrorMsg(getErrorMessage(err));
     },
   });
+
+  const handleCalculate = () => {
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    if (!activeLvId) {
+      setErrorMsg("Kein LV ausgewählt — bitte erst ein LV anlegen oder auswählen.");
+      return;
+    }
+    calcMutation.mutate(undefined, {
+      onError: (err) => {
+        // Belt-and-braces: useMutation onError above already handles this,
+        // but we keep a per-call hook so the call site can never fail silently.
+        // eslint-disable-next-line no-console
+        console.error("[LV] calculate mutate onError:", err);
+      },
+    });
+  };
 
   const textMutation = useMutation({
     mutationFn: () => generateTexts(activeLvId!),
@@ -148,16 +184,18 @@ export function LVEditorPage() {
                   ÖNORMs
                 </button>
                 <button
-                  onClick={() => calcMutation.mutate()}
+                  type="button"
+                  onClick={handleCalculate}
                   disabled={calcMutation.isPending}
-                  className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                  aria-busy={calcMutation.isPending}
+                  className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {calcMutation.isPending ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   ) : (
                     <Calculator className="h-3.5 w-3.5" />
                   )}
-                  Berechnen
+                  {calcMutation.isPending ? "Berechne…" : "Berechnen"}
                 </button>
                 <button
                   onClick={() => textMutation.mutate()}
