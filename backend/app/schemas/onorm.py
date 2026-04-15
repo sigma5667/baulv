@@ -5,6 +5,12 @@ from pydantic import BaseModel
 
 
 class ONormDokumentResponse(BaseModel):
+    """Lightweight registry view of an ÖNORM entry.
+
+    Note: ``file_path`` is intentionally absent — BauLV no longer stores
+    copyrighted ÖNORM PDFs on its servers (see ``app/api/onorm.py``).
+    """
+
     id: UUID
     norm_nummer: str
     titel: str | None
@@ -26,22 +32,5 @@ class ONormRegelResponse(BaseModel):
     parameters: dict
     onorm_reference: str | None
     is_active: bool
-
-    model_config = {"from_attributes": True}
-
-
-class ONormSearchRequest(BaseModel):
-    query: str
-    norm_nummer: str | None = None
-    top_k: int = 5
-
-
-class ONormChunkResponse(BaseModel):
-    id: UUID
-    dokument_id: UUID
-    chunk_text: str
-    section_number: str | None
-    section_title: str | None
-    page_number: int | None
 
     model_config = {"from_attributes": True}

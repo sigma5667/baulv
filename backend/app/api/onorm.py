@@ -1,55 +1,32 @@
-import shutil
+"""ÖNORM API — read-only after the copyright compliance refactor.
+
+Historically this module allowed uploading ÖNORM PDFs and storing them in the
+database for full-text RAG retrieval. That violated Austrian Standards
+International's copyright on the ÖNORM text (the text itself is protected,
+even though the underlying mathematical rules are not).
+
+The upload and RAG-search endpoints have been removed. BauLV now ships the
+calculation rules as plain Python in ``app/calculation_engine/trades/`` and
+the on-disk ÖNORM PDF store has been retired. The remaining endpoints
+(``GET /dokumente``, ``GET /regeln``, ``DELETE /dokumente/{id}``) are kept
+so existing frontend callers don't 404 — they operate on whatever legacy
+rows may still exist and can be removed entirely once the frontend stops
+calling them.
+"""
+
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.db.session import get_db
 from app.db.models.onorm import ONormDokument, ONormRegel
 from app.db.models.user import User
-from app.schemas.onorm import (
-    ONormDokumentResponse, ONormRegelResponse,
-    ONormSearchRequest, ONormChunkResponse,
-)
-from app.onorm_rag.ingest import ingest_onorm_pdf
-from app.onorm_rag.retriever import search_onorm_chunks
+from app.schemas.onorm import ONormDokumentResponse, ONormRegelResponse
 from app.auth import get_current_user
 
 router = APIRouter()
-
-
-@router.post("/upload", response_model=ONormDokumentResponse, status_code=201)
-async def upload_onorm(
-    file: UploadFile = File(...),
-    norm_nummer: str = Query(..., description="e.g., 'B 2230-1'"),
-    titel: str = Query(None),
-    trade: str = Query(None, description="e.g., 'malerarbeiten'"),
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Upload an OENORM PDF for processing."""
-    upload_dir = settings.upload_path / "onorm"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    file_path = upload_dir / file.filename
-    with open(file_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
-
-    dokument = ONormDokument(
-        norm_nummer=norm_nummer,
-        titel=titel,
-        trade=trade,
-        file_path=str(file_path),
-    )
-    db.add(dokument)
-    await db.flush()
-
-    try:
-        chunks_created = await ingest_onorm_pdf(dokument.id, db)
-        return dokument
-    except Exception as e:
-        raise HTTPException(500, f"Ingestion failed: {str(e)}")
 
 
 @router.get("/dokumente", response_model=list[ONormDokumentResponse])
@@ -57,6 +34,12 @@ async def list_dokumente(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """List legacy ÖNORM document registry entries.
+
+    Kept as a read-only endpoint for the transition period. No new entries
+    can be created because ``POST /upload`` has been removed. In a green
+    database this returns an empty list.
+    """
     result = await db.execute(
         select(ONormDokument).order_by(ONormDokument.norm_nummer)
     )
@@ -69,6 +52,8 @@ async def list_regeln(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """List coded rule metadata (not covered by copyright — these are
+    mathematical formulas and parameters, not ÖNORM text)."""
     stmt = select(ONormRegel)
     if trade:
         stmt = stmt.where(ONormRegel.trade == trade)
@@ -83,25 +68,9 @@ async def delete_dokument(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete an OENORM document and its chunks/rules."""
+    """Delete a legacy ÖNORM document registry entry."""
     dokument = await db.get(ONormDokument, dokument_id)
     if not dokument:
         raise HTTPException(404, "Dokument nicht gefunden")
     await db.delete(dokument)
     await db.flush()
-
-
-@router.post("/search", response_model=list[ONormChunkResponse])
-async def search_onorm(
-    data: ONormSearchRequest,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Search OENORM knowledge base using RAG."""
-    chunks = await search_onorm_chunks(
-        query=data.query,
-        db=db,
-        norm_nummer=data.norm_nummer,
-        top_k=data.top_k,
-    )
-    return chunks

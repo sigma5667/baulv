@@ -3,6 +3,7 @@ import { useAuth } from "./hooks/useAuth";
 import { AppShell } from "./components/layout/AppShell";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import { PWAInstallPrompt } from "./components/PWAInstallPrompt";
+import { CookieBanner } from "./components/CookieBanner";
 import { LandingPage } from "./pages/LandingPage";
 import { LoginPage } from "./pages/LoginPage";
 import { RegisterPage } from "./pages/RegisterPage";
@@ -14,6 +15,9 @@ import { LVEditorPage } from "./pages/LVEditorPage";
 import { ONormManagementPage } from "./pages/ONormManagementPage";
 import { ProfilePage } from "./pages/ProfilePage";
 import { SubscriptionPage } from "./pages/SubscriptionPage";
+import { ImpressumPage } from "./pages/ImpressumPage";
+import { DatenschutzPage } from "./pages/DatenschutzPage";
+import { AGBPage } from "./pages/AGBPage";
 
 function AuthenticatedApp() {
   return (
@@ -40,6 +44,7 @@ export default function App() {
   return (
     <>
     <PWAInstallPrompt />
+    <CookieBanner />
     <Routes>
       {/* Public routes */}
       <Route
@@ -59,6 +64,11 @@ export default function App() {
       <Route path="/login" element={user && !isLoading ? <Navigate to="/app" replace /> : <LoginPage />} />
       <Route path="/register" element={user && !isLoading ? <Navigate to="/app" replace /> : <RegisterPage />} />
       <Route path="/password-reset" element={<PasswordResetPage />} />
+
+      {/* Legal pages — always publicly reachable, regardless of auth state. */}
+      <Route path="/impressum" element={<ImpressumPage />} />
+      <Route path="/datenschutz" element={<DatenschutzPage />} />
+      <Route path="/agb" element={<AGBPage />} />
 
       {/* Protected app routes */}
       <Route path="/app/*" element={<AuthenticatedApp />} />

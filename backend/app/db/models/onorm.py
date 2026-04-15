@@ -1,19 +1,20 @@
 import uuid
 from datetime import datetime, date
 
-from sqlalchemy import String, Text, Integer, Boolean, Date, ForeignKey, DateTime, Table, Column
+from sqlalchemy import String, Text, Boolean, Date, ForeignKey, DateTime, Table, Column
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 
-try:
-    from pgvector.sqlalchemy import Vector
-except ImportError:
-    Vector = None
 
-
-# Many-to-many: which ÖNORMs are selected for a given LV
+# Many-to-many: which ÖNORMs are selected for a given LV.
+#
+# Historically the frontend allowed users to attach uploaded ÖNORM PDFs to
+# an LV as a "knowledge base". That flow has been removed for copyright
+# reasons (see ``app/api/onorm.py``), but the association table is kept so
+# existing rows continue to resolve and the Leistungsverzeichnis model
+# doesn't need a migration-visible schema change.
 lv_onorm_selection = Table(
     "lv_onorm_selection",
     Base.metadata,
@@ -23,6 +24,15 @@ lv_onorm_selection = Table(
 
 
 class ONormDokument(Base):
+    """Lightweight ÖNORM registry entry.
+
+    After the copyright-compliance refactor this table no longer references
+    any stored PDF content. The ``file_path`` column and the ``ONormChunk``
+    relationship have been removed. The remaining columns describe which
+    ÖNORM an entry corresponds to (number, title, trade) — metadata only,
+    not copyrightable content.
+    """
+
     __tablename__ = "onorm_dokumente"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -30,33 +40,19 @@ class ONormDokument(Base):
     titel: Mapped[str | None] = mapped_column(String(500))
     trade: Mapped[str | None] = mapped_column(String(100))
     ausgabe_datum: Mapped[date | None] = mapped_column(Date)
-    file_path: Mapped[str | None] = mapped_column(String(1000))
     upload_status: Mapped[str] = mapped_column(String(50), default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
-    chunks: Mapped[list["ONormChunk"]] = relationship(back_populates="dokument", cascade="all, delete-orphan")
     regeln: Mapped[list["ONormRegel"]] = relationship(back_populates="dokument", cascade="all, delete-orphan")
-
-
-class ONormChunk(Base):
-    __tablename__ = "onorm_chunks"
-
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    dokument_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("onorm_dokumente.id", ondelete="CASCADE"))
-    chunk_text: Mapped[str] = mapped_column(Text)
-    section_number: Mapped[str | None] = mapped_column(String(50))
-    section_title: Mapped[str | None] = mapped_column(String(255))
-    page_number: Mapped[int | None] = mapped_column(Integer)
-    metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, default=dict)
-
-    dokument: Mapped["ONormDokument"] = relationship(back_populates="chunks")
 
 
 class ONormRegel(Base):
     """Coded ÖNORM rules for deterministic calculation.
 
-    These are NOT AI-generated — they are manually coded or admin-verified rules
-    that the calculation engine uses for quantity determination.
+    These are NOT AI-generated and NOT copied from the ÖNORM text — they are
+    manually coded references to mathematical formulas and parameters that
+    the calculation engine uses for quantity determination. Mathematical
+    formulas and algorithms are not copyrightable.
     """
     __tablename__ = "onorm_regeln"
 

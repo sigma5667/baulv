@@ -11,6 +11,8 @@ import {
   BarChart3,
   MessageSquare,
 } from "lucide-react";
+import { BetaBanner } from "../components/BetaBanner";
+import { Footer } from "../components/layout/Footer";
 
 const FEATURES = [
   {
@@ -92,8 +94,11 @@ const PLANS = [
 export function LandingPage() {
   return (
     <div className="min-h-screen bg-white">
+      {/* Beta warning — dismissible, persisted in localStorage */}
+      <BetaBanner />
+
       {/* Navbar */}
-      <nav className="sticky top-0 z-50 border-b bg-white/95 backdrop-blur">
+      <nav className="sticky top-0 z-40 border-b bg-white/95 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
           <Link to="/" className="flex items-center gap-2 font-bold text-primary">
             <Building2 className="h-7 w-7" />
@@ -347,20 +352,7 @@ export function LandingPage() {
       </section>
 
       {/* Footer */}
-      <footer className="border-t bg-muted/30 py-8">
-        <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-6 text-sm text-muted-foreground md:flex-row">
-          <div className="flex items-center gap-2">
-            <Building2 className="h-5 w-5 text-primary" />
-            <span className="font-semibold text-foreground">BauLV</span>
-          </div>
-          <p>&copy; {new Date().getFullYear()} BauLV. Alle Rechte vorbehalten.</p>
-          <div className="flex gap-4">
-            <a href="#" className="hover:text-foreground">Impressum</a>
-            <a href="#" className="hover:text-foreground">Datenschutz</a>
-            <a href="#" className="hover:text-foreground">AGB</a>
-          </div>
-        </div>
-      </footer>
+      <Footer />
     </div>
   );
 }

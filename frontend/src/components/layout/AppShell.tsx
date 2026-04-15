@@ -11,6 +11,7 @@ import {
   LogOut,
 } from "lucide-react";
 import { useAuth } from "../../hooks/useAuth";
+import { Footer } from "./Footer";
 
 const navItems = [
   { path: "/app", label: "Dashboard", icon: LayoutDashboard },
@@ -116,8 +117,10 @@ export function AppShell({ children }: { children: ReactNode }) {
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-auto">
-        <div className="h-full">{children}</div>
+      <main className="flex flex-1 flex-col overflow-auto">
+        <div className="flex-1">{children}</div>
+        {/* Footer with legal links — visible inside the authenticated app too */}
+        <Footer />
       </main>
     </div>
   );

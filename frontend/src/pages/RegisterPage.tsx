@@ -13,6 +13,7 @@ export function RegisterPage() {
     full_name: "",
     company_name: "",
   });
+  const [agbAccepted, setAgbAccepted] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -27,6 +28,12 @@ export function RegisterPage() {
     }
     if (form.password !== form.confirmPassword) {
       setError("Die Passwörter stimmen nicht überein.");
+      return;
+    }
+    if (!agbAccepted) {
+      setError(
+        "Bitte akzeptieren Sie die AGB und bestätigen Sie, dass Sie die Datenschutzerklärung gelesen haben."
+      );
       return;
     }
 
@@ -131,10 +138,42 @@ export function RegisterPage() {
             />
           </div>
 
+          {/* AGB / Datenschutz acceptance — required by DSGVO and Austrian law */}
+          <label className="flex cursor-pointer items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              required
+              checked={agbAccepted}
+              onChange={(e) => setAgbAccepted(e.target.checked)}
+              className="mt-0.5 h-4 w-4 shrink-0 rounded border-muted-foreground/40 text-primary focus:ring-primary"
+            />
+            <span className="text-muted-foreground">
+              Ich akzeptiere die{" "}
+              <Link
+                to="/agb"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-medium text-primary hover:underline"
+              >
+                AGB
+              </Link>{" "}
+              und habe die{" "}
+              <Link
+                to="/datenschutz"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-medium text-primary hover:underline"
+              >
+                Datenschutzerklärung
+              </Link>{" "}
+              gelesen.
+            </span>
+          </label>
+
           <button
             type="submit"
-            disabled={loading}
-            className="flex w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            disabled={loading || !agbAccepted}
+            className="flex w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <UserPlus className="h-4 w-4" />
             {loading ? "Registrieren..." : "Konto erstellen"}
