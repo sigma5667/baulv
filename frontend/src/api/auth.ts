@@ -1,5 +1,11 @@
 import api from "./client";
-import type { User, TokenResponse, FeatureMatrix } from "../types/user";
+import type {
+  User,
+  TokenResponse,
+  FeatureMatrix,
+  UserSessionSummary,
+  AuditLogEntry,
+} from "../types/user";
 
 export async function registerUser(data: {
   email: string;
@@ -47,4 +53,96 @@ export async function fetchUsage(): Promise<{
 
 export async function requestPasswordReset(email: string): Promise<void> {
   await api.post("/auth/password-reset", { email });
+}
+
+// ---------------------------------------------------------------------------
+// DSGVO compliance
+// ---------------------------------------------------------------------------
+
+/**
+ * Change the current user's password. The server requires the current
+ * password as a re-auth step — a stolen token alone is not enough.
+ */
+export async function changePassword(data: {
+  current_password: string;
+  new_password: string;
+}): Promise<void> {
+  await api.post("/auth/me/password", data);
+}
+
+/**
+ * Art. 20 DSGVO — download a JSON dump of all personal data BauLV holds
+ * about the current user. Triggers a native browser download.
+ */
+export async function downloadMyDataExport(): Promise<void> {
+  const res = await api.get("/auth/me/export", { responseType: "blob" });
+
+  // Try to pull the filename out of the Content-Disposition header;
+  // fall back to a sensible default if the header is unavailable (e.g.
+  // when running against a mock).
+  const disposition = res.headers["content-disposition"] as string | undefined;
+  let filename = `baulv-export-${new Date().toISOString().slice(0, 10)}.json`;
+  if (disposition) {
+    const match = /filename="?([^"]+)"?/i.exec(disposition);
+    if (match) filename = match[1];
+  }
+
+  const blob = new Blob([res.data], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Art. 17 DSGVO — permanently delete the current user's account and
+ * every associated record. The server demands both the password and
+ * the literal confirmation phrase "LÖSCHEN".
+ */
+export async function deleteMyAccount(data: {
+  password: string;
+  confirmation: string;
+}): Promise<void> {
+  await api.post("/auth/me/delete", data);
+}
+
+// ---------------------------------------------------------------------------
+// Privacy settings
+// ---------------------------------------------------------------------------
+
+export async function updatePrivacySettings(data: {
+  marketing_email_opt_in?: boolean;
+}): Promise<User> {
+  const res = await api.put("/auth/me/privacy", data);
+  return res.data;
+}
+
+// ---------------------------------------------------------------------------
+// Session management
+// ---------------------------------------------------------------------------
+
+export async function listMySessions(): Promise<UserSessionSummary[]> {
+  const res = await api.get("/auth/me/sessions");
+  return res.data;
+}
+
+export async function revokeSession(sessionId: string): Promise<void> {
+  await api.delete(`/auth/me/sessions/${sessionId}`);
+}
+
+export async function revokeOtherSessions(): Promise<void> {
+  await api.post("/auth/me/sessions/revoke-others");
+}
+
+// ---------------------------------------------------------------------------
+// Audit log
+// ---------------------------------------------------------------------------
+
+export async function fetchAuditLog(limit = 50): Promise<AuditLogEntry[]> {
+  const res = await api.get("/auth/me/audit-log", { params: { limit } });
+  return res.data;
 }

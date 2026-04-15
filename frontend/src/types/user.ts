@@ -5,6 +5,27 @@ export interface User {
   company_name: string | null;
   subscription_plan: "basis" | "pro" | "enterprise";
   stripe_customer_id: string | null;
+  marketing_email_opt_in: boolean;
+  created_at: string;
+}
+
+export interface UserSessionSummary {
+  id: string;
+  user_agent: string | null;
+  ip_address: string | null;
+  created_at: string;
+  last_used_at: string;
+  expires_at: string;
+  revoked_at: string | null;
+  is_current: boolean;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  event_type: string;
+  meta: Record<string, unknown> | null;
+  ip_address: string | null;
+  user_agent: string | null;
   created_at: string;
 }
 
