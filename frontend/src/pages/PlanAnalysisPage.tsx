@@ -22,6 +22,7 @@ import {
   isUpgradeRequired,
   type NormalizedError,
 } from "../lib/errors";
+import { pushDiagnostic } from "../lib/diagnostics";
 import type { Plan } from "../types/plan";
 import type { Room } from "../types/room";
 
@@ -124,28 +125,64 @@ export function PlanAnalysisPage() {
   });
 
   const analyzeMutation = useMutation({
-    mutationFn: (planId: string) => analyzePlan(planId),
+    mutationFn: (planId: string) => {
+      // eslint-disable-next-line no-console
+      console.info("[analyze] mutation starting", { planId });
+      return analyzePlan(planId);
+    },
     onSuccess: (result, planId) => {
-      setAnalyzeError(null);
-      setRowErrors((prev) => {
-        const next = { ...prev };
-        delete next[planId];
-        return next;
-      });
-      setAnalyzeSummary({
-        pages_analyzed: result.pages_analyzed ?? 0,
-        rooms_extracted: result.rooms_extracted ?? 0,
-        page_errors: result.page_errors ?? [],
-      });
-      queryClient.invalidateQueries({ queryKey: ["plans", projectId] });
-      queryClient.invalidateQueries({ queryKey: ["rooms", projectId] });
+      // eslint-disable-next-line no-console
+      console.info("[analyze] success", { planId, result });
+      try {
+        setAnalyzeError(null);
+        setRowErrors((prev) => {
+          const next = { ...prev };
+          delete next[planId];
+          return next;
+        });
+        setAnalyzeSummary({
+          pages_analyzed: result.pages_analyzed ?? 0,
+          rooms_extracted: result.rooms_extracted ?? 0,
+          page_errors: result.page_errors ?? [],
+        });
+        queryClient.invalidateQueries({ queryKey: ["plans", projectId] });
+        queryClient.invalidateQueries({ queryKey: ["rooms", projectId] });
+      } catch (cbErr) {
+        // If React state updates themselves throw (rare but possible
+        // in production with stale closures or broken refs), surface
+        // it via the diagnostic overlay so the user sees *something*.
+        pushDiagnostic(
+          "manual",
+          "Fehler beim Verarbeiten des Analyse-Ergebnisses: " +
+            (cbErr instanceof Error ? cbErr.message : String(cbErr)),
+          cbErr instanceof Error ? cbErr.stack : undefined
+        );
+      }
     },
     onError: (e, planId) => {
-      const normalized = normalizeError(e);
-      setAnalyzeError(normalized);
-      setRowErrors((prev) => ({ ...prev, [planId]: normalized.message }));
-      // Even on error, refresh plan status so it shows "failed" icon.
-      queryClient.invalidateQueries({ queryKey: ["plans", projectId] });
+      // eslint-disable-next-line no-console
+      console.error("[analyze] error", { planId, error: e });
+      try {
+        const normalized = normalizeError(e);
+        setAnalyzeError(normalized);
+        setRowErrors((prev) => ({ ...prev, [planId]: normalized.message }));
+        // Even on error, refresh plan status so it shows "failed" icon.
+        queryClient.invalidateQueries({ queryKey: ["plans", projectId] });
+      } catch (cbErr) {
+        // Last-ditch fallback — if our own error handler throws, push
+        // to the overlay. If even THAT fails, log to the console.
+        try {
+          pushDiagnostic(
+            "manual",
+            "KI-Analyse fehlgeschlagen (Handler-Fehler): " +
+              (cbErr instanceof Error ? cbErr.message : String(cbErr)),
+            cbErr instanceof Error ? cbErr.stack : undefined
+          );
+        } catch {
+          // eslint-disable-next-line no-console
+          console.error("[analyze] onError handler itself failed", cbErr, e);
+        }
+      }
     },
   });
 
@@ -195,6 +232,12 @@ export function PlanAnalysisPage() {
   };
 
   const startAnalyze = (planId: string) => {
+    // eslint-disable-next-line no-console
+    console.info("[analyze] button clicked", {
+      planId,
+      canAnalyze,
+      mutationPending: analyzeMutation.isPending,
+    });
     setAnalyzeError(null);
     setAnalyzeSummary(null);
     setRowErrors((prev) => {

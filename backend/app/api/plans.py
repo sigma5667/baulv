@@ -227,11 +227,19 @@ async def trigger_analysis(
     distinguish it from auth failures, quota errors, and unknown 500s.
     """
     plan = await verify_plan_owner(plan_id, user, db)
+    # Rich logging — when a user reports "the button does nothing",
+    # these lines are the first thing an operator looks at. Includes
+    # user plan (to correlate with feature-gate decisions), plan
+    # status (to spot retries), filename, and on-disk size.
     logger.info(
-        "Plan analysis trigger: plan=%s user=%s status=%s",
+        "Plan analysis trigger: plan=%s user=%s plan_subscription=%s status=%s "
+        "filename=%s file_size=%s",
         plan_id,
         user.id,
+        user.subscription_plan,
         plan.analysis_status,
+        plan.filename,
+        plan.file_size_bytes,
     )
 
     try:

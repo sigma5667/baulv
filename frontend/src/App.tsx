@@ -4,6 +4,7 @@ import { AppShell } from "./components/layout/AppShell";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import { PWAInstallPrompt } from "./components/PWAInstallPrompt";
 import { CookieBanner } from "./components/CookieBanner";
+import { ErrorOverlay, RootErrorBoundary } from "./components/ErrorOverlay";
 import { LandingPage } from "./pages/LandingPage";
 import { LoginPage } from "./pages/LoginPage";
 import { RegisterPage } from "./pages/RegisterPage";
@@ -42,7 +43,8 @@ export default function App() {
   const { user, isLoading } = useAuth();
 
   return (
-    <>
+    <RootErrorBoundary>
+    <ErrorOverlay />
     <PWAInstallPrompt />
     <CookieBanner />
     <Routes>
@@ -76,6 +78,6 @@ export default function App() {
       {/* Fallback */}
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
-    </>
+    </RootErrorBoundary>
   );
 }
