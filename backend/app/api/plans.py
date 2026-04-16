@@ -88,21 +88,30 @@ async def upload_plan(
     await verify_project_owner(project_id, user, db)
 
     # --- Validation ----------------------------------------------------
+    # The user-facing rejection text is pinned so the frontend and
+    # backend say the same thing. Mentioned both in the MIME check and
+    # in the magic-byte check below.
+    NOT_A_PDF = (
+        "Nur PDF-Dateien sind erlaubt. Bitte konvertieren Sie Ihr Bild in "
+        "eine PDF oder verwenden Sie einen Bauplan im PDF-Format."
+    )
+
     if not file.filename:
         raise HTTPException(400, "Kein Dateiname angegeben.")
 
-    # Content-type from the browser is advisory; accept either the
-    # proper MIME or the file-name extension.
+    # First-line defense: extension + MIME. This catches the obvious
+    # case (image001.png) before we bother reading the file. Browsers
+    # can be sloppy with MIME, so we accept either the correct MIME
+    # *or* a .pdf extension. The magic-byte check below is the
+    # authoritative verdict.
     ct = (file.content_type or "").lower()
-    is_pdf = ct == "application/pdf" or file.filename.lower().endswith(".pdf")
-    if not is_pdf:
-        raise HTTPException(
-            400,
-            "Nur PDF-Dateien werden unterstützt. Bitte laden Sie den Plan "
-            "als PDF hoch.",
-        )
+    ext_ok = file.filename.lower().endswith(".pdf")
+    mime_ok = ct in ("application/pdf", "application/x-pdf")
+    # A file is a plausible PDF candidate only if *at least one* of
+    # extension or MIME claims PDF. image001.png fails both.
+    if not (ext_ok or mime_ok):
+        raise HTTPException(400, NOT_A_PDF)
 
-    # Some clients send size=None; we defend by checking after write.
     max_bytes = settings.max_plan_file_mb * 1024 * 1024
     if file.size is not None and file.size > max_bytes:
         raise HTTPException(
@@ -110,6 +119,29 @@ async def upload_plan(
             f"Die Datei ist zu groß ({file.size // (1024 * 1024)} MB). "
             f"Maximal {settings.max_plan_file_mb} MB pro Plan erlaubt.",
         )
+
+    # Second-line defense (the real one): peek at the first bytes. Every
+    # legitimate PDF starts with ``%PDF-`` per the PDF spec — there's no
+    # way a PNG, JPEG, Word doc, or renamed-extension file makes it
+    # past here. We read 8 bytes and seek back so the subsequent
+    # streaming write still sees the full content.
+    header = file.file.read(8)
+    try:
+        file.file.seek(0)
+    except (AttributeError, OSError):
+        # UploadFile's SpooledTemporaryFile should always seek, but
+        # if an exotic transport doesn't, we can't recover — reject.
+        logger.warning("Upload file stream not seekable; rejecting upload.")
+        raise HTTPException(400, NOT_A_PDF)
+
+    if not header.startswith(b"%PDF-"):
+        logger.info(
+            "Upload rejected as non-PDF: filename=%s ct=%s magic=%r",
+            file.filename,
+            ct,
+            header[:8],
+        )
+        raise HTTPException(400, NOT_A_PDF)
 
     # --- Persist to disk ----------------------------------------------
     upload_dir = settings.upload_path / str(project_id)

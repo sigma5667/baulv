@@ -12,6 +12,7 @@ import {
   Sparkles,
   Clock,
   Lock,
+  Info,
 } from "lucide-react";
 import { fetchPlans, uploadPlan, analyzePlan } from "../api/plans";
 import { fetchProjectRooms, updateRoom, deleteRoom } from "../api/rooms";
@@ -30,6 +31,41 @@ import type { Room } from "../types/room";
 const MAX_FILE_MB = 25;
 const MAX_PAGES = 20;
 
+// The exact German rejection copy for non-PDF uploads. Pinned here so
+// the top banner, the inline row error, and the backend's 400 detail
+// all say the same thing; any change here should mirror NOT_A_PDF in
+// backend/app/api/plans.py.
+const NOT_A_PDF_MSG =
+  "Nur PDF-Dateien sind erlaubt. Bitte konvertieren Sie Ihr Bild in eine PDF oder verwenden Sie einen Bauplan im PDF-Format.";
+
+/**
+ * Return true iff ``file`` begins with the ``%PDF-`` magic bytes.
+ *
+ * The extension check is necessary but not sufficient — a user can
+ * rename ``image.png`` to ``image.pdf`` and the browser will happily
+ * hand us the bytes. Reading the file header is the authoritative
+ * answer and matches what the backend does with ``file.file.read(8)``.
+ */
+async function isRealPdf(file: File): Promise<boolean> {
+  try {
+    const buf = await file.slice(0, 8).arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    // "%PDF-" = 0x25 0x50 0x44 0x46 0x2D
+    return (
+      bytes.length >= 5 &&
+      bytes[0] === 0x25 &&
+      bytes[1] === 0x50 &&
+      bytes[2] === 0x44 &&
+      bytes[3] === 0x46 &&
+      bytes[4] === 0x2d
+    );
+  } catch {
+    // If we can't read the file (very large, permissions weirdness),
+    // let the backend be the final judge rather than silently blocking.
+    return true;
+  }
+}
+
 export function PlanAnalysisPage() {
   const { id: projectId } = useParams<{ id: string }>();
   const queryClient = useQueryClient();
@@ -40,13 +76,31 @@ export function PlanAnalysisPage() {
   const [analyzeError, setAnalyzeError] = useState<NormalizedError | null>(
     null
   );
-  // The last-successful analysis summary (page count, rooms, per-page errors)
-  // shown inline as a small green banner. Cleared when a new analysis starts.
+  // Map of ``planId -> last-error-message`` so a failed analysis stays
+  // visible inline on the row even if the top banner is dismissed or
+  // the user scrolls. This is the primary defense against "analyze
+  // button appears to do nothing" — an error here is always rendered
+  // next to the button that caused it.
+  const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const [analyzeSummary, setAnalyzeSummary] = useState<null | {
     pages_analyzed: number;
     rooms_extracted: number;
     page_errors: string[];
   }>(null);
+
+  // Ref on the top-of-page alert region so we can scroll errors into
+  // view the moment they appear. Users reported analyze failures
+  // seeming to "do nothing" — one cause is the error rendering above
+  // the fold; auto-scroll fixes it.
+  const alertAnchorRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (uploadError || analyzeError) {
+      alertAnchorRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }
+  }, [uploadError, analyzeError]);
 
   const { data: plans = [] } = useQuery({
     queryKey: ["plans", projectId],
@@ -71,8 +125,13 @@ export function PlanAnalysisPage() {
 
   const analyzeMutation = useMutation({
     mutationFn: (planId: string) => analyzePlan(planId),
-    onSuccess: (result) => {
+    onSuccess: (result, planId) => {
       setAnalyzeError(null);
+      setRowErrors((prev) => {
+        const next = { ...prev };
+        delete next[planId];
+        return next;
+      });
       setAnalyzeSummary({
         pages_analyzed: result.pages_analyzed ?? 0,
         rooms_extracted: result.rooms_extracted ?? 0,
@@ -81,30 +140,38 @@ export function PlanAnalysisPage() {
       queryClient.invalidateQueries({ queryKey: ["plans", projectId] });
       queryClient.invalidateQueries({ queryKey: ["rooms", projectId] });
     },
-    onError: (e) => {
-      setAnalyzeError(normalizeError(e));
+    onError: (e, planId) => {
+      const normalized = normalizeError(e);
+      setAnalyzeError(normalized);
+      setRowErrors((prev) => ({ ...prev, [planId]: normalized.message }));
       // Even on error, refresh plan status so it shows "failed" icon.
       queryClient.invalidateQueries({ queryKey: ["plans", projectId] });
     },
   });
 
   const validateAndUpload = useCallback(
-    (files: File[]) => {
+    async (files: File[]) => {
       setUploadError(null);
       for (const file of files) {
+        // Fast extension check first (no async cost).
         if (!file.name.toLowerCase().endsWith(".pdf")) {
-          setUploadError({
-            status: null,
-            message: `"${file.name}" ist keine PDF-Datei. Nur PDF-Baupläne werden unterstützt.`,
-          });
+          setUploadError({ status: null, message: NOT_A_PDF_MSG });
           continue;
         }
+        // Size check before reading the header (cheap; size is already
+        // populated by the browser for any File).
         if (file.size > MAX_FILE_MB * 1024 * 1024) {
           const mb = Math.round(file.size / (1024 * 1024));
           setUploadError({
             status: null,
             message: `"${file.name}" ist ${mb} MB groß — maximal ${MAX_FILE_MB} MB pro Plan erlaubt.`,
           });
+          continue;
+        }
+        // Magic-byte check: catches image.png renamed to image.pdf.
+        const pdfOk = await isRealPdf(file);
+        if (!pdfOk) {
+          setUploadError({ status: null, message: NOT_A_PDF_MSG });
           continue;
         }
         uploadMutation.mutate(file);
@@ -116,13 +183,13 @@ export function PlanAnalysisPage() {
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
-      validateAndUpload(Array.from(e.dataTransfer.files));
+      void validateAndUpload(Array.from(e.dataTransfer.files));
     },
     [validateAndUpload]
   );
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    validateAndUpload(Array.from(e.target.files ?? []));
+    void validateAndUpload(Array.from(e.target.files ?? []));
     // Reset so re-selecting the same file re-fires change.
     e.target.value = "";
   };
@@ -130,6 +197,11 @@ export function PlanAnalysisPage() {
   const startAnalyze = (planId: string) => {
     setAnalyzeError(null);
     setAnalyzeSummary(null);
+    setRowErrors((prev) => {
+      const next = { ...prev };
+      delete next[planId];
+      return next;
+    });
     analyzeMutation.mutate(planId);
   };
 
@@ -146,9 +218,12 @@ export function PlanAnalysisPage() {
       <h1 className="mb-2 text-2xl font-bold">Plananalyse</h1>
       <p className="mb-6 text-sm text-muted-foreground">
         Laden Sie Ihre Grundriss-PDFs hoch und extrahieren Sie Räume,
-        Flächen und Öffnungen automatisch per KI. Max. {MAX_FILE_MB} MB
-        und {MAX_PAGES} Seiten pro Datei.
+        Flächen und Öffnungen automatisch per KI.
       </p>
+
+      {/* Scroll anchor — any error banner below lives in this region
+          and we scroll here when one appears. */}
+      <div ref={alertAnchorRef} />
 
       {/* Upload area */}
       <div
@@ -170,8 +245,12 @@ export function PlanAnalysisPage() {
             />
           </label>
         </p>
+        <p className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-muted px-3 py-1 text-xs text-muted-foreground">
+          <Info className="h-3 w-3" />
+          Nur PDF-Dateien (max. {MAX_FILE_MB} MB, max. {MAX_PAGES} Seiten)
+        </p>
         {uploadMutation.isPending && (
-          <div className="mt-2 flex items-center justify-center gap-2 text-sm text-primary">
+          <div className="mt-3 flex items-center justify-center gap-2 text-sm text-primary">
             <Loader2 className="h-4 w-4 animate-spin" />
             Wird hochgeladen...
           </div>
@@ -179,7 +258,11 @@ export function PlanAnalysisPage() {
       </div>
 
       {uploadError && (
-        <ErrorBanner title="Upload fehlgeschlagen" err={uploadError} />
+        <ErrorBanner
+          title="Upload fehlgeschlagen"
+          err={uploadError}
+          onDismiss={() => setUploadError(null)}
+        />
       )}
 
       {/* Analysis progress panel — only while analysis is running */}
@@ -236,6 +319,14 @@ export function PlanAnalysisPage() {
                   analyzeMutation.isPending &&
                   analyzeMutation.variables === plan.id
                 }
+                rowError={rowErrors[plan.id] ?? null}
+                onDismissRowError={() =>
+                  setRowErrors((prev) => {
+                    const next = { ...prev };
+                    delete next[plan.id];
+                    return next;
+                  })
+                }
               />
             ))}
           </div>
@@ -262,17 +353,31 @@ export function PlanAnalysisPage() {
 function ErrorBanner({
   title,
   err,
+  onDismiss,
 }: {
   title: string;
   err: NormalizedError;
+  onDismiss?: () => void;
 }) {
   return (
-    <div className="mb-6 flex items-start gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-4">
+    <div
+      role="alert"
+      className="mb-6 flex items-start gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-4"
+    >
       <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
       <div className="flex-1 text-sm">
         <p className="font-medium text-destructive">{title}</p>
         <p className="mt-0.5 text-destructive/90">{err.message}</p>
       </div>
+      {onDismiss && (
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="text-xs text-destructive hover:underline"
+        >
+          Schließen
+        </button>
+      )}
     </div>
   );
 }
@@ -290,7 +395,10 @@ function AnalysisErrorBanner({
 }) {
   if (isUpgradeRequired(err)) {
     return (
-      <div className="mb-6 flex items-start gap-3 rounded-md border border-amber-300 bg-amber-50 p-4">
+      <div
+        role="alert"
+        className="mb-6 flex items-start gap-3 rounded-md border border-amber-300 bg-amber-50 p-4"
+      >
         <Lock className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
         <div className="flex-1 text-sm">
           <p className="font-medium text-amber-900">Upgrade erforderlich</p>
@@ -314,7 +422,10 @@ function AnalysisErrorBanner({
     );
   }
   return (
-    <div className="mb-6 flex items-start gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-4">
+    <div
+      role="alert"
+      className="mb-6 flex items-start gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-4"
+    >
       <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
       <div className="flex-1 text-sm">
         <p className="font-medium text-destructive">
@@ -337,17 +448,6 @@ function AnalysisErrorBanner({
 // Analysis progress panel
 // ---------------------------------------------------------------------------
 
-/**
- * Long-running progress UI shown while the analyze mutation is in
- * flight. The backend call is synchronous (blocks until Claude Vision
- * finishes every page), so we don't actually know real-time progress —
- * we fake it with a phase timeline and a soft elapsed-time counter to
- * give the user confidence that work is happening.
- *
- * Phases are approximations of what the backend is doing. They tick
- * forward on a schedule tuned for a typical 2–3 page grundriss; the
- * last phase stays "in progress" until the request actually resolves.
- */
 const PHASES = [
   { label: "Plan wird analysiert", startAt: 0 },
   { label: "KI wertet Räume und Maße aus", startAt: 5 },
@@ -371,7 +471,10 @@ function AnalysisProgress() {
   );
 
   return (
-    <div className="mb-6 rounded-lg border border-primary/30 bg-primary/5 p-4">
+    <div
+      role="status"
+      className="mb-6 rounded-lg border border-primary/30 bg-primary/5 p-4"
+    >
       <div className="flex items-center gap-2">
         <Loader2 className="h-5 w-5 animate-spin text-primary" />
         <p className="font-medium text-primary">KI-Analyse läuft…</p>
@@ -425,11 +528,15 @@ function PlanRow({
   canAnalyze,
   onAnalyze,
   isAnalyzing,
+  rowError,
+  onDismissRowError,
 }: {
   plan: Plan;
   canAnalyze: boolean;
   onAnalyze: () => void;
   isAnalyzing: boolean;
+  rowError: string | null;
+  onDismissRowError: () => void;
 }) {
   const statusIcon =
     {
@@ -447,44 +554,72 @@ function PlanRow({
   };
 
   return (
-    <div className="flex items-center justify-between rounded-lg border bg-card px-4 py-3">
-      <div className="flex items-center gap-3">
-        {statusIcon}
-        <div>
-          <p className="text-sm font-medium">{plan.filename}</p>
-          <p className="text-xs text-muted-foreground">
-            {plan.plan_type ?? "Plan"} · {plan.page_count ?? "?"} Seiten ·{" "}
-            {statusLabel[plan.analysis_status] ?? plan.analysis_status}
-          </p>
+    <div className="rounded-lg border bg-card">
+      <div className="flex items-center justify-between px-4 py-3">
+        <div className="flex items-center gap-3">
+          {statusIcon}
+          <div>
+            <p className="text-sm font-medium">{plan.filename}</p>
+            <p className="text-xs text-muted-foreground">
+              {plan.plan_type ?? "Plan"} · {plan.page_count ?? "?"} Seiten ·{" "}
+              {statusLabel[plan.analysis_status] ?? plan.analysis_status}
+            </p>
+          </div>
         </div>
+
+        {(plan.analysis_status === "pending" ||
+          plan.analysis_status === "failed") &&
+          (canAnalyze ? (
+            <button
+              onClick={onAnalyze}
+              disabled={isAnalyzing}
+              className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {isAnalyzing ? (
+                <>
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Analysiere…
+                </>
+              ) : (
+                <>
+                  <Search className="h-3 w-3" />
+                  {plan.analysis_status === "failed"
+                    ? "Erneut analysieren"
+                    : "AI-Analyse starten"}
+                </>
+              )}
+            </button>
+          ) : (
+            <Link
+              to="/app/subscription"
+              className="flex items-center gap-1.5 rounded-md border border-amber-400 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100"
+              title="KI-Plananalyse ist im Pro-Plan enthalten."
+            >
+              <Lock className="h-3 w-3" />
+              Upgrade erforderlich
+            </Link>
+          ))}
       </div>
 
-      {(plan.analysis_status === "pending" || plan.analysis_status === "failed") &&
-        (canAnalyze ? (
+      {/* Inline error directly under the row that caused it. Stays
+          visible even if the top banner is dismissed — the user always
+          sees feedback next to the button they clicked. */}
+      {rowError && !isAnalyzing && (
+        <div
+          role="alert"
+          className="flex items-start gap-2 border-t border-destructive/20 bg-destructive/5 px-4 py-2.5 text-xs"
+        >
+          <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive" />
+          <p className="flex-1 text-destructive">{rowError}</p>
           <button
-            onClick={onAnalyze}
-            disabled={isAnalyzing}
-            className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            type="button"
+            onClick={onDismissRowError}
+            className="text-destructive hover:underline"
           >
-            {isAnalyzing ? (
-              <Loader2 className="h-3 w-3 animate-spin" />
-            ) : (
-              <Search className="h-3 w-3" />
-            )}
-            {plan.analysis_status === "failed"
-              ? "Erneut analysieren"
-              : "AI-Analyse starten"}
+            ×
           </button>
-        ) : (
-          <Link
-            to="/app/subscription"
-            className="flex items-center gap-1.5 rounded-md border border-amber-400 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100"
-            title="KI-Plananalyse ist im Pro-Plan enthalten."
-          >
-            <Lock className="h-3 w-3" />
-            Upgrade erforderlich
-          </Link>
-        ))}
+        </div>
+      )}
     </div>
   );
 }
