@@ -24,6 +24,15 @@ class Settings(BaseSettings):
 
     # File uploads
     upload_dir: str = "./uploads"
+    # Upper bound on plan PDF uploads. Anything bigger is almost
+    # certainly a scan at excessive DPI; we reject it rather than
+    # trying to process it and running out of memory. Kept in sync
+    # with the frontend's client-side check in PlanAnalysisPage.
+    max_plan_file_mb: int = 25
+    # Each page is a Claude Vision call (~30s and non-trivial cost).
+    # Cap at something a human would plausibly upload as a single
+    # building's plan set.
+    max_plan_pages: int = 20
 
     # CORS
     frontend_url: str = "http://localhost:5173"

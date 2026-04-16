@@ -17,7 +17,15 @@ export const uploadPlan = async (projectId: string, file: File, planType = "grun
   return data;
 };
 
-export const analyzePlan = async (planId: string): Promise<{ rooms_extracted: number }> => {
+export interface AnalyzePlanResult {
+  plan_id: string;
+  pages_analyzed: number;
+  rooms_extracted: number;
+  /** Per-page errors that didn't fail the whole run (e.g. one bad page). */
+  page_errors: string[];
+}
+
+export const analyzePlan = async (planId: string): Promise<AnalyzePlanResult> => {
   const { data } = await api.post(`/plans/${planId}/analyze`);
   return data;
 };

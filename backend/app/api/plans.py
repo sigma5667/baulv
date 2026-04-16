@@ -1,25 +1,76 @@
-import shutil
-from uuid import UUID
+"""Plan upload + Claude Vision analysis endpoints.
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+Every failure mode is mapped to a specific German error message and a
+sensible HTTP status code. The frontend relies on the status code to
+decide what to show (upgrade banner for 403, validation hint for 400,
+generic retry for 5xx) and on ``detail`` for the exact text. We never
+raise a bare 500 with an opaque message — the analysis endpoint
+surfaces ``PlanAnalysisError.detail`` directly so the user always sees
+something actionable.
+"""
+
+import logging
+import re
+import shutil
+from pathlib import Path
+from uuid import UUID, uuid4
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    UploadFile,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.ownership import verify_plan_owner, verify_project_owner
+from app.auth import get_current_user
 from app.config import settings
-from app.db.session import get_db
 from app.db.models.plan import Plan
 from app.db.models.user import User
+from app.db.session import get_db
+from app.plan_analysis.pipeline import PlanAnalysisError, analyze_plan
 from app.schemas.plan import PlanResponse
-from app.plan_analysis.pipeline import analyze_plan
-from app.auth import get_current_user
-from app.api.ownership import verify_project_owner, verify_plan_owner
 from app.subscriptions import require_feature
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-@router.post("/projects/{project_id}/plans", response_model=PlanResponse, status_code=201,
-             tags=["Plans"])
+# Filenames coming off the multipart upload are attacker-controlled.
+# Strip anything that could escape the project's upload directory or
+# cause weirdness on the filesystem. The UUID prefix we add later
+# guarantees uniqueness regardless of what the user picked.
+_SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _safe_filename(name: str | None) -> str:
+    """Return a filesystem-safe filename derived from ``name``.
+
+    Falls back to ``plan.pdf`` if the input is empty after sanitizing.
+    Strips directory components, replaces any non-alphanumeric run with
+    an underscore, and caps the length. We don't try to preserve the
+    user's exact name — we only want something readable in the audit log.
+    """
+    if not name:
+        return "plan.pdf"
+    # Kill any path components; only keep the basename.
+    base = Path(name).name
+    cleaned = _SAFE_NAME_RE.sub("_", base).strip("._") or "plan.pdf"
+    # 120 is plenty for display and avoids OS path-length surprises.
+    return cleaned[:120]
+
+
+@router.post(
+    "/projects/{project_id}/plans",
+    response_model=PlanResponse,
+    status_code=201,
+    tags=["Plans"],
+)
 async def upload_plan(
     project_id: UUID,
     file: UploadFile = File(...),
@@ -27,29 +78,96 @@ async def upload_plan(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Upload a construction plan PDF."""
+    """Upload a construction plan PDF.
+
+    Validates: content type is PDF, size is within ``max_plan_file_mb``,
+    filename is safe. The per-project upload directory is
+    ``{upload_path}/{project_id}/`` and the stored file is prefixed
+    with a short UUID so re-uploading the same name doesn't collide.
+    """
     await verify_project_owner(project_id, user, db)
 
+    # --- Validation ----------------------------------------------------
+    if not file.filename:
+        raise HTTPException(400, "Kein Dateiname angegeben.")
+
+    # Content-type from the browser is advisory; accept either the
+    # proper MIME or the file-name extension.
+    ct = (file.content_type or "").lower()
+    is_pdf = ct == "application/pdf" or file.filename.lower().endswith(".pdf")
+    if not is_pdf:
+        raise HTTPException(
+            400,
+            "Nur PDF-Dateien werden unterstützt. Bitte laden Sie den Plan "
+            "als PDF hoch.",
+        )
+
+    # Some clients send size=None; we defend by checking after write.
+    max_bytes = settings.max_plan_file_mb * 1024 * 1024
+    if file.size is not None and file.size > max_bytes:
+        raise HTTPException(
+            413,
+            f"Die Datei ist zu groß ({file.size // (1024 * 1024)} MB). "
+            f"Maximal {settings.max_plan_file_mb} MB pro Plan erlaubt.",
+        )
+
+    # --- Persist to disk ----------------------------------------------
     upload_dir = settings.upload_path / str(project_id)
     upload_dir.mkdir(parents=True, exist_ok=True)
-    file_path = upload_dir / file.filename
-    with open(file_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+
+    safe_name = _safe_filename(file.filename)
+    # Short UUID prefix avoids collisions with prior uploads of the
+    # same filename. ``uuid4().hex[:8]`` gives us 32 bits of entropy,
+    # more than enough for per-project scope.
+    stored_name = f"{uuid4().hex[:8]}_{safe_name}"
+    file_path = upload_dir / stored_name
+
+    try:
+        with open(file_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+    except OSError as e:
+        logger.exception("Failed to write plan upload to %s: %s", file_path, e)
+        raise HTTPException(
+            500, "Die Datei konnte nicht gespeichert werden. Bitte erneut versuchen."
+        )
+
+    # Double-check size post-write (in case file.size was None).
+    actual_size = file_path.stat().st_size
+    if actual_size > max_bytes:
+        try:
+            file_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise HTTPException(
+            413,
+            f"Die Datei ist zu groß ({actual_size // (1024 * 1024)} MB). "
+            f"Maximal {settings.max_plan_file_mb} MB pro Plan erlaubt.",
+        )
 
     plan = Plan(
         project_id=project_id,
         filename=file.filename,
         file_path=str(file_path),
-        file_size_bytes=file.size,
+        file_size_bytes=actual_size,
         plan_type=plan_type,
     )
     db.add(plan)
     await db.flush()
+    logger.info(
+        "Plan uploaded: project=%s plan=%s file=%s bytes=%d",
+        project_id,
+        plan.id,
+        file.filename,
+        actual_size,
+    )
     return plan
 
 
-@router.get("/projects/{project_id}/plans", response_model=list[PlanResponse],
-            tags=["Plans"])
+@router.get(
+    "/projects/{project_id}/plans",
+    response_model=list[PlanResponse],
+    tags=["Plans"],
+)
 async def list_plans(
     project_id: UUID,
     user: User = Depends(get_current_user),
@@ -68,15 +186,40 @@ async def trigger_analysis(
     user: User = Depends(require_feature("ai_plan_analysis")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Trigger Claude Vision analysis of a plan — requires Pro plan."""
-    await verify_plan_owner(plan_id, user, db)
+    """Trigger Claude Vision analysis of a plan.
+
+    Requires the Pro plan (enforced by ``require_feature``). The
+    ``PlanAnalysisError`` machinery in the pipeline guarantees every
+    failure mode comes back with a German, user-safe message; we
+    surface it here as a 422 (unprocessable) so the frontend can
+    distinguish it from auth failures, quota errors, and unknown 500s.
+    """
+    plan = await verify_plan_owner(plan_id, user, db)
+    logger.info(
+        "Plan analysis trigger: plan=%s user=%s status=%s",
+        plan_id,
+        user.id,
+        plan.analysis_status,
+    )
+
     try:
-        result = await analyze_plan(plan_id, db)
-        return result
-    except ValueError as e:
-        raise HTTPException(404, str(e))
-    except Exception as e:
-        raise HTTPException(500, f"Analysis failed: {str(e)}")
+        return await analyze_plan(plan_id, db)
+    except PlanAnalysisError as e:
+        # Already German and user-safe. 422 ("unprocessable entity")
+        # is the closest semantic match: the request was valid but we
+        # couldn't produce the requested result.
+        raise HTTPException(status_code=422, detail=e.detail)
+    except Exception as e:  # noqa: BLE001
+        # Shouldn't happen — pipeline.analyze_plan wraps unknown errors
+        # in PlanAnalysisError — but belt-and-braces.
+        logger.exception("Unexpected analyze error for plan %s: %s", plan_id, e)
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Bei der KI-Analyse ist ein unerwarteter Fehler aufgetreten. "
+                "Bitte versuchen Sie es erneut oder kontaktieren Sie den Support."
+            ),
+        )
 
 
 @router.get("/{plan_id}", response_model=PlanResponse, tags=["Plans"])
