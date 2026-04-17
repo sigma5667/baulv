@@ -91,18 +91,38 @@ def create_app() -> FastAPI:
                 return FileResponse(str(f))
             return JSONResponse({"error": "not found"}, status_code=404)
 
+        # Headers we want on every index.html response so no browser,
+        # CDN, or proxy ever serves a stale HTML referencing a dead
+        # hashed bundle. We tolerate caching of JS/CSS (content hash
+        # in filename protects against staleness) but index.html MUST
+        # always revalidate. Past bug: a Chrome that cached index.html
+        # under a long-lived expiry kept loading the old /assets/*.js
+        # across deploys, making it look like the deploy didn't land.
+        _INDEX_NOCACHE_HEADERS = {
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        }
+
         # SPA catch-all: serve index.html for any non-API, non-asset route
         @app.get("/{full_path:path}")
         async def serve_spa(request: Request, full_path: str):
             # Don't catch API routes
             if full_path.startswith("api/"):
                 return JSONResponse({"error": "not found"}, status_code=404)
-            # Try to serve actual file first (e.g., favicon.ico)
+            # Try to serve actual file first (e.g., favicon.ico). Static
+            # files get normal (browser-default) caching — they're
+            # either content-hashed or OS icons, both safe.
             file_path = STATIC_DIR / full_path
             if file_path.is_file():
                 return FileResponse(str(file_path))
-            # Fallback to index.html for SPA routing
-            return FileResponse(str(STATIC_DIR / "index.html"))
+            # SPA fallback: always index.html, always no-cache. The
+            # catch-all path matches empty string too, so ``/`` lands
+            # here as well.
+            return FileResponse(
+                str(STATIC_DIR / "index.html"),
+                headers=_INDEX_NOCACHE_HEADERS,
+            )
 
     return app
 

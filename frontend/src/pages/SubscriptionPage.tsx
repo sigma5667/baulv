@@ -1,8 +1,20 @@
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { CreditCard, Check, ArrowRight, ExternalLink } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowRight,
+  Check,
+  CreditCard,
+  ExternalLink,
+  Mail,
+} from "lucide-react";
 import { useAuth } from "../hooks/useAuth";
 import { createCheckoutSession, createPortalSession } from "../api/stripe";
+import { normalizeError } from "../lib/errors";
+
+// Support contact. Pinned as a constant so the "Stripe not configured"
+// fallback and any future "contact us" banner point at the same inbox.
+const SUPPORT_EMAIL = "kontakt@baulv.at";
 
 const PLANS = [
   {
@@ -63,10 +75,29 @@ const PLANS = [
   },
 ];
 
+/**
+ * Two kinds of error we want to distinguish visually:
+ *
+ * - ``unavailable``: Stripe is not configured on the backend (503). We
+ *   show a dedicated amber panel with a ``mailto:`` CTA so the user
+ *   can still reach us. Fixing this would need an env var on
+ *   Railway, not a code change — the UI must not pretend otherwise.
+ *
+ * - ``error``: anything else (401, 500, network, etc.). Shown as a
+ *   standard red banner with the backend's German ``detail``.
+ */
+type CheckoutState =
+  | { kind: "idle" }
+  | { kind: "unavailable"; message: string }
+  | { kind: "error"; message: string };
+
 export function SubscriptionPage() {
   const { user, refreshUser } = useAuth();
   const [searchParams] = useSearchParams();
-  const [loading, setLoading] = useState<string | null>(null);
+  const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
+  const [checkoutState, setCheckoutState] = useState<CheckoutState>({
+    kind: "idle",
+  });
 
   const success = searchParams.get("success") === "true";
   const canceled = searchParams.get("canceled") === "true";
@@ -77,26 +108,47 @@ export function SubscriptionPage() {
 
   const handleCheckout = async (planId: string) => {
     if (planId === "enterprise") {
-      window.location.href = "mailto:kontakt@baulv.at?subject=Enterprise-Plan%20Anfrage";
+      window.location.href = `mailto:${SUPPORT_EMAIL}?subject=Enterprise-Plan%20Anfrage`;
       return;
     }
-    setLoading(planId);
+    setLoadingPlan(planId);
+    setCheckoutState({ kind: "idle" });
     try {
       const { checkout_url } = await createCheckoutSession(planId);
       window.location.href = checkout_url;
-    } catch (err: any) {
-      alert(err.response?.data?.detail || "Fehler beim Erstellen der Checkout-Session.");
+    } catch (err) {
+      const norm = normalizeError(err);
+      // 503 is what the backend returns when STRIPE_SECRET_KEY or the
+      // per-plan price IDs are missing. Show the exact fallback copy
+      // the business asked for instead of a cryptic "Fehler 503".
+      if (norm.status === 503) {
+        setCheckoutState({
+          kind: "unavailable",
+          message: `Upgrade momentan nicht verfügbar. Bitte kontaktieren Sie uns unter ${SUPPORT_EMAIL}.`,
+        });
+      } else {
+        setCheckoutState({ kind: "error", message: norm.message });
+      }
     } finally {
-      setLoading(null);
+      setLoadingPlan(null);
     }
   };
 
   const handlePortal = async () => {
+    setCheckoutState({ kind: "idle" });
     try {
       const { portal_url } = await createPortalSession();
       window.location.href = portal_url;
-    } catch (err: any) {
-      alert(err.response?.data?.detail || "Fehler beim Öffnen des Kundenportals.");
+    } catch (err) {
+      const norm = normalizeError(err);
+      if (norm.status === 503) {
+        setCheckoutState({
+          kind: "unavailable",
+          message: `Das Kundenportal ist momentan nicht verfügbar. Bitte kontaktieren Sie uns unter ${SUPPORT_EMAIL}.`,
+        });
+      } else {
+        setCheckoutState({ kind: "error", message: norm.message });
+      }
     }
   };
 
@@ -117,6 +169,59 @@ export function SubscriptionPage() {
       {canceled && (
         <div className="mb-6 rounded-md bg-yellow-50 px-4 py-3 text-sm text-yellow-700">
           Der Checkout-Vorgang wurde abgebrochen.
+        </div>
+      )}
+
+      {checkoutState.kind === "unavailable" && (
+        <div
+          role="alert"
+          className="mb-6 flex items-start gap-3 rounded-md border border-amber-300 bg-amber-50 p-4"
+        >
+          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
+          <div className="flex-1 text-sm">
+            <p className="font-medium text-amber-900">
+              Upgrade momentan nicht verfügbar
+            </p>
+            <p className="mt-0.5 text-amber-800">{checkoutState.message}</p>
+            <a
+              href={`mailto:${SUPPORT_EMAIL}?subject=Upgrade-Anfrage`}
+              className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700"
+            >
+              <Mail className="h-3.5 w-3.5" />
+              {SUPPORT_EMAIL}
+            </a>
+          </div>
+          <button
+            type="button"
+            onClick={() => setCheckoutState({ kind: "idle" })}
+            className="text-xs text-amber-700 hover:underline"
+          >
+            Schließen
+          </button>
+        </div>
+      )}
+
+      {checkoutState.kind === "error" && (
+        <div
+          role="alert"
+          className="mb-6 flex items-start gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-4"
+        >
+          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
+          <div className="flex-1 text-sm">
+            <p className="font-medium text-destructive">
+              Fehler beim Upgrade
+            </p>
+            <p className="mt-0.5 text-destructive/90">
+              {checkoutState.message}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setCheckoutState({ kind: "idle" })}
+            className="text-xs text-destructive hover:underline"
+          >
+            Schließen
+          </button>
         </div>
       )}
 
@@ -200,10 +305,10 @@ export function SubscriptionPage() {
               ) : (
                 <button
                   onClick={() => handleCheckout(plan.id)}
-                  disabled={loading === plan.id}
+                  disabled={loadingPlan === plan.id}
                   className="flex w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                 >
-                  {loading === plan.id ? "Weiterleitung..." : "Jetzt upgraden"}
+                  {loadingPlan === plan.id ? "Weiterleitung..." : "Jetzt upgraden"}
                   <ArrowRight className="h-4 w-4" />
                 </button>
               )}
