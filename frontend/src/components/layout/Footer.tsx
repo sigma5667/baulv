@@ -25,15 +25,6 @@ export function Footer() {
           <Link to="/agb" className="hover:text-foreground">
             AGB
           </Link>
-          <a
-            href="https://www.austrian-standards.at"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="hover:text-foreground"
-            title="Austrian Standards — externer Link, keine Partnerschaft"
-          >
-            Powered by Austrian Standards Berechnungsregeln
-          </a>
         </nav>
       </div>
     </footer>

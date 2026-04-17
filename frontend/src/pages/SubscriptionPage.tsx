@@ -24,7 +24,6 @@ const PLANS = [
     interval: "Monat",
     features: [
       "3 aktive Projekte",
-      "ÖNORM-Bibliothek",
       "Manueller LV-Editor",
       "PDF-Export",
     ],
@@ -67,7 +66,7 @@ const PLANS = [
       "Alles aus Pro, plus:",
       "Angebotsvergleich / Preisspiegel",
       "Team- und Multi-User-Konten",
-      "Individuelle ÖNORM-Konfiguration",
+      "Individuelle Konfiguration der Berechnungsregeln",
       "API-Zugang",
       "Dedizierter Support",
     ],

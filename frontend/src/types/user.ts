@@ -36,7 +36,6 @@ export interface TokenResponse {
 }
 
 export interface FeatureMatrix {
-  onorm_library: boolean;
   manual_lv_editor: boolean;
   pdf_export: boolean;
   ai_plan_analysis: boolean;

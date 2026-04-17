@@ -1,7 +1,7 @@
 {
   "name": "BauLV - Bau-Ausschreibungssoftware",
   "short_name": "BauLV",
-  "description": "KI-gestützte Ausschreibungssoftware für den Bau. ÖNORM-konform nach österreichischem Standard.",
+  "description": "KI-gestützte Ausschreibungssoftware für den Bau. Nach österreichischen Baustandards.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",

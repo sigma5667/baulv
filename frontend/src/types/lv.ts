@@ -5,9 +5,13 @@ export interface Berechnungsnachweis {
   raw_quantity: number;
   formula_description: string;
   formula_expression: string;
-  onorm_factor: number;
-  onorm_rule_ref: string | null;
-  onorm_paragraph: string | null;
+  // Renamed from ``onorm_*`` in the backend response. The DB columns
+  // keep the historic ``onorm_`` prefix for compatibility with existing
+  // rows, but the API + UI use generic terms — the app is a calculation
+  // engine, not a norm library.
+  rule_factor: number;
+  rule_ref: string | null;
+  rule_paragraph: string | null;
   deductions: DeductionDetail[];
   net_quantity: number;
   unit: string;
@@ -47,30 +51,20 @@ export interface Leistungsgruppe {
   positionen: Position[];
 }
 
-export interface ONormSelectionItem {
-  id: string;
-  norm_nummer: string;
-  titel: string | null;
-  trade: string | null;
-}
-
 export interface LV {
   id: string;
   project_id: string;
   name: string;
   trade: string;
   status: string;
-  onorm_basis: string | null;
   vorbemerkungen: string | null;
   created_at: string;
   updated_at: string;
   gruppen: Leistungsgruppe[];
-  selected_onorms: ONormSelectionItem[];
 }
 
 export interface LVCreate {
   name: string;
   trade: string;
-  onorm_basis?: string;
-  selected_onorm_ids?: string[];
+  vorbemerkungen?: string;
 }

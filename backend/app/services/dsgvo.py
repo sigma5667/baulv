@@ -226,6 +226,10 @@ def _plan_dict(p: Plan) -> dict[str, Any]:
 
 
 def _berechnung_dict(b: Berechnungsnachweis) -> dict[str, Any]:
+    # Column names in the DB still carry the historic ``onorm_`` prefix
+    # (see backend/app/db/models/calculation.py). We rename them on the
+    # way out so the exported JSON uses generic terms — the app no
+    # longer presents itself as an ÖNORM tool to the user.
     return _iso(
         {
             "id": b.id,
@@ -233,9 +237,9 @@ def _berechnung_dict(b: Berechnungsnachweis) -> dict[str, Any]:
             "raw_quantity": b.raw_quantity,
             "formula_description": b.formula_description,
             "formula_expression": b.formula_expression,
-            "onorm_factor": b.onorm_factor,
-            "onorm_rule_ref": b.onorm_rule_ref,
-            "onorm_paragraph": b.onorm_paragraph,
+            "rule_factor": b.onorm_factor,
+            "rule_ref": b.onorm_rule_ref,
+            "rule_paragraph": b.onorm_paragraph,
             "deductions": b.deductions,
             "net_quantity": b.net_quantity,
             "unit": b.unit,
@@ -286,7 +290,6 @@ def _lv_dict(lv: Leistungsverzeichnis) -> dict[str, Any]:
             "name": lv.name,
             "trade": lv.trade,
             "status": lv.status,
-            "onorm_basis": lv.onorm_basis,
             "vorbemerkungen": lv.vorbemerkungen,
             "created_at": lv.created_at,
             "updated_at": lv.updated_at,
@@ -390,11 +393,11 @@ async def export_user_data(user: User, db: AsyncSession) -> dict[str, Any]:
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "disclaimer": (
             "This export contains all personal data BauLV holds about this "
-            "user account, provided under Art. 20 GDPR (DSGVO). Shared "
-            "reference data such as the ÖNORM rule library is not included "
-            "because it is not personal data. Uploaded plan PDFs are listed "
-            "by metadata only; contact support if you also need the binary "
-            "files."
+            "user account, provided under Art. 20 GDPR (DSGVO). Built-in "
+            "reference data such as the shared calculation-rule library is "
+            "not included because it is not personal data. Uploaded plan "
+            "PDFs are listed by metadata only; contact support if you also "
+            "need the binary files."
         ),
         "user": _user_dict(user),
         "projects": [_project_dict(p) for p in projects],

@@ -63,31 +63,15 @@ export function AGBPage() {
 
           <div>
             <h2 className="mb-2 text-lg font-semibold">
-              3. Urheberrecht und ÖNORM-Inhalte
+              3. Berechnungsregeln und Urheberrecht
             </h2>
-            <p className="mb-2">
-              <strong>
-                Die Software speichert und verbreitet keine urheberrechtlich
-                geschützten ÖNORM-Inhalte. Die implementierten Berechnungsregeln
-                basieren auf mathematischen Formeln und Algorithmen.
-              </strong>{" "}
-              Die Nummerierung und Bezeichnung einzelner ÖNORM-Standards dient
-              ausschließlich der Referenzierung und begründet weder eine
-              Partnerschaft mit Austrian Standards International noch einen
-              Anspruch auf die originalen Normtexte.
-            </p>
             <p>
-              Kunden, die den vollständigen Text einer ÖNORM benötigen, werden
-              auf den offiziellen Webshop von Austrian Standards unter{" "}
-              <a
-                href="https://www.austrian-standards.at"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-primary hover:underline"
-              >
-                www.austrian-standards.at
-              </a>{" "}
-              verwiesen.
+              Die in der Software hinterlegten Berechnungsregeln bestehen aus
+              mathematischen Formeln und Algorithmen, die sich an den in
+              Österreich üblichen Baustandards und Abrechnungsgewohnheiten
+              orientieren. Die Software speichert oder verbreitet keine
+              urheberrechtlich geschützten Normtexte Dritter. Die Ergebnisse
+              der Berechnungen sind ohne Gewähr; siehe Abschnitt 10.
             </p>
           </div>
 

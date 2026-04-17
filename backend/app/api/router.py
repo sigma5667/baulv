@@ -5,7 +5,6 @@ from app.api.plans import router as plans_router
 from app.api.buildings import router as buildings_router
 from app.api.rooms import router as rooms_router
 from app.api.lv import router as lv_router
-from app.api.onorm import router as onorm_router
 from app.api.chat import router as chat_router
 from app.api.auth import router as auth_router
 from app.api.stripe_api import router as stripe_router
@@ -19,5 +18,4 @@ api_router.include_router(plans_router, prefix="/plans", tags=["Plans"])
 api_router.include_router(buildings_router, tags=["Buildings"])
 api_router.include_router(rooms_router, tags=["Rooms"])
 api_router.include_router(lv_router, prefix="/lv", tags=["Leistungsverzeichnis"])
-api_router.include_router(onorm_router, prefix="/onorm", tags=["ÖNORM"])
 api_router.include_router(chat_router, prefix="/chat", tags=["Chat"])

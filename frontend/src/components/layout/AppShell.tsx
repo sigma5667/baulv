@@ -2,7 +2,6 @@ import { ReactNode, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard,
-  BookOpen,
   Menu,
   X,
   Building2,
@@ -15,7 +14,6 @@ import { Footer } from "./Footer";
 
 const navItems = [
   { path: "/app", label: "Dashboard", icon: LayoutDashboard },
-  { path: "/app/settings/onorm", label: "ÖNORM-Bibliothek", icon: BookOpen },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {

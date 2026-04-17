@@ -7,7 +7,6 @@ import {
   Shield,
   Check,
   ArrowRight,
-  BookOpen,
   BarChart3,
   MessageSquare,
 } from "lucide-react";
@@ -21,24 +20,19 @@ const FEATURES = [
     desc: "Laden Sie Ihre Baupläne als PDF hoch — unsere KI erkennt automatisch Räume, Flächen und Maße.",
   },
   {
-    icon: BookOpen,
-    title: "ÖNORM-Bibliothek",
-    desc: "Verwalten Sie Ihre ÖNORM-Standards zentral. Die KI nutzt die relevanten Normen als Wissensbasis.",
-  },
-  {
     icon: Calculator,
     title: "Automatische Mengenermittlung",
-    desc: "Deterministische Berechnung nach ÖNORM-Regeln mit nachvollziehbaren Berechnungsnachweisen.",
+    desc: "Deterministische Berechnung nach österreichischen Baustandards mit nachvollziehbaren Berechnungsnachweisen.",
   },
   {
     icon: FileText,
     title: "LV-Erstellung",
-    desc: "Erstellen Sie professionelle Leistungsverzeichnisse — manuell oder KI-gestützt mit ÖNORM-konformen Texten.",
+    desc: "Erstellen Sie professionelle Leistungsverzeichnisse — manuell oder KI-gestützt in österreichischer Baufachsprache.",
   },
   {
     icon: MessageSquare,
     title: "KI-Chatassistent",
-    desc: "Fragen Sie den Bauexperten-Chat zu ÖNORM-Regeln, Abrechnungsvorschriften oder Ihrem Projekt.",
+    desc: "Fragen Sie den Bauexperten-Chat zu Abrechnungsvorschriften oder Ihrem Projekt.",
   },
   {
     icon: BarChart3,
@@ -52,7 +46,7 @@ const PLANS = [
     name: "Basis",
     price: "49",
     interval: "/Monat",
-    features: ["3 aktive Projekte", "ÖNORM-Bibliothek", "Manueller LV-Editor", "PDF-Export"],
+    features: ["3 aktive Projekte", "Manueller LV-Editor", "PDF-Export"],
     cta: "14 Tage kostenlos testen",
     href: "/register",
     popular: false,
@@ -145,7 +139,7 @@ export function LandingPage() {
           <div className="mx-auto max-w-3xl text-center">
             <div className="mb-4 inline-flex items-center gap-2 rounded-full border bg-white px-4 py-1.5 text-sm text-muted-foreground shadow-sm">
               <Shield className="h-4 w-4 text-primary" />
-              ÖNORM-konform nach österreichischem Standard
+              Nach österreichischen Baustandards
             </div>
             <h1 className="text-4xl font-extrabold tracking-tight text-foreground md:text-6xl">
               KI-gestützte{" "}
@@ -155,9 +149,9 @@ export function LandingPage() {
               für den Bau
             </h1>
             <p className="mt-6 text-lg text-muted-foreground md:text-xl">
-              Von der Plananalyse zum fertigen Leistungsverzeichnis — automatisch, ÖNORM-konform
-              und nachvollziehbar. Sparen Sie bis zu 80% der Zeit bei der Erstellung Ihrer
-              Ausschreibungen.
+              Von der Plananalyse zum fertigen Leistungsverzeichnis — automatisch, nachvollziehbar
+              und nach österreichischen Baustandards. Sparen Sie bis zu 80% der Zeit bei der
+              Erstellung Ihrer Ausschreibungen.
             </p>
             <div className="mt-8 flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
               <Link
@@ -184,10 +178,10 @@ export function LandingPage() {
       <section className="border-y bg-muted/30 py-6">
         <div className="mx-auto flex max-w-4xl flex-wrap items-center justify-center gap-8 px-6 text-sm text-muted-foreground">
           <span className="flex items-center gap-2">
-            <Check className="h-4 w-4 text-green-600" /> ÖNORM B 2061/B 2063 konform
+            <Check className="h-4 w-4 text-green-600" /> Österreichische Baustandards
           </span>
           <span className="flex items-center gap-2">
-            <Check className="h-4 w-4 text-green-600" /> Österreichische Baustandards
+            <Check className="h-4 w-4 text-green-600" /> Nachvollziehbare Berechnungen
           </span>
           <span className="flex items-center gap-2">
             <Check className="h-4 w-4 text-green-600" /> DSGVO-konform
@@ -237,13 +231,13 @@ export function LandingPage() {
               },
               {
                 step: "2",
-                title: "ÖNORMs auswählen",
-                desc: "Wählen Sie die relevanten ÖNORM-Standards aus Ihrer Bibliothek. Die KI nutzt diese als Wissensbasis für korrekte Abrechnungsregeln.",
+                title: "Gewerk wählen",
+                desc: "Wählen Sie das passende Gewerk. Die integrierten Berechnungsregeln nach österreichischen Baustandards übernehmen die korrekte Abrechnung.",
               },
               {
                 step: "3",
                 title: "LV generieren",
-                desc: "Erstellen Sie Leistungsverzeichnisse mit automatischer Mengenermittlung und ÖNORM-konformen Positionstexten.",
+                desc: "Erstellen Sie Leistungsverzeichnisse mit automatischer Mengenermittlung und professionellen Positionstexten.",
               },
               {
                 step: "4",

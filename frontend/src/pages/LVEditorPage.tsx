@@ -19,7 +19,7 @@ import { fetchProjectLVs, fetchLV, createLV, calculateLV, generateTexts, exportL
 import type { LVCreate, Leistungsgruppe, Position, Berechnungsnachweis } from "../types/lv";
 
 const TRADES = [
-  { value: "malerarbeiten", label: "Malerarbeiten", onorm: "B 2230-1" },
+  { value: "malerarbeiten", label: "Malerarbeiten" },
 ];
 
 function getErrorMessage(err: unknown): string {
@@ -265,7 +265,6 @@ export function LVEditorPage() {
             {/* LV info */}
             <div className="mb-6 flex items-center gap-4 text-sm text-muted-foreground">
               <span>Gewerk: <strong className="text-foreground">{activeLV.trade}</strong></span>
-              <span>ÖNORM: <strong className="text-foreground">{activeLV.onorm_basis}</strong></span>
               <span>Status: {activeLV.status}</span>
             </div>
 
@@ -317,7 +316,7 @@ function CreateLVForm({
           >
             {TRADES.map((t) => (
               <option key={t.value} value={t.value}>
-                {t.label} ({t.onorm})
+                {t.label}
               </option>
             ))}
           </select>
@@ -325,8 +324,8 @@ function CreateLVForm({
       </div>
 
       <p className="text-xs text-muted-foreground">
-        Die Berechnungsregeln der ÖNORM {selected.onorm} sind fest in BauLV
-        integriert — eine separate Wissensbasis muss nicht ausgewählt werden.
+        Die Berechnungsregeln für dieses Gewerk sind fest integriert — BauLV
+        wendet sie automatisch auf die Räume Ihres Projekts an.
       </p>
 
       <div className="flex gap-2">
@@ -335,8 +334,6 @@ function CreateLVForm({
             onSubmit({
               name: `LV ${selected.label}`,
               trade: selected.value,
-              onorm_basis: selected.onorm,
-              selected_onorm_ids: [],
             })
           }
           disabled={isLoading}
@@ -429,7 +426,7 @@ function PositionRow({ position }: { position: Position }) {
                 <th className="py-1 text-left">Formel</th>
                 <th className="py-1 text-right">Rohmaß</th>
                 <th className="py-1 text-right">Faktor</th>
-                <th className="py-1 text-left">ÖNORM</th>
+                <th className="py-1 text-left">Regel</th>
                 <th className="py-1 text-right">Netto</th>
               </tr>
             </thead>
@@ -464,9 +461,9 @@ function BerechnungsnachweisRow({ nachweis }: { nachweis: Berechnungsnachweis })
       </td>
       <td className="py-1 text-right font-mono">{nachweis.raw_quantity.toFixed(3)}</td>
       <td className="py-1 text-right font-mono">
-        {nachweis.onorm_factor !== 1 ? `×${nachweis.onorm_factor.toFixed(2)}` : "—"}
+        {nachweis.rule_factor !== 1 ? `×${nachweis.rule_factor.toFixed(2)}` : "—"}
       </td>
-      <td className="py-1 text-muted-foreground">{nachweis.onorm_paragraph ?? ""}</td>
+      <td className="py-1 text-muted-foreground">{nachweis.rule_ref ?? ""}</td>
       <td className="py-1 text-right font-mono font-medium">
         {nachweis.net_quantity.toFixed(3)}
       </td>

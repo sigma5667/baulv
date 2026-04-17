@@ -1,6 +1,12 @@
-"""AI chat assistant with project context and ÖNORM knowledge."""
+"""AI chat assistant with project context.
 
-import json
+No external norm library is consulted — the calculation engine and its
+built-in rules are the only authoritative reference. The assistant
+answers questions in plain German construction language based on the
+user's project data and what it already knows about Austrian building
+practice from its training.
+"""
+
 from pathlib import Path
 from uuid import UUID
 
@@ -9,13 +15,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
-from app.db.models.project import Project, Building, Floor, Unit, Room
-from app.db.models.lv import Leistungsverzeichnis
+from app.db.models.project import Project, Building, Floor, Unit
 from app.db.models.chat import ChatSession, ChatMessage
-from app.onorm_rag.retriever import search_onorm_chunks
 
 
-SYSTEM_PROMPT = (Path(__file__).parent / "prompts" / "construction_assistant.txt").read_text(encoding="utf-8")
+SYSTEM_PROMPT = (
+    Path(__file__).parent / "prompts" / "construction_assistant.txt"
+).read_text(encoding="utf-8")
 
 
 async def chat_with_assistant(
@@ -23,7 +29,7 @@ async def chat_with_assistant(
     user_message: str,
     db: AsyncSession,
 ) -> str:
-    """Process a chat message and return assistant response."""
+    """Process a chat message and return the assistant's reply."""
     import anthropic
 
     session = await db.get(ChatSession, session_id)
@@ -31,16 +37,13 @@ async def chat_with_assistant(
         raise ValueError(f"Chat session {session_id} not found")
 
     # Save user message
-    user_msg = ChatMessage(
-        session_id=session_id,
-        role="user",
-        content=user_message,
+    db.add(
+        ChatMessage(session_id=session_id, role="user", content=user_message)
     )
-    db.add(user_msg)
     await db.flush()
 
-    # Build context
-    context = await _build_context(session, user_message, db)
+    # Build context (project tree only — no external norm library)
+    context = await _build_context(session, db)
 
     # Load message history
     stmt = (
@@ -51,97 +54,64 @@ async def chat_with_assistant(
     result = await db.execute(stmt)
     messages = result.scalars().all()
 
-    # Build Claude messages
-    claude_messages = []
-    for msg in messages:
-        claude_messages.append({"role": msg.role, "content": msg.content})
+    claude_messages = [{"role": m.role, "content": m.content} for m in messages]
 
     system = SYSTEM_PROMPT
     if context:
         system += f"\n\n--- Projektkontext ---\n{context}"
 
-    # Call Claude
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-
     response = client.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=2048,
         system=system,
         messages=claude_messages,
     )
-
     assistant_text = response.content[0].text
 
-    # Save assistant message
-    assistant_msg = ChatMessage(
-        session_id=session_id,
-        role="assistant",
-        content=assistant_text,
+    db.add(
+        ChatMessage(
+            session_id=session_id, role="assistant", content=assistant_text
+        )
     )
-    db.add(assistant_msg)
     await db.flush()
-
     return assistant_text
 
 
-async def _build_context(session: ChatSession, query: str, db: AsyncSession) -> str:
-    """Build context string from project data and ÖNORM knowledge."""
-    parts: list[str] = []
+async def _build_context(session: ChatSession, db: AsyncSession) -> str:
+    """Summarize the current project's structure for the system prompt."""
+    if not session.project_id:
+        return ""
 
-    # Project context
-    if session.project_id:
-        stmt = (
-            select(Project)
-            .where(Project.id == session.project_id)
-            .options(
-                selectinload(Project.buildings)
-                .selectinload(Building.floors)
-                .selectinload(Floor.units)
-                .selectinload(Unit.rooms)
-            )
+    stmt = (
+        select(Project)
+        .where(Project.id == session.project_id)
+        .options(
+            selectinload(Project.buildings)
+            .selectinload(Building.floors)
+            .selectinload(Floor.units)
+            .selectinload(Unit.rooms)
         )
-        result = await db.execute(stmt)
-        project = result.scalars().first()
-
-        if project:
-            parts.append(f"Projekt: {project.name}")
-            parts.append(f"Adresse: {project.address or 'nicht angegeben'}")
-
-            for building in project.buildings:
-                for floor in building.floors:
-                    for unit in floor.units:
-                        parts.append(f"\n{unit.name} ({floor.name}):")
-                        for room in unit.rooms:
-                            room_info = f"  - {room.name}: {room.area_m2}m², Umfang {room.perimeter_m}m, RH {room.height_m}m"
-                            if room.floor_type:
-                                room_info += f", Boden: {room.floor_type}"
-                            parts.append(room_info)
-
-    # Collect selected ÖNORM document IDs from project's LVs
-    selected_dokument_ids = None
-    if session.project_id:
-        lv_stmt = (
-            select(Leistungsverzeichnis)
-            .where(Leistungsverzeichnis.project_id == session.project_id)
-            .options(selectinload(Leistungsverzeichnis.selected_onorms))
-        )
-        lv_result = await db.execute(lv_stmt)
-        lvs = lv_result.scalars().all()
-        all_ids = set()
-        for lv in lvs:
-            for doc in lv.selected_onorms:
-                all_ids.add(doc.id)
-        if all_ids:
-            selected_dokument_ids = list(all_ids)
-
-    # ÖNORM context via RAG — scoped to selected documents if available
-    relevant_chunks = await search_onorm_chunks(
-        query, db, dokument_ids=selected_dokument_ids, top_k=3
     )
-    if relevant_chunks:
-        parts.append("\n--- Relevante ÖNORM-Abschnitte ---")
-        for chunk in relevant_chunks:
-            header = f"[{chunk.section_number or ''}] {chunk.section_title or ''}"
-            parts.append(f"{header}\n{chunk.chunk_text[:500]}")
+    result = await db.execute(stmt)
+    project = result.scalars().first()
+    if not project:
+        return ""
 
+    parts: list[str] = [
+        f"Projekt: {project.name}",
+        f"Adresse: {project.address or 'nicht angegeben'}",
+    ]
+    for building in project.buildings:
+        for floor in building.floors:
+            for unit in floor.units:
+                parts.append(f"\n{unit.name} ({floor.name}):")
+                for room in unit.rooms:
+                    line = (
+                        f"  - {room.name}: {room.area_m2}m², "
+                        f"Umfang {room.perimeter_m}m, RH {room.height_m}m"
+                    )
+                    if room.floor_type:
+                        line += f", Boden: {room.floor_type}"
+                    parts.append(line)
     return "\n".join(parts)

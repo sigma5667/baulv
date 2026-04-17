@@ -9,9 +9,8 @@ import io
 
 from app.db.session import get_db
 from app.db.models.lv import Leistungsverzeichnis, Leistungsgruppe, Position
-from app.db.models.onorm import ONormDokument
 from app.db.models.user import User
-from app.schemas.lv import LVCreate, LVUpdate, LVResponse, PositionUpdate, PositionResponse, ONormSelectionUpdate, ONormSelectionItem
+from app.schemas.lv import LVCreate, LVUpdate, LVResponse, PositionUpdate, PositionResponse
 from app.calculation_engine.engine import calculate_lv
 from app.lv_generator.generator import generate_position_texts
 from app.export.xlsx_exporter import export_lv_xlsx
@@ -31,27 +30,14 @@ async def create_lv(
     db: AsyncSession = Depends(get_db),
 ):
     await verify_project_owner(project_id, user, db)
-
-    onorm_ids = data.selected_onorm_ids
-    lv_data = data.model_dump(exclude={"selected_onorm_ids"})
-    lv = Leistungsverzeichnis(project_id=project_id, **lv_data)
+    lv = Leistungsverzeichnis(project_id=project_id, **data.model_dump())
     db.add(lv)
     await db.flush()
-
-    if onorm_ids:
-        for oid in onorm_ids:
-            doc = await db.get(ONormDokument, oid)
-            if doc:
-                lv.selected_onorms.append(doc)
-        await db.flush()
 
     stmt = (
         select(Leistungsverzeichnis)
         .where(Leistungsverzeichnis.id == lv.id)
-        .options(
-            selectinload(Leistungsverzeichnis.gruppen),
-            selectinload(Leistungsverzeichnis.selected_onorms),
-        )
+        .options(selectinload(Leistungsverzeichnis.gruppen))
     )
     result = await db.execute(stmt)
     return result.scalars().first()
@@ -68,10 +54,7 @@ async def list_lvs(
     result = await db.execute(
         select(Leistungsverzeichnis)
         .where(Leistungsverzeichnis.project_id == project_id)
-        .options(
-            selectinload(Leistungsverzeichnis.gruppen),
-            selectinload(Leistungsverzeichnis.selected_onorms),
-        )
+        .options(selectinload(Leistungsverzeichnis.gruppen))
         .order_by(Leistungsverzeichnis.created_at.desc())
     )
     return result.scalars().all()
@@ -91,7 +74,6 @@ async def get_lv(
             selectinload(Leistungsverzeichnis.gruppen)
             .selectinload(Leistungsgruppe.positionen)
             .selectinload(Position.berechnungsnachweise),
-            selectinload(Leistungsverzeichnis.selected_onorms),
         )
     )
     result = await db.execute(stmt)
@@ -113,34 +95,6 @@ async def update_lv(
         setattr(lv, key, value)
     await db.flush()
     return lv
-
-
-@router.put("/{lv_id}/onorm-selection", response_model=list[ONormSelectionItem])
-async def update_onorm_selection(
-    lv_id: UUID,
-    data: ONormSelectionUpdate,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Update which OENORMs are selected as knowledge base for this LV."""
-    await verify_lv_owner(lv_id, user, db)
-    stmt = (
-        select(Leistungsverzeichnis)
-        .where(Leistungsverzeichnis.id == lv_id)
-        .options(selectinload(Leistungsverzeichnis.selected_onorms))
-    )
-    result = await db.execute(stmt)
-    lv = result.scalars().first()
-    if not lv:
-        raise HTTPException(404, "LV nicht gefunden")
-
-    lv.selected_onorms.clear()
-    for oid in data.onorm_dokument_ids:
-        doc = await db.get(ONormDokument, oid)
-        if doc:
-            lv.selected_onorms.append(doc)
-    await db.flush()
-    return lv.selected_onorms
 
 
 @router.post("/{lv_id}/calculate")

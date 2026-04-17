@@ -435,9 +435,9 @@ function PrivacySettingsCard() {
         <div className="flex-1">
           <p className="font-medium text-sm">Marketing-E-Mails</p>
           <p className="text-sm text-muted-foreground">
-            Gelegentliche Produkt-Updates, neue Features und Hinweise zu
-            ÖNORM-Änderungen. Keine Werbung Dritter. Sie können diese
-            Einwilligung jederzeit widerrufen (Art. 7 Abs. 3 DSGVO).
+            Gelegentliche Produkt-Updates und neue Features. Keine Werbung
+            Dritter. Sie können diese Einwilligung jederzeit widerrufen
+            (Art. 7 Abs. 3 DSGVO).
           </p>
         </div>
         <label className="relative inline-flex cursor-pointer items-center">

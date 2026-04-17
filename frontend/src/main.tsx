@@ -59,7 +59,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
 // APP_BUILD_TAG. The kill switch runs again, every stale SW gets
 // evicted, every stale cache gets wiped.
 
-const APP_BUILD_TAG = "baulv-v4-2026-04-17";
+const APP_BUILD_TAG = "baulv-v5-2026-04-17-onorm-removed";
 
 async function purgeStaleCaches() {
   if ("caches" in window) {

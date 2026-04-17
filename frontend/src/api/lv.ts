@@ -1,5 +1,5 @@
 import api from "./client";
-import type { LV, LVCreate, ONormSelectionItem } from "../types/lv";
+import type { LV, LVCreate } from "../types/lv";
 
 export const fetchProjectLVs = async (projectId: string): Promise<LV[]> => {
   const { data } = await api.get(`/lv/projects/${projectId}/lv`);
@@ -36,16 +36,6 @@ export const updatePosition = async (
 export const exportLV = async (lvId: string, format = "xlsx"): Promise<Blob> => {
   const { data } = await api.post(`/lv/${lvId}/export?format=${format}`, null, {
     responseType: "blob",
-  });
-  return data;
-};
-
-export const updateONormSelection = async (
-  lvId: string,
-  onormDokumentIds: string[]
-): Promise<ONormSelectionItem[]> => {
-  const { data } = await api.put(`/lv/${lvId}/onorm-selection`, {
-    onorm_dokument_ids: onormDokumentIds,
   });
   return data;
 };

@@ -31,7 +31,7 @@
  * 4. API calls bypass the service worker entirely.
  */
 
-const CACHE_NAME = "baulv-v4";
+const CACHE_NAME = "baulv-v5";
 const STATIC_ASSETS = [
   "/manifest.json",
   "/icons/icon-192.png",

@@ -13,7 +13,6 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { ProjectDetailPage } from "./pages/ProjectDetailPage";
 import { PlanAnalysisPage } from "./pages/PlanAnalysisPage";
 import { LVEditorPage } from "./pages/LVEditorPage";
-import { ONormManagementPage } from "./pages/ONormManagementPage";
 import { ProfilePage } from "./pages/ProfilePage";
 import { SubscriptionPage } from "./pages/SubscriptionPage";
 import { ImpressumPage } from "./pages/ImpressumPage";
@@ -29,7 +28,6 @@ function AuthenticatedApp() {
           <Route path="/projects/:id" element={<ProjectDetailPage />} />
           <Route path="/projects/:id/plans" element={<PlanAnalysisPage />} />
           <Route path="/projects/:id/lv/:lvId?" element={<LVEditorPage />} />
-          <Route path="/settings/onorm" element={<ONormManagementPage />} />
           <Route path="/profile" element={<ProfilePage />} />
           <Route path="/subscription" element={<SubscriptionPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />

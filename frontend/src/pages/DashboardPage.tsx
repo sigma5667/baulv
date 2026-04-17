@@ -7,7 +7,6 @@ import {
   Clock,
   MapPin,
   ChevronRight,
-  BookOpen,
   LayoutDashboard,
   FileText,
 } from "lucide-react";
@@ -94,18 +93,6 @@ export function DashboardPage() {
             <p className="text-xs text-muted-foreground">Projekt anlegen</p>
           </div>
         </button>
-        <Link
-          to="/app/settings/onorm"
-          className="flex items-center gap-3 rounded-lg border bg-card p-4 text-left transition-colors hover:border-primary/30 hover:shadow-sm"
-        >
-          <div className="rounded-lg bg-orange-100 p-2">
-            <BookOpen className="h-5 w-5 text-orange-600" />
-          </div>
-          <div>
-            <p className="font-medium">ÖNORM-Bibliothek</p>
-            <p className="text-xs text-muted-foreground">Normen verwalten</p>
-          </div>
-        </Link>
         {recentProjects.length > 0 && (
           <Link
             to={`/app/projects/${recentProjects[0].id}`}

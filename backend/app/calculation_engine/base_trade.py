@@ -93,7 +93,7 @@ class TradeCalculator(ABC):
                     opening=f"{opening.opening_type} {opening.width_m}×{opening.height_m} ({opening.count}×)",
                     area=float(area),
                     deducted=False,
-                    reason=f"< {min_area} m² (ÖNORM Mindestfläche)",
+                    reason=f"< {min_area} m² (Mindestfläche für Abzug)",
                 ))
 
         return total, details

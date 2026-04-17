@@ -50,7 +50,6 @@ def require_feature(feature: str):
 
 def get_feature_matrix(plan: str) -> dict[str, bool]:
     return {
-        "onorm_library": True,
         "manual_lv_editor": True,
         "pdf_export": True,
         "ai_plan_analysis": has_feature(plan, "ai_plan_analysis"),

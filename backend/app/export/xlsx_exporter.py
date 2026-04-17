@@ -69,12 +69,9 @@ def _create_summary_sheet(ws, lv: Leistungsverzeichnis):
     ws["A4"] = "Gewerk:"
     ws["A4"].font = label_font
     ws["B4"] = lv.trade
-    ws["A5"] = "ÖNORM:"
+    ws["A5"] = "Status:"
     ws["A5"].font = label_font
-    ws["B5"] = lv.onorm_basis or ""
-    ws["A6"] = "Status:"
-    ws["A6"].font = label_font
-    ws["B6"] = lv.status
+    ws["B5"] = lv.status
 
     # Group summaries
     row = 8
@@ -156,7 +153,7 @@ def _create_calculation_sheet(ws, lv: Leistungsverzeichnis):
 
     headers = [
         "Pos.-Nr.", "Raum", "Beschreibung", "Formel",
-        "Rohmaß", "Faktor", "ÖNORM §", "Abzüge", "Netto", "Einheit"
+        "Rohmaß", "Faktor", "Regel", "Abzüge", "Netto", "Einheit"
     ]
     for col, header in enumerate(headers, 1):
         cell = ws.cell(row=1, column=col, value=header)

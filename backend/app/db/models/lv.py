@@ -5,7 +5,6 @@ from sqlalchemy import String, Text, Numeric, Integer, Boolean, ForeignKey, Date
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
-from app.db.models.onorm import lv_onorm_selection, ONormDokument
 
 
 class Leistungsverzeichnis(Base):
@@ -16,14 +15,12 @@ class Leistungsverzeichnis(Base):
     name: Mapped[str] = mapped_column(String(255))
     trade: Mapped[str] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(50), default="draft")
-    onorm_basis: Mapped[str | None] = mapped_column(String(100))
     vorbemerkungen: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
 
     project: Mapped["Project"] = relationship(back_populates="leistungsverzeichnisse")
     gruppen: Mapped[list["Leistungsgruppe"]] = relationship(back_populates="lv", cascade="all, delete-orphan")
-    selected_onorms: Mapped[list["ONormDokument"]] = relationship(secondary=lv_onorm_selection)
 
 
 class Leistungsgruppe(Base):
