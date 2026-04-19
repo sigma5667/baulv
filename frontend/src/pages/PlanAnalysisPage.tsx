@@ -589,12 +589,39 @@ function PlanRow({
       failed: <AlertCircle className="h-4 w-4 text-destructive" />,
     }[plan.analysis_status] ?? <FileText className="h-4 w-4" />;
 
+  // Before analysis, the status label should reflect the user's real
+  // capability. Basis users can't trigger analysis — the action button
+  // is already replaced by the upgrade pill — so "Bereit zur Analyse"
+  // is misleading (implies one click is missing when an upgrade is).
+  const pendingLabel = canAnalyze
+    ? "Bereit zur Analyse"
+    : "Analyse im Pro-Plan verfügbar";
+
   const statusLabel: Record<string, string> = {
-    pending: "Bereit zur Analyse",
+    pending: pendingLabel,
     processing: "Analyse läuft",
     completed: "Analysiert",
     failed: "Analyse fehlgeschlagen",
   };
+
+  // Page count is populated as a side-effect of analysis, so for basis
+  // users the "? Seiten" placeholder never fills in — hide it. Pro
+  // users see "? Seiten" as a hint that analysis will populate it.
+  const pageCountText =
+    plan.page_count != null
+      ? `${plan.page_count} Seiten`
+      : canAnalyze
+        ? "? Seiten"
+        : null;
+
+  // Color the pending label so plan-gating is visible at a glance:
+  // amber for basis (blocked), primary for pro (actionable).
+  const pendingClass =
+    plan.analysis_status === "pending"
+      ? canAnalyze
+        ? "text-primary"
+        : "text-amber-700"
+      : "";
 
   return (
     <div className="rounded-lg border bg-card">
@@ -604,8 +631,12 @@ function PlanRow({
           <div>
             <p className="text-sm font-medium">{plan.filename}</p>
             <p className="text-xs text-muted-foreground">
-              {plan.plan_type ?? "Plan"} · {plan.page_count ?? "?"} Seiten ·{" "}
-              {statusLabel[plan.analysis_status] ?? plan.analysis_status}
+              {plan.plan_type ?? "Plan"}
+              {pageCountText ? ` · ${pageCountText}` : ""}
+              {" · "}
+              <span className={pendingClass}>
+                {statusLabel[plan.analysis_status] ?? plan.analysis_status}
+              </span>
             </p>
           </div>
         </div>
