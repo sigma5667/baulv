@@ -131,6 +131,13 @@ async def analyze_plan(plan_id: UUID, db: AsyncSession) -> dict:
 
         logger.info("Analyzing %d pages for plan %s", len(images), plan_id)
 
+        # Late import for the rate-limit exception type. We've already
+        # confirmed the API key is set, so paying for the anthropic
+        # import now is fine; doing it here (rather than at module
+        # top) keeps cold imports cheap when plan analysis isn't
+        # exercised.
+        import anthropic
+
         # Step 2: Claude Vision extraction per page. Runs sequentially
         # because concurrent Claude Vision calls don't buy much for
         # typical plan sizes and would multiply quota spikes.
@@ -146,6 +153,20 @@ async def analyze_plan(plan_id: UUID, db: AsyncSession) -> dict:
             except asyncio.TimeoutError:
                 logger.warning("Claude Vision timeout on page %d of plan %s", i, plan_id)
                 page_errors.append(f"Seite {i}: Zeitüberschreitung bei der KI-Analyse")
+            except anthropic.RateLimitError:
+                # Rate limits are account-level; hitting one on page N
+                # means page N+1 will hit it too. Abort with a specific
+                # message instead of letting every remaining page fail
+                # through the generic handler.
+                logger.warning(
+                    "Anthropic rate limit on page %d of plan %s — aborting",
+                    i,
+                    plan_id,
+                )
+                raise PlanAnalysisError(
+                    "Zu viele Anfragen an die KI. Bitte warten Sie einen "
+                    "Moment und versuchen Sie es erneut."
+                )
             except Exception as e:  # noqa: BLE001
                 logger.exception(
                     "Claude Vision call failed for page %d of plan %s: %s",

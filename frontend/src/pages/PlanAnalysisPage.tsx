@@ -13,9 +13,15 @@ import {
   Clock,
   Lock,
   Info,
+  Plus,
 } from "lucide-react";
 import { fetchPlans, uploadPlan, analyzePlan } from "../api/plans";
-import { fetchProjectRooms, updateRoom, deleteRoom } from "../api/rooms";
+import {
+  fetchProjectRooms,
+  updateRoom,
+  deleteRoom,
+  createRoom,
+} from "../api/rooms";
 import { useAuth } from "../hooks/useAuth";
 import {
   normalizeError,
@@ -702,90 +708,461 @@ function PlanRow({
 // Room table
 // ---------------------------------------------------------------------------
 
+// Parse a user-entered numeric field. Empty string maps to null (= "unset"
+// on the backend, distinct from 0), localized decimal commas are accepted
+// so "10,5" works for Austrian/German users.
+function parseDecimal(s: string): number | null {
+  if (s.trim() === "") return null;
+  const n = parseFloat(s.replace(",", "."));
+  return Number.isFinite(n) ? n : null;
+}
+
 function RoomTable({ rooms, projectId }: { rooms: Room[]; projectId: string }) {
   const queryClient = useQueryClient();
-  const [_editingId, setEditingId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [showAddForm, setShowAddForm] = useState(false);
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const _updateMutation = useMutation({
+  const invalidate = () =>
+    queryClient.invalidateQueries({ queryKey: ["rooms", projectId] });
+
+  const updateMutation = useMutation({
     mutationFn: ({ id, updates }: { id: string; updates: Partial<Room> }) =>
       updateRoom(id, updates),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["rooms", projectId] });
       setEditingId(null);
+      invalidate();
     },
   });
 
   const deleteMutation = useMutation({
     mutationFn: deleteRoom,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["rooms", projectId] }),
+    onSuccess: invalidate,
   });
 
+  const createMutation = useMutation({
+    mutationFn: ({ unitId, data }: { unitId: string; data: Partial<Room> & { name: string } }) =>
+      createRoom(unitId, data),
+    onSuccess: () => {
+      setShowAddForm(false);
+      invalidate();
+    },
+  });
+
+  // Manual-add targets an existing Unit. We derive the candidate unit
+  // from rooms the pipeline already created — we don't have a Unit API
+  // on the frontend yet, and the AI pipeline auto-creates Building/
+  // Floor/Unit from the first page of output. If there are zero rooms,
+  // there is no unit to attach to and the Add button is disabled.
+  const firstUnitId = rooms[0]?.unit_id ?? null;
+
+  const createError = createMutation.error
+    ? normalizeError(createMutation.error)
+    : null;
+  const updateError = updateMutation.error
+    ? normalizeError(updateMutation.error)
+    : null;
+
   return (
-    <div className="overflow-x-auto rounded-lg border">
-      <table className="w-full text-sm">
-        <thead className="bg-muted/50">
-          <tr>
-            <th className="px-4 py-2 text-left font-medium">Raum</th>
-            <th className="px-4 py-2 text-left font-medium">Typ</th>
-            <th className="px-4 py-2 text-right font-medium">Fläche m²</th>
-            <th className="px-4 py-2 text-right font-medium">Umfang m</th>
-            <th className="px-4 py-2 text-right font-medium">RH m</th>
-            <th className="px-4 py-2 text-left font-medium">Boden</th>
-            <th className="px-4 py-2 text-center font-medium">Nassraum</th>
-            <th className="px-4 py-2 text-center font-medium">Quelle</th>
-            <th className="px-4 py-2 text-right font-medium">Konfidenz</th>
-            <th className="px-4 py-2"></th>
-          </tr>
-        </thead>
-        <tbody className="divide-y">
-          {rooms.map((room) => (
-            <tr key={room.id} className="hover:bg-muted/30">
-              <td className="px-4 py-2 font-medium">{room.name}</td>
-              <td className="px-4 py-2 text-muted-foreground">{room.room_type ?? "-"}</td>
-              <td className="px-4 py-2 text-right font-mono">
-                {room.area_m2?.toFixed(2) ?? "-"}
-              </td>
-              <td className="px-4 py-2 text-right font-mono">
-                {room.perimeter_m?.toFixed(2) ?? "-"}
-              </td>
-              <td className="px-4 py-2 text-right font-mono">
-                {room.height_m?.toFixed(2) ?? "-"}
-              </td>
-              <td className="px-4 py-2 text-muted-foreground">{room.floor_type ?? "-"}</td>
-              <td className="px-4 py-2 text-center">
-                {room.is_wet_room ? (
-                  <span className="text-blue-600">Ja</span>
-                ) : (
-                  <span className="text-muted-foreground">-</span>
-                )}
-              </td>
-              <td className="px-4 py-2 text-center">
-                <span
-                  className={`rounded-full px-2 py-0.5 text-xs ${
-                    room.source === "ai"
-                      ? "bg-purple-100 text-purple-700"
-                      : "bg-gray-100 text-gray-700"
-                  }`}
-                >
-                  {room.source === "ai" ? "AI" : "Manuell"}
-                </span>
-              </td>
-              <td className="px-4 py-2 text-right font-mono text-xs">
-                {room.ai_confidence ? `${(room.ai_confidence * 100).toFixed(0)}%` : "-"}
-              </td>
-              <td className="px-4 py-2 text-right">
-                <button
-                  onClick={() => deleteMutation.mutate(room.id)}
-                  className="text-xs text-destructive hover:underline"
-                >
-                  Löschen
-                </button>
-              </td>
+    <div>
+      <div className="mb-3 flex items-center justify-end">
+        <button
+          type="button"
+          onClick={() => setShowAddForm((v) => !v)}
+          disabled={!firstUnitId}
+          title={
+            !firstUnitId
+              ? "Zuerst eine KI-Analyse durchführen, damit eine Einheit existiert, zu der Räume hinzugefügt werden können."
+              : undefined
+          }
+          className="flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/5 px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <Plus className="h-3 w-3" />
+          Raum hinzufügen
+        </button>
+      </div>
+
+      {showAddForm && firstUnitId && (
+        <RoomAddForm
+          onSubmit={(data) =>
+            createMutation.mutate({ unitId: firstUnitId, data })
+          }
+          onCancel={() => setShowAddForm(false)}
+          isPending={createMutation.isPending}
+          error={createError}
+        />
+      )}
+
+      {updateError && editingId === null && (
+        <div
+          role="alert"
+          className="mb-3 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-2.5 text-xs text-destructive"
+        >
+          <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <p className="flex-1">Speichern fehlgeschlagen: {updateError.message}</p>
+        </div>
+      )}
+
+      <div className="overflow-x-auto rounded-lg border">
+        <table className="w-full text-sm">
+          <thead className="bg-muted/50">
+            <tr>
+              <th className="px-4 py-2 text-left font-medium">Raum</th>
+              <th className="px-4 py-2 text-left font-medium">Typ</th>
+              <th className="px-4 py-2 text-right font-medium">Fläche m²</th>
+              <th className="px-4 py-2 text-right font-medium">Umfang m</th>
+              <th className="px-4 py-2 text-right font-medium">RH m</th>
+              <th className="px-4 py-2 text-left font-medium">Boden</th>
+              <th className="px-4 py-2 text-center font-medium">Nassraum</th>
+              <th className="px-4 py-2 text-center font-medium">Quelle</th>
+              <th className="px-4 py-2 text-right font-medium">Konfidenz</th>
+              <th className="px-4 py-2"></th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody className="divide-y">
+            {rooms.map((room) =>
+              editingId === room.id ? (
+                <RoomEditRow
+                  key={room.id}
+                  room={room}
+                  onSave={(updates) =>
+                    updateMutation.mutate({ id: room.id, updates })
+                  }
+                  onCancel={() => {
+                    updateMutation.reset();
+                    setEditingId(null);
+                  }}
+                  isPending={updateMutation.isPending}
+                  error={updateError}
+                />
+              ) : (
+                <tr key={room.id} className="hover:bg-muted/30">
+                  <td className="px-4 py-2 font-medium">{room.name}</td>
+                  <td className="px-4 py-2 text-muted-foreground">
+                    {room.room_type ?? "-"}
+                  </td>
+                  <td className="px-4 py-2 text-right font-mono">
+                    {room.area_m2?.toFixed(2) ?? "-"}
+                  </td>
+                  <td className="px-4 py-2 text-right font-mono">
+                    {room.perimeter_m?.toFixed(2) ?? "-"}
+                  </td>
+                  <td className="px-4 py-2 text-right font-mono">
+                    {room.height_m?.toFixed(2) ?? "-"}
+                  </td>
+                  <td className="px-4 py-2 text-muted-foreground">
+                    {room.floor_type ?? "-"}
+                  </td>
+                  <td className="px-4 py-2 text-center">
+                    {room.is_wet_room ? (
+                      <span className="text-blue-600">Ja</span>
+                    ) : (
+                      <span className="text-muted-foreground">-</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2 text-center">
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-xs ${
+                        room.source === "ai"
+                          ? "bg-purple-100 text-purple-700"
+                          : "bg-gray-100 text-gray-700"
+                      }`}
+                    >
+                      {room.source === "ai" ? "AI" : "Manuell"}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2 text-right font-mono text-xs">
+                    {room.ai_confidence
+                      ? `${(room.ai_confidence * 100).toFixed(0)}%`
+                      : "-"}
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-2 text-right">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        updateMutation.reset();
+                        setEditingId(room.id);
+                      }}
+                      className="mr-3 text-xs text-primary hover:underline"
+                    >
+                      Bearbeiten
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (
+                          confirm(
+                            `Raum "${room.name}" wirklich löschen?`
+                          )
+                        ) {
+                          deleteMutation.mutate(room.id);
+                        }
+                      }}
+                      className="text-xs text-destructive hover:underline"
+                    >
+                      Löschen
+                    </button>
+                  </td>
+                </tr>
+              )
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Room edit / add
+// ---------------------------------------------------------------------------
+
+/**
+ * Inline edit row. Holds a local draft so typing doesn't churn the
+ * query cache, and only the fields we want to expose for correction
+ * (name, type, area, perimeter, height, floor_type, wet-room) are
+ * editable. Openings are out of scope for this form — a dedicated
+ * openings editor is future work.
+ */
+function RoomEditRow({
+  room,
+  onSave,
+  onCancel,
+  isPending,
+  error,
+}: {
+  room: Room;
+  onSave: (updates: Partial<Room>) => void;
+  onCancel: () => void;
+  isPending: boolean;
+  error: NormalizedError | null;
+}) {
+  const [draft, setDraft] = useState({
+    name: room.name,
+    room_type: room.room_type ?? "",
+    area_m2: room.area_m2?.toString() ?? "",
+    perimeter_m: room.perimeter_m?.toString() ?? "",
+    height_m: room.height_m?.toString() ?? "",
+    floor_type: room.floor_type ?? "",
+    is_wet_room: room.is_wet_room,
+  });
+
+  const trimmedName = draft.name.trim();
+
+  const handleSave = () => {
+    if (!trimmedName) return;
+    onSave({
+      name: trimmedName,
+      room_type: draft.room_type.trim() || null,
+      area_m2: parseDecimal(draft.area_m2),
+      perimeter_m: parseDecimal(draft.perimeter_m),
+      height_m: parseDecimal(draft.height_m),
+      floor_type: draft.floor_type.trim() || null,
+      is_wet_room: draft.is_wet_room,
+    });
+  };
+
+  return (
+    <>
+      <tr className="bg-primary/5">
+        <td className="px-2 py-2">
+          <input
+            type="text"
+            value={draft.name}
+            onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+            className="w-full rounded border bg-background px-2 py-1 text-sm"
+            aria-label="Raum-Name"
+          />
+        </td>
+        <td className="px-2 py-2">
+          <input
+            type="text"
+            value={draft.room_type}
+            onChange={(e) => setDraft({ ...draft, room_type: e.target.value })}
+            className="w-full rounded border bg-background px-2 py-1 text-sm"
+            aria-label="Raum-Typ"
+          />
+        </td>
+        <td className="px-2 py-2">
+          <input
+            type="text"
+            inputMode="decimal"
+            value={draft.area_m2}
+            onChange={(e) => setDraft({ ...draft, area_m2: e.target.value })}
+            className="w-24 rounded border bg-background px-2 py-1 text-right font-mono text-sm"
+            aria-label="Fläche in m²"
+          />
+        </td>
+        <td className="px-2 py-2">
+          <input
+            type="text"
+            inputMode="decimal"
+            value={draft.perimeter_m}
+            onChange={(e) =>
+              setDraft({ ...draft, perimeter_m: e.target.value })
+            }
+            className="w-24 rounded border bg-background px-2 py-1 text-right font-mono text-sm"
+            aria-label="Umfang in m"
+          />
+        </td>
+        <td className="px-2 py-2">
+          <input
+            type="text"
+            inputMode="decimal"
+            value={draft.height_m}
+            onChange={(e) => setDraft({ ...draft, height_m: e.target.value })}
+            className="w-20 rounded border bg-background px-2 py-1 text-right font-mono text-sm"
+            aria-label="Raumhöhe in m"
+          />
+        </td>
+        <td className="px-2 py-2">
+          <input
+            type="text"
+            value={draft.floor_type}
+            onChange={(e) =>
+              setDraft({ ...draft, floor_type: e.target.value })
+            }
+            className="w-full rounded border bg-background px-2 py-1 text-sm"
+            aria-label="Bodentyp"
+          />
+        </td>
+        <td className="px-2 py-2 text-center">
+          <input
+            type="checkbox"
+            checked={draft.is_wet_room}
+            onChange={(e) =>
+              setDraft({ ...draft, is_wet_room: e.target.checked })
+            }
+            aria-label="Nassraum"
+          />
+        </td>
+        <td className="px-2 py-2 text-center text-xs text-muted-foreground">
+          —
+        </td>
+        <td className="px-2 py-2 text-right text-xs text-muted-foreground">
+          —
+        </td>
+        <td className="whitespace-nowrap px-2 py-2 text-right">
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={isPending || !trimmedName}
+            className="mr-3 text-xs text-primary hover:underline disabled:opacity-50"
+          >
+            {isPending ? "Speichert…" : "Speichern"}
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={isPending}
+            className="text-xs text-muted-foreground hover:underline"
+          >
+            Abbrechen
+          </button>
+        </td>
+      </tr>
+      {error && (
+        <tr className="bg-destructive/5">
+          <td colSpan={10} className="px-4 py-2 text-xs text-destructive">
+            Speichern fehlgeschlagen: {error.message}
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+/**
+ * Inline "add room" form shown above the table. Only `name` is required
+ * by the backend; optional numeric fields (area, height) are offered
+ * up-front because they're the two values a user adding a missing
+ * room is most likely to have from the plan.
+ */
+function RoomAddForm({
+  onSubmit,
+  onCancel,
+  isPending,
+  error,
+}: {
+  onSubmit: (data: Partial<Room> & { name: string }) => void;
+  onCancel: () => void;
+  isPending: boolean;
+  error: NormalizedError | null;
+}) {
+  const [name, setName] = useState("");
+  const [area, setArea] = useState("");
+  const [height, setHeight] = useState("");
+
+  const trimmedName = name.trim();
+
+  const handleSubmit = () => {
+    if (!trimmedName) return;
+    onSubmit({
+      name: trimmedName,
+      area_m2: parseDecimal(area),
+      height_m: parseDecimal(height),
+    });
+  };
+
+  return (
+    <div className="mb-3 rounded-lg border border-primary/30 bg-primary/5 p-3">
+      <p className="mb-2 text-xs font-medium text-primary">
+        Neuen Raum hinzufügen
+      </p>
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="min-w-[140px] flex-1">
+          <span className="block text-xs text-muted-foreground">Name *</span>
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="z.B. Wohnzimmer"
+            className="w-full rounded border bg-background px-2 py-1 text-sm"
+          />
+        </label>
+        <label className="w-28">
+          <span className="block text-xs text-muted-foreground">
+            Fläche m²
+          </span>
+          <input
+            type="text"
+            inputMode="decimal"
+            value={area}
+            onChange={(e) => setArea(e.target.value)}
+            className="w-full rounded border bg-background px-2 py-1 text-right font-mono text-sm"
+          />
+        </label>
+        <label className="w-24">
+          <span className="block text-xs text-muted-foreground">RH m</span>
+          <input
+            type="text"
+            inputMode="decimal"
+            value={height}
+            onChange={(e) => setHeight(e.target.value)}
+            className="w-full rounded border bg-background px-2 py-1 text-right font-mono text-sm"
+          />
+        </label>
+        <button
+          type="button"
+          onClick={handleSubmit}
+          disabled={isPending || !trimmedName}
+          className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+        >
+          {isPending ? "Speichert…" : "Speichern"}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={isPending}
+          className="rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
+        >
+          Abbrechen
+        </button>
+      </div>
+      {error && (
+        <p className="mt-2 text-xs text-destructive">
+          Anlegen fehlgeschlagen: {error.message}
+        </p>
+      )}
     </div>
   );
 }

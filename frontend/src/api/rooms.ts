@@ -14,3 +14,13 @@ export const updateRoom = async (roomId: string, updates: Partial<Room>): Promis
 export const deleteRoom = async (roomId: string): Promise<void> => {
   await api.delete(`/rooms/${roomId}`);
 };
+
+// `name` is the only required field on RoomCreate (backend schema);
+// all other fields are optional and default sensibly.
+export const createRoom = async (
+  unitId: string,
+  data: Partial<Room> & { name: string }
+): Promise<Room> => {
+  const { data: res } = await api.post(`/units/${unitId}/rooms`, data);
+  return res;
+};
