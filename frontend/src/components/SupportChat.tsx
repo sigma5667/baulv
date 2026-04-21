@@ -129,13 +129,14 @@ export function SupportChat() {
   return (
     <>
       {/* Launcher button — hidden while the panel is open so it
-          doesn't clutter the viewport. */}
+          doesn't clutter the viewport. Uses z-[60] so it always sits
+          above the PWA install prompt (z-50) and any other overlay. */}
       {!open && (
         <button
           type="button"
           aria-label="Support-Chat öffnen"
           onClick={() => setOpen(true)}
-          className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-xl transition-transform hover:scale-110 focus:outline-none focus:ring-4 focus:ring-primary/30 animate-pulse-slow"
+          className="fixed bottom-6 right-6 z-[60] flex h-14 w-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-xl transition-transform hover:scale-110 focus:outline-none focus:ring-4 focus:ring-primary/30 animate-pulse-slow"
         >
           <MessageCircle className="h-6 w-6" />
         </button>
@@ -144,7 +145,7 @@ export function SupportChat() {
       {/* Panel */}
       {open && (
         <div
-          className="fixed bottom-6 right-6 z-40 flex w-[calc(100vw-3rem)] max-w-[400px] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
+          className="fixed bottom-6 right-6 z-[60] flex w-[calc(100vw-3rem)] max-w-[400px] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
           style={{ height: "min(600px, calc(100vh - 3rem))" }}
           role="dialog"
           aria-label="BauLV Support-Chat"

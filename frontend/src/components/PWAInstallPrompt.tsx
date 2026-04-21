@@ -30,9 +30,12 @@ export function PWAInstallPrompt() {
     }
   };
 
+  // Pinned to the bottom-LEFT so it doesn't collide with the support
+  // chat launcher (bottom-right). z-50 keeps it above normal content
+  // but below the chat (z-[60]) if anything ever overlaps.
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex items-center gap-3 rounded-lg border bg-white px-4 py-3 shadow-lg">
-      <Download className="h-5 w-5 text-primary" />
+    <div className="fixed bottom-4 left-4 z-50 flex max-w-[calc(100vw-2rem)] items-center gap-3 rounded-lg border bg-white px-4 py-3 shadow-lg">
+      <Download className="h-5 w-5 shrink-0 text-primary" />
       <div className="text-sm">
         <p className="font-medium">BauLV als App installieren</p>
         <p className="text-muted-foreground">
