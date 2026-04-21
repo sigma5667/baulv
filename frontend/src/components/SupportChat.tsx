@@ -21,7 +21,7 @@ const GREETING: SupportMessage = {
     "Hallo! Ich bin der BauLV-Assistent. Wie kann ich Ihnen bei Fragen zum Produkt helfen?",
 };
 const FALLBACK_REPLY =
-  "Der Chat ist momentan nicht verfügbar. Bitte schreiben Sie uns an [EMAIL_PLATZHALTER].";
+  "Der Chat ist momentan nicht verfügbar. Bitte versuchen Sie es später erneut.";
 
 function loadHistory(): SupportMessage[] {
   try {

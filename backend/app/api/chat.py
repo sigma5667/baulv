@@ -13,7 +13,11 @@ from app.schemas.chat import (
     ChatSessionCreate, ChatSessionResponse,
     ChatMessageCreate, ChatMessageResponse,
 )
-from app.chat.assistant import chat_with_assistant, ChatConfigurationError
+from app.chat.assistant import (
+    chat_with_assistant,
+    ChatConfigurationError,
+    ChatAnthropicError,
+)
 from app.auth import get_current_user
 from app.api.ownership import verify_project_owner, verify_chat_session_owner
 from app.subscriptions import require_feature
@@ -138,6 +142,14 @@ async def send_message(
         # Surfaced plain-German to the frontend so the UI can display
         # it verbatim — this is the signal "set ANTHROPIC_API_KEY".
         raise HTTPException(503, str(e))
+    except ChatAnthropicError:
+        # The assistant already logged the SDK exception class and
+        # message to Railway. User-facing message stays generic.
+        raise HTTPException(
+            503,
+            "Der KI-Berater ist derzeit nicht erreichbar. Bitte versuchen "
+            "Sie es in ein paar Minuten erneut.",
+        )
     except HTTPException:
         raise
     except Exception as e:  # noqa: BLE001

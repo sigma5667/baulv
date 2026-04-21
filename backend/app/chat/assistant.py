@@ -12,10 +12,14 @@ Implementation notes:
   - The system prompt is cached ephemerally so repeated turns in a
     long session re-use the cached prefix (~90 % cheaper after the
     first request).
-  - Failures are reported in plain German so the UI can render them
-    verbatim — no raw tracebacks leak to the user.
+  - Failures are reported with a clear German message the UI can show
+    verbatim. The ROOT CAUSE is always in Railway logs — we log the
+    exact Anthropic SDK exception class, status code, and message so
+    an operator can distinguish a bad API key from a bad model ID.
 """
 
+import logging
+import time
 from pathlib import Path
 from uuid import UUID
 
@@ -27,10 +31,18 @@ from app.config import settings
 from app.db.models.project import Project, Building, Floor, Unit
 from app.db.models.chat import ChatSession, ChatMessage
 
+logger = logging.getLogger(__name__)
+
 
 SYSTEM_PROMPT = (
     Path(__file__).parent / "prompts" / "construction_assistant.txt"
 ).read_text(encoding="utf-8")
+
+
+# Model used for the in-app advisor. Kept at module scope so every
+# log line shows which model we attempted — a 404 here is a diagnostic
+# jackpot.
+ADVISOR_MODEL = "claude-sonnet-4-5"
 
 
 # Sentinel so callers can recognize configuration failures versus
@@ -40,13 +52,23 @@ class ChatConfigurationError(RuntimeError):
     pass
 
 
+class ChatAnthropicError(RuntimeError):
+    """Raised when the Anthropic SDK returns an error we want the API
+    layer to surface as a 502/503 with a clean German message. The
+    root-cause string is available on ``self.args[0]`` for logging;
+    we keep the user-facing message generic."""
+
+
 async def chat_with_assistant(
     session_id: UUID,
     user_message: str,
     db: AsyncSession,
 ) -> str:
     """Process a chat message and return the assistant's reply."""
-    if not settings.anthropic_api_key:
+    if not (settings.anthropic_api_key or "").strip():
+        logger.error(
+            "chat_with_assistant.no_api_key — ANTHROPIC_API_KEY is not set"
+        )
         raise ChatConfigurationError(
             "Der KI-Berater ist auf diesem Server nicht konfiguriert "
             "(ANTHROPIC_API_KEY fehlt). Bitte kontaktieren Sie den "
@@ -95,18 +117,66 @@ async def chat_with_assistant(
             {"type": "text", "text": f"\n\n--- Projektkontext ---\n{context}"}
         )
 
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
-    response = await client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=2000,
-        system=system_blocks,
-        messages=claude_messages,
+    logger.info(
+        "chat_with_assistant.calling_claude session=%s model=%s msgs=%d "
+        "system_chars=%d has_project_context=%s",
+        session_id,
+        ADVISOR_MODEL,
+        len(claude_messages),
+        len(SYSTEM_PROMPT),
+        bool(context),
     )
+
+    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    try:
+        started = time.time()
+        response = await client.messages.create(
+            model=ADVISOR_MODEL,
+            max_tokens=2000,
+            system=system_blocks,
+            messages=claude_messages,
+        )
+        elapsed_ms = int((time.time() - started) * 1000)
+
+        usage = getattr(response, "usage", None)
+        logger.info(
+            "chat_with_assistant.claude_ok session=%s stop_reason=%s "
+            "elapsed_ms=%d input_tokens=%s output_tokens=%s "
+            "cache_read=%s cache_write=%s",
+            session_id,
+            getattr(response, "stop_reason", None),
+            elapsed_ms,
+            getattr(usage, "input_tokens", None),
+            getattr(usage, "output_tokens", None),
+            getattr(usage, "cache_read_input_tokens", None),
+            getattr(usage, "cache_creation_input_tokens", None),
+        )
+    except Exception as e:  # noqa: BLE001 — log then re-raise as typed
+        err_class = type(e).__name__
+        status_code = getattr(e, "status_code", None)
+        body = getattr(e, "body", None)
+        message = getattr(e, "message", None) or str(e)
+        logger.error(
+            "chat_with_assistant.anthropic_error session=%s class=%s "
+            "status=%s message=%s body=%r",
+            session_id,
+            err_class,
+            status_code,
+            message,
+            body,
+        )
+        raise ChatAnthropicError(f"{err_class}: {message}") from e
+
     assistant_text = response.content[0].text if response.content else ""
     if not assistant_text.strip():
         # Extremely rare, but we want deterministic behavior: persist a
         # placeholder so the message list stays coherent, and surface a
         # clear German hint to the user.
+        logger.warning(
+            "chat_with_assistant.empty_reply session=%s stop_reason=%s",
+            session_id,
+            getattr(response, "stop_reason", None),
+        )
         assistant_text = (
             "Entschuldigung, darauf kann ich gerade keine sinnvolle Antwort "
             "geben. Bitte formulieren Sie die Frage anders."

@@ -1,3 +1,4 @@
+import os
 import subprocess
 import logging
 from pathlib import Path
@@ -11,6 +12,19 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from app.config import settings
 from app.api.router import api_router
+
+# Configure root logger once at import time so our ``app.*`` loggers
+# actually emit to stdout under gunicorn/uvicorn on Railway. Without
+# this the default threshold is WARNING and every `logger.info(...)`
+# diagnostic line we add is silently dropped. Gunicorn's own logs are
+# unaffected — they use their own logger hierarchy.
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+# Belt-and-suspenders: even if someone else configures the root logger
+# before we get here, force app.* to INFO so our diagnostics survive.
+logging.getLogger("app").setLevel(logging.INFO)
 
 logger = logging.getLogger(__name__)
 
