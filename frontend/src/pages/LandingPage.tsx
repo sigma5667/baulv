@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { BetaBanner } from "../components/BetaBanner";
 import { Footer } from "../components/layout/Footer";
+import { SupportChat } from "../components/SupportChat";
 
 const FEATURES = [
   {
@@ -347,6 +348,10 @@ export function LandingPage() {
 
       {/* Footer */}
       <Footer />
+
+      {/* Floating support-chat widget — public, rate-limited endpoint,
+          only mounted on the landing page (not inside the app shell). */}
+      <SupportChat />
     </div>
   );
 }

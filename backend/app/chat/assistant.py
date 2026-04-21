@@ -5,6 +5,15 @@ built-in rules are the only authoritative reference. The assistant
 answers questions in plain German construction language based on the
 user's project data and what it already knows about Austrian building
 practice from its training.
+
+Implementation notes:
+  - Async Anthropic client (the route handler is async; the sync
+    client would block the event loop).
+  - The system prompt is cached ephemerally so repeated turns in a
+    long session re-use the cached prefix (~90 % cheaper after the
+    first request).
+  - Failures are reported in plain German so the UI can render them
+    verbatim — no raw tracebacks leak to the user.
 """
 
 from pathlib import Path
@@ -24,12 +33,26 @@ SYSTEM_PROMPT = (
 ).read_text(encoding="utf-8")
 
 
+# Sentinel so callers can recognize configuration failures versus
+# transient Claude errors. Caught in the API layer and mapped to a
+# dedicated German error message.
+class ChatConfigurationError(RuntimeError):
+    pass
+
+
 async def chat_with_assistant(
     session_id: UUID,
     user_message: str,
     db: AsyncSession,
 ) -> str:
     """Process a chat message and return the assistant's reply."""
+    if not settings.anthropic_api_key:
+        raise ChatConfigurationError(
+            "Der KI-Berater ist auf diesem Server nicht konfiguriert "
+            "(ANTHROPIC_API_KEY fehlt). Bitte kontaktieren Sie den "
+            "Administrator."
+        )
+
     import anthropic
 
     session = await db.get(ChatSession, session_id)
@@ -56,18 +79,38 @@ async def chat_with_assistant(
 
     claude_messages = [{"role": m.role, "content": m.content} for m in messages]
 
-    system = SYSTEM_PROMPT
+    # Build the system prompt as a list so we can attach cache_control
+    # to the stable prefix. The project context is appended as a second
+    # block and NOT cached — it changes as rooms get added/edited, and
+    # caching a volatile block would invalidate the prefix every turn.
+    system_blocks: list[dict] = [
+        {
+            "type": "text",
+            "text": SYSTEM_PROMPT,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
     if context:
-        system += f"\n\n--- Projektkontext ---\n{context}"
+        system_blocks.append(
+            {"type": "text", "text": f"\n\n--- Projektkontext ---\n{context}"}
+        )
 
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=2048,
-        system=system,
+    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    response = await client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=2000,
+        system=system_blocks,
         messages=claude_messages,
     )
-    assistant_text = response.content[0].text
+    assistant_text = response.content[0].text if response.content else ""
+    if not assistant_text.strip():
+        # Extremely rare, but we want deterministic behavior: persist a
+        # placeholder so the message list stays coherent, and surface a
+        # clear German hint to the user.
+        assistant_text = (
+            "Entschuldigung, darauf kann ich gerade keine sinnvolle Antwort "
+            "geben. Bitte formulieren Sie die Frage anders."
+        )
 
     db.add(
         ChatMessage(

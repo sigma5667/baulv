@@ -41,6 +41,18 @@ const config: Config = {
         md: "calc(var(--radius) - 2px)",
         sm: "calc(var(--radius) - 4px)",
       },
+      keyframes: {
+        "pulse-slow": {
+          "0%, 100%": { boxShadow: "0 0 0 0 rgba(37, 99, 235, 0.4)" },
+          "50%": { boxShadow: "0 0 0 8px rgba(37, 99, 235, 0)" },
+        },
+      },
+      animation: {
+        // Subtle attention cue for the support-chat launcher. The
+        // shadow ring expands and fades, so the button feels alive
+        // without the aggressive opacity pulse of `animate-pulse`.
+        "pulse-slow": "pulse-slow 2.5s ease-in-out infinite",
+      },
     },
   },
   plugins: [],

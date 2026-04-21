@@ -15,6 +15,7 @@ import { PlanAnalysisPage } from "./pages/PlanAnalysisPage";
 import { LVEditorPage } from "./pages/LVEditorPage";
 import { ProfilePage } from "./pages/ProfilePage";
 import { SubscriptionPage } from "./pages/SubscriptionPage";
+import { ChatPage } from "./pages/ChatPage";
 import { ImpressumPage } from "./pages/ImpressumPage";
 import { DatenschutzPage } from "./pages/DatenschutzPage";
 import { AGBPage } from "./pages/AGBPage";
@@ -28,6 +29,7 @@ function AuthenticatedApp() {
           <Route path="/projects/:id" element={<ProjectDetailPage />} />
           <Route path="/projects/:id/plans" element={<PlanAnalysisPage />} />
           <Route path="/projects/:id/lv/:lvId?" element={<LVEditorPage />} />
+          <Route path="/chat" element={<ChatPage />} />
           <Route path="/profile" element={<ProfilePage />} />
           <Route path="/subscription" element={<SubscriptionPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />

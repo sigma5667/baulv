@@ -8,12 +8,14 @@ import {
   User,
   CreditCard,
   LogOut,
+  MessageSquare,
 } from "lucide-react";
 import { useAuth } from "../../hooks/useAuth";
 import { Footer } from "./Footer";
 
 const navItems = [
   { path: "/app", label: "Dashboard", icon: LayoutDashboard },
+  { path: "/app/chat", label: "KI-Berater", icon: MessageSquare },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {
