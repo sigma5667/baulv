@@ -11,6 +11,7 @@ import { RegisterPage } from "./pages/RegisterPage";
 import { PasswordResetPage } from "./pages/PasswordResetPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { ProjectDetailPage } from "./pages/ProjectDetailPage";
+import { StructurePage } from "./pages/StructurePage";
 import { PlanAnalysisPage } from "./pages/PlanAnalysisPage";
 import { LVEditorPage } from "./pages/LVEditorPage";
 import { ProfilePage } from "./pages/ProfilePage";
@@ -27,6 +28,7 @@ function AuthenticatedApp() {
         <Routes>
           <Route path="/" element={<DashboardPage />} />
           <Route path="/projects/:id" element={<ProjectDetailPage />} />
+          <Route path="/projects/:id/structure" element={<StructurePage />} />
           <Route path="/projects/:id/plans" element={<PlanAnalysisPage />} />
           <Route path="/projects/:id/lv/:lvId?" element={<LVEditorPage />} />
           <Route path="/chat" element={<ChatPage />} />

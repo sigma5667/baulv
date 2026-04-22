@@ -1,6 +1,7 @@
 import api from "./client";
 import type {
   BulkWallCalculationResult,
+  Opening,
   Room,
   WallCalculationResult,
 } from "../types/room";
@@ -27,6 +28,33 @@ export const createRoom = async (
 ): Promise<Room> => {
   const { data: res } = await api.post(`/units/${unitId}/rooms`, data);
   return res;
+};
+
+// --- Openings ----------------------------------------------------------------
+//
+// The backend's opening endpoints also recalculate the parent room's
+// wall-area cache on every mutation (see ``_recalculate_walls_and_persist``
+// in app/api/rooms.py). Callers don't need to also fire
+// ``calculateWalls`` — the server does it for us.
+
+export const createOpening = async (
+  roomId: string,
+  data: Omit<Opening, "id" | "room_id" | "source">
+): Promise<Opening> => {
+  const { data: res } = await api.post(`/rooms/${roomId}/openings`, data);
+  return res;
+};
+
+export const updateOpening = async (
+  openingId: string,
+  data: Partial<Omit<Opening, "id" | "room_id" | "source">>
+): Promise<Opening> => {
+  const { data: res } = await api.put(`/openings/${openingId}`, data);
+  return res;
+};
+
+export const deleteOpening = async (openingId: string): Promise<void> => {
+  await api.delete(`/openings/${openingId}`);
 };
 
 /**

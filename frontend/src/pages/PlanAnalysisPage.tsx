@@ -17,6 +17,7 @@ import {
   Ruler,
   AlertTriangle,
   Calculator,
+  Building2,
 } from "lucide-react";
 import { fetchPlans, uploadPlan, analyzePlan } from "../api/plans";
 import {
@@ -382,6 +383,34 @@ export function PlanAnalysisPage() {
                 }
               />
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Empty-state: no rooms yet. Points the user to the manual
+          structure editor as an alternative to the PDF-analysis path
+          — a tester without a Bauplan-PDF has no other way to get
+          rooms into the project. */}
+      {rooms.length === 0 && !analyzeMutation.isPending && (
+        <div className="mb-8 rounded-lg border border-dashed bg-muted/20 p-6">
+          <div className="flex flex-wrap items-start gap-3">
+            <div className="rounded-lg bg-blue-50 p-2.5">
+              <Building2 className="h-5 w-5 text-blue-600" />
+            </div>
+            <div className="flex-1">
+              <h3 className="font-medium">Noch keine Räume im Projekt</h3>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Laden Sie oben einen Bauplan als PDF hoch und starten Sie die
+                KI-Analyse, oder legen Sie die Gebäudestruktur manuell an.
+              </p>
+              <Link
+                to={`/app/projects/${projectId}/structure`}
+                className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-primary bg-card px-3 py-1.5 text-sm font-medium text-primary hover:bg-primary/5"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Gebäudestruktur manuell anlegen
+              </Link>
+            </div>
           </div>
         </div>
       )}

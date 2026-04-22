@@ -109,17 +109,27 @@ export function ProjectDetailPage() {
           </p>
         </Link>
 
-        {/* Rooms summary */}
-        <div className="rounded-lg border bg-card p-5">
+        {/* Structure (Gebäude → Stockwerk → Einheit → Raum) */}
+        <Link
+          to={`/app/projects/${id}/structure`}
+          className="group rounded-lg border bg-card p-5 transition-all hover:shadow-md hover:border-primary/30"
+        >
           <div className="flex items-center gap-3">
             <div className="rounded-lg bg-purple-50 p-2.5">
               <FileText className="h-5 w-5 text-purple-600" />
             </div>
             <div>
-              <h3 className="font-semibold">Gebäudestruktur</h3>
-              <p className="text-sm text-muted-foreground">{rooms.length} Räume</p>
+              <h3 className="font-semibold group-hover:text-primary">
+                Gebäudestruktur
+              </h3>
+              <p className="text-sm text-muted-foreground">
+                {rooms.length} Raum/Räume
+              </p>
             </div>
           </div>
+          <p className="mt-3 text-sm text-muted-foreground">
+            Gebäude, Stockwerke, Einheiten und Räume manuell anlegen
+          </p>
           {rooms.length > 0 && (
             <div className="mt-3 space-y-1">
               {rooms.slice(0, 5).map((room) => (
@@ -137,7 +147,7 @@ export function ProjectDetailPage() {
               )}
             </div>
           )}
-        </div>
+        </Link>
       </div>
     </div>
   );

@@ -32,13 +32,22 @@ const TRADES = [
   { value: "malerarbeiten", label: "Malerarbeiten" },
 ];
 
+// Stable marker so the banner component can detect "no rooms in
+// project" and render a link to the manual structure editor instead
+// of a dead-end text error. The user sees the message itself; only
+// the banner's branch uses the marker to decide whether to show the
+// link. Keep the German text in sync with the empty-state copy on
+// StructurePage and PlanAnalysisPage.
+const NO_ROOMS_ERROR =
+  "Bitte zuerst Plananalyse durchführen oder Gebäudestruktur manuell anlegen — es wurden noch keine Räume für dieses Projekt erfasst.";
+
 function getErrorMessage(err: unknown): string {
   if (err && typeof err === "object" && "response" in err) {
     const resp = (err as any).response;
     const detail: string | undefined = resp?.data?.detail;
     // Special-case: backend signals "no rooms" via a ValueError → 400.
     if (detail && /keine\s+r[äa]ume/i.test(detail)) {
-      return "Bitte zuerst Plananalyse durchführen — es wurden noch keine Räume für dieses Projekt erfasst.";
+      return NO_ROOMS_ERROR;
     }
     if (detail) return detail;
     if (resp?.status === 403) return "Diese Funktion erfordert ein Upgrade Ihres Plans.";
@@ -297,8 +306,29 @@ export function LVEditorPage() {
         </div>
       )}
 
-      {/* Error / success banners */}
-      {errorMsg && (
+      {/* Error / success banners. ``NO_ROOMS_ERROR`` gets a special
+          presentation: instead of the flat red banner the user also
+          sees a button linking to ``/structure`` so they can create
+          rooms manually without bouncing back to PlanAnalyse. */}
+      {errorMsg && errorMsg === NO_ROOMS_ERROR && (
+        <div className="mx-6 mt-4 flex items-start gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+          <div className="flex-1">
+            <p>{errorMsg}</p>
+            <Link
+              to={`/app/projects/${projectId}/structure`}
+              className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-amber-600 bg-white px-3 py-1.5 text-xs font-medium text-amber-800 hover:bg-amber-100"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Gebäudestruktur manuell anlegen
+            </Link>
+          </div>
+          <button onClick={() => setErrorMsg(null)} className="shrink-0">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+      {errorMsg && errorMsg !== NO_ROOMS_ERROR && (
         <div className="mx-6 mt-4 flex items-start gap-3 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <span className="flex-1">{errorMsg}</span>
