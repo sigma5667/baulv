@@ -47,6 +47,7 @@ const PLANS = [
       "Alles aus Basis, plus:",
       "KI-Plananalyse (PDF → Raum-Extraktion)",
       "KI-generierte LV-Positionen",
+      "Automatische Wand- und Umfangberechnung aus Plänen",
       "Excel + PDF Export",
       "KI-Chatassistent",
       "Prioritäts-Support",

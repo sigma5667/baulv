@@ -15,8 +15,17 @@ import {
   AlertTriangle,
   Check,
   X,
+  Ruler,
 } from "lucide-react";
-import { fetchProjectLVs, fetchLV, createLV, calculateLV, generateTexts, exportLV } from "../api/lv";
+import {
+  fetchProjectLVs,
+  fetchLV,
+  createLV,
+  calculateLV,
+  generateTexts,
+  exportLV,
+  syncWallAreas,
+} from "../api/lv";
 import type { LVCreate, Leistungsgruppe, Position, Berechnungsnachweis } from "../types/lv";
 
 const TRADES = [
@@ -126,6 +135,35 @@ export function LVEditorPage() {
     },
   });
 
+  // "Wandflächen aus Räumen übernehmen" — fans the project's total
+  // net wall area out to every wall-trade position (Wand/Tapete/
+  // Anstrich/Fliesen/Putz) in the current LV. Locked positions are
+  // skipped by the backend so a reviewer's manual override survives.
+  const wallSyncMutation = useMutation({
+    mutationFn: () => syncWallAreas(activeLvId!),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["lv", activeLvId] });
+      setErrorMsg(null);
+      const parts = [
+        `Wandflächen übernommen: ${data.positions_updated} Position${
+          data.positions_updated === 1 ? "" : "en"
+        } auf ${data.total_wall_area_m2.toFixed(2).replace(".", ",")} m² gesetzt`,
+      ];
+      if (data.positions_skipped_locked > 0) {
+        parts.push(
+          `${data.positions_skipped_locked} gesperrte Position${
+            data.positions_skipped_locked === 1 ? "" : "en"
+          } übersprungen`
+        );
+      }
+      setSuccessMsg(parts.join(" — ") + ".");
+    },
+    onError: (err) => {
+      setSuccessMsg(null);
+      setErrorMsg(getErrorMessage(err));
+    },
+  });
+
   // Shared exporter for xlsx and pdf. Keeping one code path avoids drift
   // between the two formats — the only thing that changes is the query
   // param and the resulting filename extension.
@@ -193,6 +231,19 @@ export function LVEditorPage() {
                     <Sparkles className="h-3.5 w-3.5" />
                   )}
                   AI-Texte
+                </button>
+                <button
+                  onClick={() => wallSyncMutation.mutate()}
+                  disabled={wallSyncMutation.isPending}
+                  className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm hover:bg-accent disabled:opacity-50"
+                  title="Netto-Wandflächen aus den Räumen in alle passenden LV-Positionen (Wand/Tapete/Anstrich/Fliesen/Putz) übernehmen"
+                >
+                  {wallSyncMutation.isPending ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Ruler className="h-3.5 w-3.5" />
+                  )}
+                  Wandflächen
                 </button>
                 <button
                   onClick={() => handleExport("xlsx")}

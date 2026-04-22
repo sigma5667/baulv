@@ -26,6 +26,25 @@ export const generateTexts = async (lvId: string): Promise<{ positions_updated: 
   return data;
 };
 
+export interface WallAreaSyncResult {
+  lv_id: string;
+  total_wall_area_m2: number;
+  positions_updated: number;
+  positions_skipped_locked: number;
+  rooms_considered: number;
+}
+
+/**
+ * Copy the project's net wall area into every m² position whose text
+ * looks like wall work (Wand / Tapete / Anstrich / Fliesen / Putz).
+ * Locked positions are skipped. Returns the aggregate so the UI can
+ * show a confirmation toast ("X Positionen aktualisiert, Summe Y m²").
+ */
+export const syncWallAreas = async (lvId: string): Promise<WallAreaSyncResult> => {
+  const { data } = await api.post(`/lv/${lvId}/sync-wall-areas`);
+  return data;
+};
+
 export const updatePosition = async (
   positionId: string,
   updates: { kurztext?: string; langtext?: string; einheitspreis?: number; is_locked?: boolean }

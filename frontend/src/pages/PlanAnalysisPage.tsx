@@ -14,6 +14,9 @@ import {
   Lock,
   Info,
   Plus,
+  Ruler,
+  AlertTriangle,
+  Calculator,
 } from "lucide-react";
 import { fetchPlans, uploadPlan, analyzePlan } from "../api/plans";
 import {
@@ -21,6 +24,7 @@ import {
   updateRoom,
   deleteRoom,
   createRoom,
+  bulkCalculateWalls,
 } from "../api/rooms";
 import { useAuth } from "../hooks/useAuth";
 import {
@@ -384,11 +388,29 @@ export function PlanAnalysisPage() {
 
       {/* Extracted rooms table */}
       {rooms.length > 0 && (
-        <div>
+        <div className="mb-8">
           <h2 className="mb-3 text-lg font-semibold">
             Extrahierte Räume ({rooms.length})
           </h2>
           <RoomTable rooms={rooms} projectId={projectId!} />
+        </div>
+      )}
+
+      {/* Wall-area calculation — runs on the same rooms table but shows
+          the numbers that will flow into paint/wallpaper/tiles/plaster
+          LV positions. Separate section so the user can eyeball the
+          gross/net values and confirm before the LV pulls them. */}
+      {rooms.length > 0 && (
+        <div>
+          <h2 className="mb-1 text-lg font-semibold">Wandberechnung</h2>
+          <p className="mb-3 text-sm text-muted-foreground">
+            Automatische Berechnung nach österreichischen Baustandards:
+            Treppenhaus-Aufschlag 1,5 ×, Höhenzuschläge für Räume über
+            3 m (1,12 ×) bzw. über 4 m (1,16 ×). Öffnungen ab 2,5 m²
+            werden abgezogen. Amber-markierte Zeilen brauchen eine
+            bestätigte Raumhöhe.
+          </p>
+          <WallCalculationTable rooms={rooms} projectId={projectId!} />
         </div>
       )}
     </div>
@@ -1163,6 +1185,264 @@ function RoomAddForm({
           Anlegen fehlgeschlagen: {error.message}
         </p>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Wall calculation table
+// ---------------------------------------------------------------------------
+
+/**
+ * Format a number with a German decimal comma, 2 decimals. ``null``
+ * becomes an em-dash so the column stays visually aligned.
+ */
+function fmt2(n: number | null | undefined): string {
+  if (n === null || n === undefined) return "—";
+  return n.toFixed(2).replace(".", ",");
+}
+
+function fmtFactor(f: number | null | undefined): string {
+  if (f === null || f === undefined) return "—";
+  // 1.000 → "1,00"; 1.120 → "1,12"; 1.160 → "1,16"; 1.500 → "1,50"
+  return f.toFixed(2).replace(".", ",") + " ×";
+}
+
+/**
+ * Short label for the ceiling-height provenance. Rendered as a badge.
+ */
+function ceilingSourceLabel(source: string): string {
+  switch (source) {
+    case "schnitt":
+      return "Schnitt";
+    case "grundriss":
+      return "Grundriss";
+    case "manual":
+      return "Manuell";
+    default:
+      return "Standard";
+  }
+}
+
+/**
+ * "Wandberechnung" table. One row per room, with inline toggle for the
+ * per-room deductions flag, a per-row "Neu berechnen" action (the
+ * backend recomputes on every room/opening PUT anyway, this is for
+ * when the user just wants to force a fresh run), and a bulk
+ * "Wandflächen berechnen" button above the table.
+ *
+ * Amber highlight is the main UX signal — a row with
+ * ``ceiling_height_source === "default"`` means the calculator fell
+ * back to 2.50 m because nothing in the plan told us the height.
+ * The user should confirm that height before any of these numbers
+ * flow into an LV.
+ */
+function WallCalculationTable({
+  rooms,
+  projectId,
+}: {
+  rooms: Room[];
+  projectId: string;
+}) {
+  const queryClient = useQueryClient();
+  const invalidate = () =>
+    queryClient.invalidateQueries({ queryKey: ["rooms", projectId] });
+
+  const bulkMutation = useMutation({
+    mutationFn: () => bulkCalculateWalls(projectId),
+    onSuccess: invalidate,
+  });
+
+  const toggleMutation = useMutation({
+    mutationFn: ({ id, updates }: { id: string; updates: Partial<Room> }) =>
+      updateRoom(id, updates),
+    onSuccess: invalidate,
+  });
+
+  const bulkError = bulkMutation.error ? normalizeError(bulkMutation.error) : null;
+  const missingHeights = rooms.filter(
+    (r) => r.ceiling_height_source === "default"
+  ).length;
+
+  // Totals row — handy for the estimator to sanity-check the whole
+  // project at a glance. Sum over net because that's what flows into
+  // the LV; nulls collapse to 0.
+  const totalNet = rooms.reduce(
+    (acc, r) => acc + (r.wall_area_net_m2 ?? 0),
+    0
+  );
+  const totalGross = rooms.reduce(
+    (acc, r) => acc + (r.wall_area_gross_m2 ?? 0),
+    0
+  );
+
+  return (
+    <div>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          {missingHeights > 0 && (
+            <div
+              role="status"
+              className="flex items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs text-amber-900"
+            >
+              <AlertTriangle className="h-3.5 w-3.5" />
+              {missingHeights === 1
+                ? "1 Raum ohne erkannte Raumhöhe — bitte prüfen"
+                : `${missingHeights} Räume ohne erkannte Raumhöhe — bitte prüfen`}
+            </div>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={() => bulkMutation.mutate()}
+          disabled={bulkMutation.isPending}
+          className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          title="Wandflächen für alle Räume neu berechnen"
+        >
+          {bulkMutation.isPending ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Calculator className="h-3.5 w-3.5" />
+          )}
+          Wandflächen berechnen
+        </button>
+      </div>
+
+      {bulkError && (
+        <div
+          role="alert"
+          className="mb-3 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-2.5 text-xs text-destructive"
+        >
+          <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <p className="flex-1">
+            Berechnung fehlgeschlagen: {bulkError.message}
+          </p>
+        </div>
+      )}
+
+      <div className="overflow-x-auto rounded-lg border">
+        <table className="w-full text-sm">
+          <thead className="bg-muted/50">
+            <tr>
+              <th className="px-3 py-2 text-left font-medium">Raumname</th>
+              <th className="px-3 py-2 text-right font-medium">
+                Wandlänge m
+              </th>
+              <th className="px-3 py-2 text-right font-medium">
+                Deckenhöhe m
+              </th>
+              <th className="px-3 py-2 text-left font-medium">Höhenquelle</th>
+              <th className="px-3 py-2 text-right font-medium">Brutto m²</th>
+              <th className="px-3 py-2 text-center font-medium">Abzüge</th>
+              <th className="px-3 py-2 text-right font-medium">Netto m²</th>
+              <th className="px-3 py-2 text-left font-medium">Raumtyp</th>
+              <th className="px-3 py-2 text-right font-medium">Faktor</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {rooms.map((room) => {
+              const isDefault = room.ceiling_height_source === "default";
+              return (
+                <tr
+                  key={room.id}
+                  className={
+                    isDefault
+                      ? "bg-amber-50 hover:bg-amber-100/70"
+                      : "hover:bg-muted/30"
+                  }
+                  title={
+                    isDefault
+                      ? "Raumhöhe nicht aus dem Plan erkannt — Standardwert 2,50 m verwendet. Bitte bestätigen oder korrigieren."
+                      : undefined
+                  }
+                >
+                  <td className="px-3 py-2 font-medium">
+                    {room.name}
+                    {room.is_staircase && (
+                      <span
+                        className="ml-2 inline-flex items-center gap-1 rounded-full bg-purple-100 px-2 py-0.5 text-xs text-purple-700"
+                        title="Treppenhaus — 1,5 × Aufschlag"
+                      >
+                        <Ruler className="h-3 w-3" />
+                        Treppenhaus
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono">
+                    {fmt2(room.perimeter_m)}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono">
+                    {fmt2(room.height_m)}
+                  </td>
+                  <td className="px-3 py-2">
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-xs ${
+                        isDefault
+                          ? "bg-amber-200 text-amber-900"
+                          : "bg-gray-100 text-gray-700"
+                      }`}
+                    >
+                      {ceilingSourceLabel(room.ceiling_height_source)}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono">
+                    {fmt2(room.wall_area_gross_m2)}
+                  </td>
+                  <td className="px-3 py-2 text-center">
+                    <label
+                      className="inline-flex cursor-pointer items-center gap-1.5 text-xs"
+                      title="Öffnungen ab 2,5 m² vom Netto abziehen"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={room.deductions_enabled}
+                        disabled={toggleMutation.isPending}
+                        onChange={(e) =>
+                          toggleMutation.mutate({
+                            id: room.id,
+                            updates: {
+                              deductions_enabled: e.target.checked,
+                            },
+                          })
+                        }
+                        aria-label={`Öffnungsabzüge für ${room.name}`}
+                      />
+                      <span className="text-muted-foreground">
+                        {room.deductions_enabled ? "aktiv" : "aus"}
+                      </span>
+                    </label>
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono font-medium">
+                    {fmt2(room.wall_area_net_m2)}
+                  </td>
+                  <td className="px-3 py-2 text-muted-foreground">
+                    {room.room_type ?? "—"}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-xs">
+                    {fmtFactor(room.applied_factor)}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+          <tfoot className="bg-muted/30">
+            <tr className="font-medium">
+              <td className="px-3 py-2" colSpan={4}>
+                Summe über {rooms.length}{" "}
+                {rooms.length === 1 ? "Raum" : "Räume"}
+              </td>
+              <td className="px-3 py-2 text-right font-mono">
+                {fmt2(totalGross)}
+              </td>
+              <td className="px-3 py-2" />
+              <td className="px-3 py-2 text-right font-mono">
+                {fmt2(totalNet)}
+              </td>
+              <td className="px-3 py-2" colSpan={2} />
+            </tr>
+          </tfoot>
+        </table>
+      </div>
     </div>
   );
 }

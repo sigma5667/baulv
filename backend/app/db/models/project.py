@@ -87,6 +87,31 @@ class Room(Base):
     is_wet_room: Mapped[bool] = mapped_column(Boolean, default=False)
     has_dachschraege: Mapped[bool] = mapped_column(Boolean, default=False)
     is_staircase: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Where the ceiling height came from so the UI can warn when we've
+    # fallen back to a default. Values: ``schnitt`` (from a cross-section
+    # plan), ``grundriss`` (noted on the floorplan), ``manual`` (user
+    # typed it in), ``default`` (assumed 2.50 m because nothing else was
+    # available). Frontend highlights ``default`` rows in amber so the
+    # user confirms or corrects before the number flows into the LV.
+    ceiling_height_source: Mapped[str] = mapped_column(String(20), default="default")
+    # Cached results from the wall-calculation service so the frontend
+    # doesn't re-derive them on every render and the LV export can pick
+    # them up directly. ``gross`` = perimeter × height × factor;
+    # ``net`` = gross minus openings ≥ 2.5 m² (when
+    # ``deductions_enabled``). Both nullable because a freshly imported
+    # room has no calculation until the user runs it.
+    wall_area_gross_m2: Mapped[float | None] = mapped_column(Numeric(10, 3))
+    wall_area_net_m2: Mapped[float | None] = mapped_column(Numeric(10, 3))
+    # The multiplier that was applied on the last calculation —
+    # 1.0 for a normal room, 1.12 for 3–4 m ceilings, 1.16 for >4 m,
+    # 1.5 for stairwells. Stored so the UI can show *which* factor
+    # was applied without re-running the calculation logic.
+    applied_factor: Mapped[float | None] = mapped_column(Numeric(4, 3))
+    # User-controlled flag: if False the calculator treats all openings
+    # as deducted = 0 and returns gross == net. Austrian practice is
+    # "only subtract large openings (≥ 2.5 m²)"; turning this off is a
+    # conservative override the estimator sometimes wants.
+    deductions_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
     source: Mapped[str] = mapped_column(String(50), default="manual")
     ai_confidence: Mapped[float | None] = mapped_column(Numeric(4, 2))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)

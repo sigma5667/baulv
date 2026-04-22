@@ -47,6 +47,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db.models.plan import Plan
 from app.db.models.project import Building, Floor, Opening, Room, Unit
+from app.services.wall_calculator import (
+    OpeningInput,
+    calculate_wall_areas,
+)
+
+
+# Accepted values for the ceiling_height_source column. Any other
+# string the model hands back collapses to "default" — the frontend's
+# amber warning treats that as "user please confirm".
+_CEILING_SOURCE_VALUES = {"schnitt", "grundriss", "manual", "default"}
 
 logger = logging.getLogger(__name__)
 
@@ -280,9 +290,15 @@ async def _extract_rooms_from_image(image_bytes: bytes, page_number: int) -> dic
     image_b64 = base64.b64encode(image_bytes).decode("utf-8")
 
     # Wrap in wait_for so a stalled API call can't hang indefinitely.
+    # Keep this model string in lock-step with ``lv_generator/generator.py``
+    # and ``chat/assistant.py``. The previous pin
+    # (``claude-sonnet-4-20250514``) is an older, date-suffixed ID that
+    # Anthropic rotated out; requests against it came back 404/503 and
+    # surfaced to the UI as a generic analysis failure. ``claude-sonnet-4-6``
+    # is the current Sonnet generation.
     message = await asyncio.wait_for(
         client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-6",
             max_tokens=4096,
             messages=[
                 {
@@ -406,6 +422,22 @@ async def _store_extraction_result(
             await db.flush()
 
         for room_data in unit_data.get("rooms", []) or []:
+            # Normalise the ceiling-height marker so the DB only ever
+            # holds one of the four accepted values. Anything else
+            # (empty, typo, hallucinated category) collapses to
+            # "default" which the frontend flags amber.
+            ceiling_source_raw = room_data.get("ceiling_height_source")
+            ceiling_source = (
+                ceiling_source_raw
+                if ceiling_source_raw in _CEILING_SOURCE_VALUES
+                else "default"
+            )
+            # If the model returned no height, force ``default`` even
+            # if it also claimed "grundriss" — a missing value can't
+            # have come from any specific plan region.
+            if room_data.get("height_m") in (None, 0, 0.0):
+                ceiling_source = "default"
+
             room = Room(
                 unit_id=unit.id,
                 plan_id=plan.id,
@@ -415,6 +447,7 @@ async def _store_extraction_result(
                 area_m2=room_data.get("area_m2"),
                 perimeter_m=room_data.get("perimeter_m"),
                 height_m=room_data.get("height_m"),
+                ceiling_height_source=ceiling_source,
                 floor_type=room_data.get("floor_type"),
                 is_wet_room=bool(room_data.get("is_wet_room", False)),
                 has_dachschraege=bool(room_data.get("has_dachschraege", False)),
@@ -425,16 +458,50 @@ async def _store_extraction_result(
             db.add(room)
             await db.flush()
 
+            opening_inputs: list[OpeningInput] = []
             for opening_data in room_data.get("openings", []) or []:
+                width = opening_data.get("width_m") or 1.0
+                height = opening_data.get("height_m") or 1.0
+                count = opening_data.get("count") or 1
                 opening = Opening(
                     room_id=room.id,
                     opening_type=opening_data.get("opening_type") or "fenster",
-                    width_m=opening_data.get("width_m") or 1.0,
-                    height_m=opening_data.get("height_m") or 1.0,
-                    count=opening_data.get("count") or 1,
+                    width_m=width,
+                    height_m=height,
+                    count=count,
                     source="ai",
                 )
                 db.add(opening)
+                opening_inputs.append(
+                    OpeningInput(
+                        width_m=float(width),
+                        height_m=float(height),
+                        count=int(count),
+                    )
+                )
+
+            # Eagerly compute wall area so the rooms table has numbers
+            # to show on first render — otherwise the frontend would
+            # display "—" until the user clicks "Wandflächen berechnen"
+            # for a plan whose data is perfectly extractable. If
+            # perimeter or height is missing we still store the result
+            # (gross 0 / default height) so the column isn't null — the
+            # UI uses ``ceiling_height_source='default'`` as the
+            # "please confirm" signal, not a null gross.
+            calc = calculate_wall_areas(
+                perimeter_m=room_data.get("perimeter_m"),
+                height_m=room_data.get("height_m"),
+                is_staircase=bool(room_data.get("is_staircase", False)),
+                deductions_enabled=True,
+                openings=opening_inputs,
+                ceiling_height_source=ceiling_source,
+            )
+            room.wall_area_gross_m2 = calc.wall_area_gross_m2
+            room.wall_area_net_m2 = calc.wall_area_net_m2
+            room.applied_factor = calc.applied_factor
+            # calculate_wall_areas may downgrade the source to
+            # "default" if the height fell back — keep the DB in sync.
+            room.ceiling_height_source = calc.ceiling_height_source
 
             rooms_created += 1
 

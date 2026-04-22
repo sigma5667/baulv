@@ -9,6 +9,7 @@ import io
 
 from app.db.session import get_db
 from app.db.models.lv import Leistungsverzeichnis, Leistungsgruppe, Position
+from app.db.models.project import Building, Floor, Room, Unit
 from app.db.models.user import User
 from app.schemas.lv import LVCreate, LVUpdate, LVResponse, PositionUpdate, PositionResponse
 from app.calculation_engine.engine import calculate_lv
@@ -152,6 +153,129 @@ async def generate_texts(
         return {"lv_id": str(lv_id), "positions_updated": updated}
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+# Keywords we use to identify a position as "wall-area based". The
+# Wandberechnung service computes a single number (total net wall
+# area across all rooms) and the sync endpoint fans it out into every
+# position whose kurztext/langtext mentions any of these German
+# construction terms. The list intentionally covers the four trades
+# the product spec names: Malerarbeiten (anstrich/malerei), Tapezier-
+# arbeiten (tapete/tapezier), Fliesenlegearbeiten (fliesen/wandfliese),
+# Verputzarbeiten (putz/verputz). "wand" on its own catches generic
+# "Wandbeschichtung" / "Wandverkleidung" positions the AI text
+# generator may emit.
+_WALL_POSITION_KEYWORDS: tuple[str, ...] = (
+    "wand",           # wandfläche, wandanstrich, wandbeschichtung, …
+    "tapet",          # tapete, tapezierarbeiten, tapezieren
+    "anstrich",       # anstrich (wall painting)
+    "malerei",        # malerei, malerarbeiten
+    "fliese",         # fliesen, wandfliesen, fliesenarbeiten
+    "verputz",        # verputz, verputzarbeiten
+    "putz",           # putz (matches innenputz, glattputz, …)
+)
+
+
+def _is_wall_position(position: "Position") -> bool:
+    """Return True iff this position's text looks like wall-area work.
+
+    We check ``kurztext`` and ``langtext`` (both lowercased) against
+    the keyword list. Also require ``einheit`` to be ``m2`` / ``m²``
+    so we don't accidentally overwrite linear-metre ("lfm") or
+    per-piece positions that happen to mention "Wand" in their text.
+    """
+
+    einheit = (position.einheit or "").lower().strip()
+    # Accept "m2", "m²", "qm"; reject anything else.
+    if einheit not in {"m2", "m²", "qm"}:
+        return False
+    haystack = " ".join(
+        (position.kurztext or "", position.langtext or "")
+    ).lower()
+    return any(kw in haystack for kw in _WALL_POSITION_KEYWORDS)
+
+
+@router.post("/{lv_id}/sync-wall-areas")
+async def sync_wall_areas(
+    lv_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Übertrage Netto-Wandflächen aus den Räumen in passende LV-Positionen.
+
+    Summiert ``wall_area_net_m2`` über alle Räume des Projekts und
+    schreibt den Wert in die ``menge`` jeder Wand-Position (m²,
+    Schlagworte Wand/Tapete/Anstrich/Fliesen/Putz). Gesperrte
+    Positionen (``is_locked``) werden übersprungen.
+
+    Antwort:
+
+    ```
+    {
+      "lv_id": ...,
+      "total_wall_area_m2": 1234.56,
+      "positions_updated": 3,
+      "positions_skipped_locked": 1,
+      "rooms_considered": 42
+    }
+    ```
+    """
+    lv = await verify_lv_owner(lv_id, user, db)
+
+    # Load every room in the LV's project with its precomputed
+    # wall-area cache. We don't re-run the calculator here — the
+    # Wandberechnung page is where the user is expected to confirm
+    # heights and trigger the bulk calc. This endpoint just reads
+    # the cached value and fans it out.
+    stmt = (
+        select(Room)
+        .join(Unit).join(Floor).join(Building)
+        .where(Building.project_id == lv.project_id)
+    )
+    rooms = (await db.execute(stmt)).scalars().all()
+
+    total_net = sum(
+        float(r.wall_area_net_m2) for r in rooms if r.wall_area_net_m2 is not None
+    )
+    # Round to the 2-decimal precision the UI and LV share.
+    total_net_rounded = round(total_net, 2)
+
+    if not rooms:
+        raise HTTPException(
+            400,
+            "Für dieses Projekt wurden noch keine Räume erfasst. Bitte "
+            "zuerst die Plananalyse durchführen oder Räume manuell "
+            "anlegen, bevor Wandflächen übernommen werden können.",
+        )
+
+    # Load the LV's positions through groups.
+    pos_stmt = (
+        select(Position)
+        .join(Leistungsgruppe, Position.gruppe_id == Leistungsgruppe.id)
+        .where(Leistungsgruppe.lv_id == lv_id)
+    )
+    positions = list((await db.execute(pos_stmt)).scalars().all())
+
+    updated = 0
+    skipped_locked = 0
+    for pos in positions:
+        if not _is_wall_position(pos):
+            continue
+        if pos.is_locked:
+            skipped_locked += 1
+            continue
+        pos.menge = total_net_rounded
+        updated += 1
+
+    await db.flush()
+
+    return {
+        "lv_id": str(lv_id),
+        "total_wall_area_m2": total_net_rounded,
+        "positions_updated": updated,
+        "positions_skipped_locked": skipped_locked,
+        "rooms_considered": len(rooms),
+    }
 
 
 @router.put("/positionen/{position_id}", response_model=PositionResponse)
