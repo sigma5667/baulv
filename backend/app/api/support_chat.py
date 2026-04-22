@@ -46,7 +46,15 @@ SYSTEM_PROMPT = (
 # so a swap is a one-line diff and it's visible in every log line.
 # If Anthropic rejects this ID with a 404, Railway logs will show
 # ``anthropic_api_error status=404`` pointing at it directly.
-SUPPORT_CHAT_MODEL = "claude-sonnet-4-5"
+#
+# Why Haiku 4.5: product-FAQ answers are short, single-turn, and the
+# system prompt does the heavy lifting. Haiku is ~5× cheaper and
+# noticeably faster than Sonnet, which matters for a public widget
+# sitting on the landing page where anyone can fire requests. We
+# previously ran on ``claude-sonnet-4-5``; that model ID is no longer
+# in the current rotation and was returning persistent 503s — moving
+# to a model in the current generation is the safe default.
+SUPPORT_CHAT_MODEL = "claude-haiku-4-5"
 
 GENERIC_UNAVAILABLE = (
     "Der Chat ist momentan nicht verfügbar. Bitte versuchen Sie es später erneut."

@@ -42,7 +42,15 @@ SYSTEM_PROMPT = (
 # Model used for the in-app advisor. Kept at module scope so every
 # log line shows which model we attempted — a 404 here is a diagnostic
 # jackpot.
-ADVISOR_MODEL = "claude-sonnet-4-5"
+#
+# Sonnet 4.6 is the current Sonnet generation; the former
+# ``claude-sonnet-4-5`` ID fell out of rotation and was returning
+# persistent 503s. The in-app advisor reasons about construction
+# project context so Sonnet-tier capability is the right floor (Haiku
+# would skimp on the nuanced ÖNORM-style advice the German prompt
+# elicits). If a future regression points at the model ID, bump this
+# to ``claude-opus-4-7`` — same API shape.
+ADVISOR_MODEL = "claude-sonnet-4-6"
 
 
 # Sentinel so callers can recognize configuration failures versus

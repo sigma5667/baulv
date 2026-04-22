@@ -65,7 +65,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
 // the kill-switch purge and the SW cache eviction fire on the same
 // deploy, so users never end up with a fresh HTML pointing at a SW
 // that's still serving the previous bundle's assets from cache.
-const APP_BUILD_TAG = "baulv-v10-2026-04-22-chat-cache-purge";
+const APP_BUILD_TAG = "baulv-v11-2026-04-22-boot-diag";
 
 async function purgeStaleCaches() {
   if ("caches" in window) {

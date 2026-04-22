@@ -45,6 +45,30 @@ async def lifespan(app: FastAPI):
             logger.error("Alembic migration failed: %s", result.stderr)
     except Exception as e:
         logger.error("Failed to run migrations: %s", e)
+
+    # Print every diagnostic-worthy setting exactly once at boot so
+    # Railway startup logs answer "is my env var actually set?" without
+    # needing a live request. Keep the anthropic key OPAQUE — log its
+    # presence and length only, never the value itself.
+    anthropic_key = settings.anthropic_api_key or ""
+    logger.info(
+        "startup.settings beta_unlock_all_features=%s "
+        "anthropic_api_key_present=%s anthropic_api_key_len=%d "
+        "frontend_url=%s",
+        settings.beta_unlock_all_features,
+        bool(anthropic_key.strip()),
+        len(anthropic_key),
+        settings.frontend_url,
+    )
+    if settings.beta_unlock_all_features:
+        # A loud, unambiguous banner line that a grep for
+        # "BETA_UNLOCK" in Railway logs will surface instantly.
+        logger.warning(
+            "startup.BETA_UNLOCK_ACTIVE — all Pro features are unlocked "
+            "for every authenticated user. Flip BETA_UNLOCK_ALL_FEATURES "
+            "back to false (or delete the env var) to restore normal "
+            "plan gating."
+        )
     yield
 
 
