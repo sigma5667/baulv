@@ -2,7 +2,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 import io
@@ -14,9 +14,10 @@ from app.schemas.lv import LVCreate, LVUpdate, LVResponse, PositionUpdate, Posit
 from app.calculation_engine.engine import calculate_lv
 from app.lv_generator.generator import generate_position_texts
 from app.export.xlsx_exporter import export_lv_xlsx
+from app.export.pdf_exporter import export_lv_pdf
 from app.auth import get_current_user
 from app.api.ownership import verify_project_owner, verify_lv_owner
-from app.subscriptions import require_feature
+from app.subscriptions import require_feature, has_feature
 
 router = APIRouter()
 
@@ -124,6 +125,28 @@ async def generate_texts(
 ):
     """Generate AI-powered position texts — requires Pro plan."""
     await verify_lv_owner(lv_id, user, db)
+
+    # Pre-flight: AI text generation on an empty LV used to surface as a
+    # 500 (downstream Claude call on a zero-position payload, or silent
+    # no-op that the frontend couldn't distinguish from success). Check
+    # position count up front and return a 400 with an actionable German
+    # message, mirroring the ``/calculate`` endpoint's 400-on-ValueError
+    # contract. The user needs to either run Plananalyse (rooms →
+    # ``/calculate`` → positions) or add positions manually before this
+    # endpoint has anything to work with.
+    count_stmt = (
+        select(func.count(Position.id))
+        .join(Leistungsgruppe, Position.gruppe_id == Leistungsgruppe.id)
+        .where(Leistungsgruppe.lv_id == lv_id)
+    )
+    position_count = (await db.execute(count_stmt)).scalar_one()
+    if position_count == 0:
+        raise HTTPException(
+            400,
+            "Bitte zuerst Räume über die Plananalyse erfassen oder manuell "
+            "Positionen hinzufügen, bevor Sie AI-Texte generieren.",
+        )
+
     try:
         updated = await generate_position_texts(lv_id, db)
         return {"lv_id": str(lv_id), "positions_updated": updated}
@@ -166,20 +189,55 @@ async def update_position(
 async def export_lv(
     lv_id: UUID,
     format: str = "xlsx",
-    user: User = Depends(require_feature("excel_export")),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Export LV as Excel — requires Pro plan."""
+    """Export LV as Excel (Pro-gated) or PDF (available to all authenticated users).
+
+    The pricing page lists PDF as a Basis-plan feature; the feature matrix
+    (``app/subscriptions.py::get_feature_matrix``) already returns
+    ``pdf_export: True`` unconditionally. The old implementation gated the
+    whole route with ``require_feature("excel_export")``, which bounced
+    Basis users with a 403 before the format dispatch could hand them off
+    to the PDF branch. We now check the per-format plan requirement inside
+    the dispatch so the gate matches the advertised pricing matrix.
+    """
     await verify_lv_owner(lv_id, user, db)
     if format == "xlsx":
+        # Excel remains Pro-only, matching ``FEATURE_REQUIREMENTS``.
+        if not has_feature(user.subscription_plan, "excel_export"):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Excel Export erfordert den Pro-Plan. "
+                    "Bitte upgraden Sie Ihr Abonnement."
+                ),
+            )
         try:
             xlsx_bytes = await export_lv_xlsx(lv_id, db)
             return StreamingResponse(
                 io.BytesIO(xlsx_bytes),
                 media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                headers={"Content-Disposition": f"attachment; filename=LV_{lv_id}.xlsx"},
+                headers={
+                    "Content-Disposition": f"attachment; filename=LV_{lv_id}.xlsx"
+                },
             )
         except ValueError as e:
             raise HTTPException(404, str(e))
-    else:
-        raise HTTPException(400, f"Format '{format}' not yet supported. Use 'xlsx'.")
+    if format == "pdf":
+        # PDF is a Basis-tier feature — no plan gate, just ownership.
+        try:
+            pdf_bytes = await export_lv_pdf(lv_id, db)
+            return StreamingResponse(
+                io.BytesIO(pdf_bytes),
+                media_type="application/pdf",
+                headers={
+                    "Content-Disposition": f"attachment; filename=LV_{lv_id}.pdf"
+                },
+            )
+        except ValueError as e:
+            raise HTTPException(404, str(e))
+    raise HTTPException(
+        400,
+        f"Format '{format}' nicht unterstützt. Bitte 'xlsx' oder 'pdf' wählen.",
+    )

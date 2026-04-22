@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   Calculator,
   FileSpreadsheet,
+  FileText,
   Sparkles,
   ChevronDown,
   ChevronRight,
@@ -125,15 +126,18 @@ export function LVEditorPage() {
     },
   });
 
-  const handleExport = async () => {
+  // Shared exporter for xlsx and pdf. Keeping one code path avoids drift
+  // between the two formats — the only thing that changes is the query
+  // param and the resulting filename extension.
+  const handleExport = async (format: "xlsx" | "pdf") => {
     if (!activeLvId) return;
     try {
       setErrorMsg(null);
-      const blob = await exportLV(activeLvId);
+      const blob = await exportLV(activeLvId, format);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `LV_${activeLV?.trade ?? "export"}.xlsx`;
+      a.download = `LV_${activeLV?.trade ?? "export"}.${format}`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
@@ -191,11 +195,20 @@ export function LVEditorPage() {
                   AI-Texte
                 </button>
                 <button
-                  onClick={handleExport}
+                  onClick={() => handleExport("xlsx")}
                   className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm hover:bg-accent"
+                  title="Als Excel-Datei exportieren (Pro-Plan)"
                 >
                   <Download className="h-3.5 w-3.5" />
                   Excel Export
+                </button>
+                <button
+                  onClick={() => handleExport("pdf")}
+                  className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm hover:bg-accent"
+                  title="Als PDF exportieren"
+                >
+                  <FileText className="h-3.5 w-3.5" />
+                  PDF Export
                 </button>
               </>
             )}

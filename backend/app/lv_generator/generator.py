@@ -14,6 +14,7 @@ before.
 """
 
 import json
+import logging
 from pathlib import Path
 from uuid import UUID
 
@@ -24,10 +25,21 @@ from sqlalchemy import select
 from app.config import settings
 from app.db.models.lv import Leistungsverzeichnis, Position
 
+logger = logging.getLogger(__name__)
+
 
 SYSTEM_PROMPT = (
     Path(__file__).parent / "prompts" / "position_text_system.txt"
 ).read_text(encoding="utf-8")
+
+
+# Current-generation Sonnet. The previous pin (``claude-sonnet-4-20250514``)
+# is an older date-suffixed ID that Anthropic dropped from rotation —
+# requests against it returned 404/503 and surfaced to the frontend as
+# a generic 500 on AI-Texte. Keep this in lock-step with the advisor
+# model in ``app/chat/assistant.py`` so both AI features go through
+# the same Sonnet generation.
+LV_TEXT_MODEL = "claude-sonnet-4-6"
 
 
 async def generate_position_texts(lv_id: UUID, db: AsyncSession) -> int:
@@ -68,18 +80,40 @@ async def generate_position_texts(lv_id: UUID, db: AsyncSession) -> int:
     if not position_descriptions:
         return 0
 
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    # AsyncAnthropic because this function runs inside an async request
+    # handler — the sync client would block the event loop for the full
+    # Claude round-trip (often 5-15s), stalling every other request on
+    # this worker. Failures propagate up unwrapped so the ``lv.py`` route
+    # handler can distinguish ValueError (our bugs) from SDK errors
+    # (wrong model, bad key, etc.), which now get logged with the exact
+    # class/status/message for Railway-side diagnosis.
+    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
     user_message = (
         f"Gewerk: {lv.trade}\n\n"
         "Erstelle Langtexte für folgende Positionen:\n"
         f"{json.dumps(position_descriptions, ensure_ascii=False, indent=2)}"
     )
-    message = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=4096,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_message}],
-    )
+    try:
+        message = await client.messages.create(
+            model=LV_TEXT_MODEL,
+            max_tokens=4096,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_message}],
+        )
+    except Exception as e:  # noqa: BLE001 — log then re-raise
+        err_class = type(e).__name__
+        status_code = getattr(e, "status_code", None)
+        message_attr = getattr(e, "message", None) or str(e)
+        logger.error(
+            "generate_position_texts.anthropic_error lv=%s model=%s "
+            "class=%s status=%s message=%s",
+            lv_id,
+            LV_TEXT_MODEL,
+            err_class,
+            status_code,
+            message_attr,
+        )
+        raise
 
     response_text = message.content[0].text
     try:
