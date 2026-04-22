@@ -44,7 +44,8 @@ from app.services.audit import (
     log_event,
 )
 from app.services.dsgvo import delete_user_account, export_user_data
-from app.subscriptions import get_feature_matrix
+from app.config import settings
+from app.subscriptions import BETA_PROJECT_LIMIT_SENTINEL, get_feature_matrix
 
 router = APIRouter()
 
@@ -146,9 +147,17 @@ async def get_my_usage(
         select(func.count(Project.id)).where(Project.user_id == user.id)
     )
     project_count = result.scalar() or 0
+    # Beta override: lift the project limit for every user. We surface
+    # 999 (same sentinel the feature matrix uses) instead of None so
+    # the frontend's "x / y Projekte" counter still renders a finite
+    # quota for testers.
+    if settings.beta_unlock_all_features:
+        project_limit: int | None = BETA_PROJECT_LIMIT_SENTINEL
+    else:
+        project_limit = 3 if user.subscription_plan == "basis" else None
     return {
         "project_count": project_count,
-        "project_limit": 3 if user.subscription_plan == "basis" else None,
+        "project_limit": project_limit,
     }
 
 

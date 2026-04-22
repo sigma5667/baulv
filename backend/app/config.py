@@ -47,6 +47,16 @@ class Settings(BaseSettings):
     stripe_price_basis: str = ""
     stripe_price_pro: str = ""
 
+    # Beta / tester override — when true, EVERY authenticated user
+    # gets Pro-level features regardless of their subscription_plan
+    # and the project limit is effectively removed. Flip to true on
+    # the server (Railway env var BETA_UNLOCK_ALL_FEATURES=true) for
+    # tester days, then back to false for regular operation. The
+    # flag is intentionally server-side only — do NOT expose it
+    # directly to the client; the frontend reads the resolved
+    # feature matrix from /auth/me/features instead.
+    beta_unlock_all_features: bool = False
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
     def model_post_init(self, __context) -> None:

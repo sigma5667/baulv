@@ -46,4 +46,11 @@ export interface FeatureMatrix {
   team_multiuser: boolean;
   api_access: boolean;
   project_limit: number | null;
+  // True when BETA_UNLOCK_ALL_FEATURES=true on the server. The SPA
+  // uses this flag to render a single tester banner — every actual
+  // gating decision still goes through the individual boolean
+  // flags above so there's no forked code path to maintain.
+  // Optional in the type so old cached responses during a rolling
+  // deploy deserialize cleanly as "banner off".
+  beta_unlock_active?: boolean;
 }

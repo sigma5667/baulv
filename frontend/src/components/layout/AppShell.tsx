@@ -11,6 +11,7 @@ import {
   MessageSquare,
 } from "lucide-react";
 import { useAuth } from "../../hooks/useAuth";
+import { BetaUnlockBanner } from "../BetaUnlockBanner";
 import { Footer } from "./Footer";
 
 const navItems = [
@@ -30,7 +31,13 @@ export function AppShell({ children }: { children: ReactNode }) {
   };
 
   return (
-    <div className="flex h-screen bg-background">
+    <div className="flex h-screen flex-col bg-background">
+      {/* Beta-Modus banner — renders only when the server has
+          BETA_UNLOCK_ALL_FEATURES=true. Kept OUTSIDE the sidebar/main
+          row so it spans the full viewport width instead of just the
+          content area. */}
+      <BetaUnlockBanner />
+      <div className="flex min-h-0 flex-1">
       {/* Sidebar */}
       <aside
         className={`${
@@ -122,6 +129,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         {/* Footer with legal links — visible inside the authenticated app too */}
         <Footer />
       </main>
+      </div>
     </div>
   );
 }
