@@ -14,7 +14,19 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { MessageCircle, X, Send, RotateCcw, Bot, User as UserIcon } from "lucide-react";
 import { sendSupportMessage, type SupportMessage } from "../api/supportChat";
 
-const STORAGE_KEY = "baulv_support_chat_v1";
+// Bumped from v1 → v2 to evict cached conversations from older
+// builds whose system prompt still contained the "[EMAIL_PLATZHALTER]"
+// placeholder. The placeholder was removed from the server prompt in
+// commit ccac238, but anything persisted before that reload kept
+// showing up because the chat history is client-side only. A key
+// bump is the cheapest way to wipe every affected user on their next
+// page load.
+const STORAGE_KEY = "baulv_support_chat_v2";
+// Legacy keys from earlier widget versions. We actively purge them on
+// load so localStorage doesn't accumulate orphaned junk indefinitely.
+// Append to this list whenever STORAGE_KEY is bumped; never reuse a
+// suffix — once retired, a key never comes back.
+const LEGACY_STORAGE_KEYS = ["baulv_support_chat_v1"];
 const GREETING: SupportMessage = {
   role: "assistant",
   content:
@@ -23,7 +35,21 @@ const GREETING: SupportMessage = {
 const FALLBACK_REPLY =
   "Der Chat ist momentan nicht verfügbar. Bitte versuchen Sie es später erneut.";
 
+function purgeLegacyHistory() {
+  try {
+    for (const key of LEGACY_STORAGE_KEYS) {
+      localStorage.removeItem(key);
+    }
+  } catch {
+    /* private mode / quota — nothing to clean up anyway */
+  }
+}
+
 function loadHistory(): SupportMessage[] {
+  // Wipe retired keys on every load. Cheap (O(#legacy-keys) removeItem
+  // calls) and ensures a user who opens the widget today never sees
+  // the old "[EMAIL_PLATZHALTER]" artifact from their prior session.
+  purgeLegacyHistory();
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return [GREETING];
