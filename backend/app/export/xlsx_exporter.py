@@ -18,6 +18,16 @@ async def export_lv_xlsx(lv_id: UUID, db: AsyncSession) -> bytes:
     """Export an LV as Excel (.xlsx) file.
 
     Returns bytes of the xlsx file.
+
+    v16 fix: the query must eager-load ``Berechnungsnachweis.room``
+    because ``_create_calculation_sheet`` renders the room name per
+    calculation row (``nachweis.room.name``). Without the explicit
+    selectinload the relationship is lazy, which in an async request
+    raises ``MissingGreenlet`` and bubbles up as a 500 from the
+    endpoint with nothing in app logs except the generic handler.
+    The bug was latent — it only fires on LVs that have
+    ``berechnungsnachweise`` rows (i.e. after someone clicked
+    Berechnen), so test LVs without a calculation looked fine.
     """
     # Load LV with all nested data
     stmt = (
@@ -26,7 +36,8 @@ async def export_lv_xlsx(lv_id: UUID, db: AsyncSession) -> bytes:
         .options(
             selectinload(Leistungsverzeichnis.gruppen)
             .selectinload(Leistungsgruppe.positionen)
-            .selectinload(Position.berechnungsnachweise),
+            .selectinload(Position.berechnungsnachweise)
+            .selectinload(Berechnungsnachweis.room),
             selectinload(Leistungsverzeichnis.project),
         )
     )

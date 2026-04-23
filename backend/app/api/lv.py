@@ -230,8 +230,9 @@ _WALL_POSITION_KEYWORDS: tuple[str, ...] = (
 # clicked Wandflächen, because "anstrich" matched "Deckenanstrich" and
 # no ceiling-side check excluded it. Ceilings are measured in floor
 # (slab) area, not wall area. We detect ceiling intent with this list,
-# route those positions to the sum of ``room.floor_area_m2``, and keep
-# wall routing for everything else that still matches
+# route those positions to the sum of ``room.area_m2`` (the net
+# floor/slab area — which equals ceiling area for any sane room), and
+# keep wall routing for everything else that still matches
 # ``_WALL_POSITION_KEYWORDS``.
 _CEILING_POSITION_KEYWORDS: tuple[str, ...] = (
     "decke",          # decken, deckenanstrich, deckenmalerei, decken-
@@ -295,7 +296,7 @@ async def sync_wall_areas(
       Wandflächen aller Räume.
     * Decken-Positionen (m², Schlagwort "Decke", deckt
       Deckenanstrich / Deckenmalerei / Decken- ab) erhalten die
-      Summe der Grundflächen (``floor_area_m2``) aller Räume. Früher
+      Summe der Grundflächen (``area_m2``) aller Räume. Früher
       wurde "Deckenanstrich" fälschlich als Wand-Position erkannt,
       weil "anstrich" matcht — ab v15 werden Decken-Positionen vor
       dem Wand-Match aussortiert.
@@ -315,105 +316,147 @@ async def sync_wall_areas(
       "rooms_considered": 42
     }
     ```
+
+    v16 hardening: the whole body is wrapped in a try/except that
+    logs ``sync_wall_areas.failed`` with a full traceback. v15 had no
+    outer handler, so the AttributeError below (``r.floor_area_m2``
+    — wrong column name; correct is ``r.area_m2``) surfaced as a
+    generic 500 with nothing in Railway logs to grep for. The outer
+    handler means any future breakage leaves a clear trace and a
+    German error message the UI can show instead of "Serverfehler
+    (500)".
     """
-    lv = await verify_lv_owner(lv_id, user, db)
+    try:
+        lv = await verify_lv_owner(lv_id, user, db)
 
-    # Load every room in the LV's project with its precomputed
-    # wall-area cache. We don't re-run the calculator here — the
-    # Wandberechnung page is where the user is expected to confirm
-    # heights and trigger the bulk calc. This endpoint just reads
-    # the cached value and fans it out.
-    stmt = (
-        select(Room)
-        .join(Unit).join(Floor).join(Building)
-        .where(Building.project_id == lv.project_id)
-    )
-    rooms = (await db.execute(stmt)).scalars().all()
+        # Load every room in the LV's project with its precomputed
+        # wall-area cache. We don't re-run the calculator here — the
+        # Wandberechnung page is where the user is expected to confirm
+        # heights and trigger the bulk calc. This endpoint just reads
+        # the cached value and fans it out.
+        stmt = (
+            select(Room)
+            .join(Unit).join(Floor).join(Building)
+            .where(Building.project_id == lv.project_id)
+        )
+        rooms = (await db.execute(stmt)).scalars().all()
 
-    if not rooms:
-        raise HTTPException(
-            400,
-            "Für dieses Projekt wurden noch keine Räume erfasst. Bitte "
-            "zuerst die Plananalyse durchführen oder Räume manuell "
-            "anlegen, bevor Wandflächen übernommen werden können.",
+        if not rooms:
+            raise HTTPException(
+                400,
+                "Für dieses Projekt wurden noch keine Räume erfasst. Bitte "
+                "zuerst die Plananalyse durchführen oder Räume manuell "
+                "anlegen, bevor Wandflächen übernommen werden können.",
+            )
+
+        total_wall = sum(
+            float(r.wall_area_net_m2) for r in rooms if r.wall_area_net_m2 is not None
+        )
+        # v15 used ``r.floor_area_m2`` here — that column doesn't
+        # exist on Room (the slab area is named ``area_m2``, matching
+        # everywhere else in the codebase: calculation_engine,
+        # chat.assistant, dsgvo). Accessing the non-existent attribute
+        # raised AttributeError → 500 → frontend never got the sync
+        # result. v16 uses the correct column name.
+        total_ceiling = sum(
+            float(r.area_m2) for r in rooms if r.area_m2 is not None
+        )
+        # Round to the 2-decimal precision the UI and LV share.
+        total_wall_rounded = round(total_wall, 2)
+        total_ceiling_rounded = round(total_ceiling, 2)
+
+        logger.info(
+            "sync_wall_areas.totals lv_id=%s rooms=%d "
+            "total_wall_m2=%s total_ceiling_m2=%s",
+            lv_id, len(rooms), total_wall_rounded, total_ceiling_rounded,
         )
 
-    total_wall = sum(
-        float(r.wall_area_net_m2) for r in rooms if r.wall_area_net_m2 is not None
-    )
-    total_ceiling = sum(
-        float(r.floor_area_m2) for r in rooms if r.floor_area_m2 is not None
-    )
-    # Round to the 2-decimal precision the UI and LV share.
-    total_wall_rounded = round(total_wall, 2)
-    total_ceiling_rounded = round(total_ceiling, 2)
+        # Load the LV's positions through groups.
+        pos_stmt = (
+            select(Position)
+            .join(Leistungsgruppe, Position.gruppe_id == Leistungsgruppe.id)
+            .where(Leistungsgruppe.lv_id == lv_id)
+        )
+        positions = list((await db.execute(pos_stmt)).scalars().all())
 
-    # Load the LV's positions through groups.
-    pos_stmt = (
-        select(Position)
-        .join(Leistungsgruppe, Position.gruppe_id == Leistungsgruppe.id)
-        .where(Leistungsgruppe.lv_id == lv_id)
-    )
-    positions = list((await db.execute(pos_stmt)).scalars().all())
-
-    wall_updated = 0
-    ceiling_updated = 0
-    skipped_locked = 0
-    for pos in positions:
-        # Ceiling check runs FIRST — "Deckenanstrich" matches both the
-        # ceiling keyword and several wall keywords ("anstrich"), so
-        # the order here is load-bearing. Don't reorder.
-        if _is_ceiling_position(pos):
-            if pos.is_locked:
-                skipped_locked += 1
+        wall_updated = 0
+        ceiling_updated = 0
+        skipped_locked = 0
+        for pos in positions:
+            # Ceiling check runs FIRST — "Deckenanstrich" matches both the
+            # ceiling keyword and several wall keywords ("anstrich"), so
+            # the order here is load-bearing. Don't reorder.
+            if _is_ceiling_position(pos):
+                if pos.is_locked:
+                    skipped_locked += 1
+                    logger.info(
+                        "sync_wall_areas.skip_locked lv_id=%s position_id=%s "
+                        "kind=ceiling kurztext=%r",
+                        lv_id, pos.id, (pos.kurztext or "")[:60],
+                    )
+                    continue
+                pos.menge = total_ceiling_rounded
+                ceiling_updated += 1
                 logger.info(
-                    "sync_wall_areas.skip_locked lv_id=%s position_id=%s "
-                    "kind=ceiling kurztext=%r",
-                    lv_id, pos.id, (pos.kurztext or "")[:60],
+                    "sync_wall_areas.apply lv_id=%s position_id=%s "
+                    "kind=ceiling menge=%s kurztext=%r",
+                    lv_id, pos.id, total_ceiling_rounded, (pos.kurztext or "")[:60],
                 )
                 continue
-            pos.menge = total_ceiling_rounded
-            ceiling_updated += 1
-            logger.info(
-                "sync_wall_areas.apply lv_id=%s position_id=%s "
-                "kind=ceiling menge=%s kurztext=%r",
-                lv_id, pos.id, total_ceiling_rounded, (pos.kurztext or "")[:60],
-            )
-            continue
-        if _is_wall_position(pos):
-            if pos.is_locked:
-                skipped_locked += 1
+            if _is_wall_position(pos):
+                if pos.is_locked:
+                    skipped_locked += 1
+                    logger.info(
+                        "sync_wall_areas.skip_locked lv_id=%s position_id=%s "
+                        "kind=wall kurztext=%r",
+                        lv_id, pos.id, (pos.kurztext or "")[:60],
+                    )
+                    continue
+                pos.menge = total_wall_rounded
+                wall_updated += 1
                 logger.info(
-                    "sync_wall_areas.skip_locked lv_id=%s position_id=%s "
-                    "kind=wall kurztext=%r",
-                    lv_id, pos.id, (pos.kurztext or "")[:60],
+                    "sync_wall_areas.apply lv_id=%s position_id=%s "
+                    "kind=wall menge=%s kurztext=%r",
+                    lv_id, pos.id, total_wall_rounded, (pos.kurztext or "")[:60],
                 )
                 continue
-            pos.menge = total_wall_rounded
-            wall_updated += 1
-            logger.info(
-                "sync_wall_areas.apply lv_id=%s position_id=%s "
-                "kind=wall menge=%s kurztext=%r",
-                lv_id, pos.id, total_wall_rounded, (pos.kurztext or "")[:60],
-            )
-            continue
-        # Neither kind — skip silently. Positions like "Stundenlohn"
-        # or "Pauschale" legitimately don't match any keyword.
+            # Neither kind — skip silently. Positions like "Stundenlohn"
+            # or "Pauschale" legitimately don't match any keyword.
 
-    await db.flush()
+        await db.flush()
 
-    return {
-        "lv_id": str(lv_id),
-        "total_wall_area_m2": total_wall_rounded,
-        "total_ceiling_area_m2": total_ceiling_rounded,
-        "wall_positions_updated": wall_updated,
-        "ceiling_positions_updated": ceiling_updated,
-        # Keep the legacy key so older frontend builds still read something
-        # meaningful — the UI toast just wants a total count.
-        "positions_updated": wall_updated + ceiling_updated,
-        "positions_skipped_locked": skipped_locked,
-        "rooms_considered": len(rooms),
-    }
+        logger.info(
+            "sync_wall_areas.done lv_id=%s wall_updated=%d "
+            "ceiling_updated=%d skipped_locked=%d",
+            lv_id, wall_updated, ceiling_updated, skipped_locked,
+        )
+
+        return {
+            "lv_id": str(lv_id),
+            "total_wall_area_m2": total_wall_rounded,
+            "total_ceiling_area_m2": total_ceiling_rounded,
+            "wall_positions_updated": wall_updated,
+            "ceiling_positions_updated": ceiling_updated,
+            # Keep the legacy key so older frontend builds still read something
+            # meaningful — the UI toast just wants a total count.
+            "positions_updated": wall_updated + ceiling_updated,
+            "positions_skipped_locked": skipped_locked,
+            "rooms_considered": len(rooms),
+        }
+    except HTTPException:
+        # HTTPException is not a bug — it's a deliberate 400/403/404
+        # response. Let FastAPI serialise it as-is.
+        raise
+    except Exception:
+        logger.exception(
+            "sync_wall_areas.failed lv_id=%s user_id=%s", lv_id, user.id
+        )
+        raise HTTPException(
+            500,
+            "Wandflächen konnten nicht übernommen werden. Der Fehler "
+            "wurde protokolliert — bitte kontaktieren Sie den Support, "
+            "falls das Problem bestehen bleibt.",
+        )
 
 
 @router.put("/positionen/{position_id}", response_model=PositionResponse)
@@ -520,6 +563,13 @@ async def export_lv(
                 ),
                 headers={"Retry-After": str(_EXPORT_RETRY_AFTER_SECONDS)},
             )
+        except HTTPException:
+            # An export helper might raise HTTPException itself (e.g.
+            # for a 403 on a protected resource). Let FastAPI pass it
+            # through — otherwise the generic ``except Exception``
+            # below would swallow it and return 500 with an opaque
+            # "Excel-Export fehlgeschlagen." body.
+            raise
         except Exception:
             logger.exception(
                 "export_lv.failed format=xlsx lv_id=%s user_id=%s", lv_id, user.id
@@ -556,6 +606,10 @@ async def export_lv(
                 ),
                 headers={"Retry-After": str(_EXPORT_RETRY_AFTER_SECONDS)},
             )
+        except HTTPException:
+            # Same reasoning as the xlsx branch — don't swallow
+            # deliberate HTTPExceptions in the catch-all below.
+            raise
         except Exception:
             logger.exception(
                 "export_lv.failed format=pdf lv_id=%s user_id=%s", lv_id, user.id
