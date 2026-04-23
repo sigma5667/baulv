@@ -46,6 +46,7 @@ import {
   DoorOpen,
   Edit2,
   Home,
+  Info,
   Layers,
   Plus,
   Sparkles,
@@ -441,6 +442,27 @@ function StructureTree(props: StructureTreeProps) {
             : "Schnell-Anlage: Einfamilienhaus"}
         </button>
       </div>
+
+      {/* Info banner explaining why Schnell-Anlage is disabled. v14
+          testers complained that a greyed-out button with nothing but
+          a native tooltip looked broken — a visible banner makes the
+          why obvious. Only shown when the project already has
+          buildings; on a fresh project the button is enabled so there
+          is no explaining to do. */}
+      {!noBuildings && (
+        <div
+          role="note"
+          className="mb-4 flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900"
+        >
+          <Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+          <span>
+            Die <strong>Schnell-Anlage</strong> ist nur für leere Projekte
+            gedacht. Sie würde sonst ein zweites Gebäude „Haupthaus" mit
+            identischer Struktur anlegen. Bitte Gebäude und Stockwerke über
+            die Buttons oben manuell ergänzen.
+          </span>
+        </div>
+      )}
 
       {addingBuilding && (
         <BuildingForm

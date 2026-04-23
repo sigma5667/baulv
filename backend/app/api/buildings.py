@@ -16,14 +16,16 @@ Cascade-delete behaviour comes from the SQLAlchemy relationships
 its floors/units/rooms/openings in one transaction.
 """
 
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db.session import get_db
+from app.db.models.calculation import Berechnungsnachweis
 from app.db.models.project import Building, Floor, Unit, Room, Opening
 from app.db.models.user import User
 from app.schemas.project import (
@@ -41,7 +43,35 @@ from app.api.ownership import (
     verify_unit_owner,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+
+async def _purge_berechnungsnachweise_for_rooms(
+    db: AsyncSession, room_ids: list[UUID]
+) -> int:
+    """Pre-cascade: wipe every Berechnungsnachweis for these rooms.
+
+    The DB-level FK on ``berechnungsnachweise.room_id`` uses
+    ``ondelete="CASCADE"``, so in principle a room delete already
+    takes its calculation rows with it. We still issue an explicit
+    DELETE here because the v14 test project surfaced a 500 on
+    ``GET /api/lv/projects/{id}/lv`` after a cascade delete — root
+    cause turned out to be a missing eager-load (fixed in v15), but
+    while debugging we want belt-and-suspenders: even if a future
+    migration breaks the FK CASCADE, rooms-about-to-be-deleted will
+    never leave dangling Berechnungsnachweis rows that could poison
+    the LV list query.
+
+    Returns the number of rows deleted so the caller can log it.
+    """
+    if not room_ids:
+        return 0
+    result = await db.execute(
+        delete(Berechnungsnachweis).where(Berechnungsnachweis.room_id.in_(room_ids))
+    )
+    return result.rowcount or 0
 
 
 # --- Buildings ---
@@ -105,6 +135,24 @@ async def delete_building(
     # transaction. The 204 tells the UI it's safe to drop the node
     # from the tree without re-fetching individual subtrees.
     building = await verify_building_owner(building_id, user, db)
+    # Defensive pre-cascade purge of Berechnungsnachweise for all
+    # rooms under this building. The FK already has ondelete=CASCADE
+    # so this is redundant in the happy path, but after the v14 "500
+    # on GET /lv" debugging episode we want to never ship a cascade
+    # delete that can leave orphaned LV-side rows again.
+    room_id_result = await db.execute(
+        select(Room.id)
+        .join(Unit, Room.unit_id == Unit.id)
+        .join(Floor, Unit.floor_id == Floor.id)
+        .where(Floor.building_id == building_id)
+    )
+    room_ids = list(room_id_result.scalars().all())
+    purged = await _purge_berechnungsnachweise_for_rooms(db, room_ids)
+    logger.info(
+        "delete_building.cascade building_id=%s rooms=%d "
+        "berechnungsnachweise_purged=%d",
+        building_id, len(room_ids), purged,
+    )
     await db.delete(building)
     await db.flush()
 
@@ -166,6 +214,19 @@ async def delete_floor(
     db: AsyncSession = Depends(get_db),
 ):
     floor = await verify_floor_owner(floor_id, user, db)
+    # Defensive orphan purge — see delete_building for rationale.
+    room_id_result = await db.execute(
+        select(Room.id)
+        .join(Unit, Room.unit_id == Unit.id)
+        .where(Unit.floor_id == floor_id)
+    )
+    room_ids = list(room_id_result.scalars().all())
+    purged = await _purge_berechnungsnachweise_for_rooms(db, room_ids)
+    logger.info(
+        "delete_floor.cascade floor_id=%s rooms=%d "
+        "berechnungsnachweise_purged=%d",
+        floor_id, len(room_ids), purged,
+    )
     await db.delete(floor)
     await db.flush()
 
@@ -227,6 +288,17 @@ async def delete_unit(
     db: AsyncSession = Depends(get_db),
 ):
     unit = await verify_unit_owner(unit_id, user, db)
+    # Defensive orphan purge — see delete_building for rationale.
+    room_id_result = await db.execute(
+        select(Room.id).where(Room.unit_id == unit_id)
+    )
+    room_ids = list(room_id_result.scalars().all())
+    purged = await _purge_berechnungsnachweise_for_rooms(db, room_ids)
+    logger.info(
+        "delete_unit.cascade unit_id=%s rooms=%d "
+        "berechnungsnachweise_purged=%d",
+        unit_id, len(room_ids), purged,
+    )
     await db.delete(unit)
     await db.flush()
 

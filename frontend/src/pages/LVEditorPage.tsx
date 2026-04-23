@@ -53,6 +53,21 @@ function getErrorMessage(err: unknown): string {
     if (resp?.status === 403) return "Diese Funktion erfordert ein Upgrade Ihres Plans.";
     if (resp?.status === 401) return "Bitte melden Sie sich erneut an.";
     if (resp?.status === 404) return "Ressource nicht gefunden (404).";
+    // 503 after our own retry budget is exhausted means the server
+    // really couldn't produce the export in time — give the user a
+    // more specific message than the generic 5xx branch below.
+    if (resp?.status === 503) {
+      return (
+        "Der Server ist gerade überlastet. Bitte versuchen Sie es in " +
+        "einer Minute erneut."
+      );
+    }
+    if (resp?.status === 502 || resp?.status === 504) {
+      return (
+        "Der Server hat nicht rechtzeitig geantwortet. Bitte versuchen " +
+        "Sie es erneut."
+      );
+    }
     if (resp?.status >= 500) return `Serverfehler (${resp.status}). Bitte versuchen Sie es später erneut.`;
   }
   if (err && typeof err === "object" && "message" in err) {
@@ -146,18 +161,53 @@ export function LVEditorPage() {
 
   // "Wandflächen aus Räumen übernehmen" — fans the project's total
   // net wall area out to every wall-trade position (Wand/Tapete/
-  // Anstrich/Fliesen/Putz) in the current LV. Locked positions are
-  // skipped by the backend so a reviewer's manual override survives.
+  // Anstrich/Fliesen/Putz, but NOT Decke) and the project's total
+  // floor area out to every ceiling-trade position (Decke/Decken-
+  // anstrich) in the current LV. Locked positions are skipped by the
+  // backend so a reviewer's manual override survives.
   const wallSyncMutation = useMutation({
     mutationFn: () => syncWallAreas(activeLvId!),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["lv", activeLvId] });
       setErrorMsg(null);
-      const parts = [
-        `Wandflächen übernommen: ${data.positions_updated} Position${
-          data.positions_updated === 1 ? "" : "en"
-        } auf ${data.total_wall_area_m2.toFixed(2).replace(".", ",")} m² gesetzt`,
-      ];
+      const fmt = (n: number) => n.toFixed(2).replace(".", ",");
+      const parts: string[] = [];
+      // Prefer the split counts (v15 backend). Fall back to the
+      // aggregate if talking to an older backend that hasn't been
+      // redeployed yet.
+      if (
+        data.wall_positions_updated !== undefined &&
+        data.ceiling_positions_updated !== undefined
+      ) {
+        if (data.wall_positions_updated > 0) {
+          parts.push(
+            `${data.wall_positions_updated} Wand-Position${
+              data.wall_positions_updated === 1 ? "" : "en"
+            } auf ${fmt(data.total_wall_area_m2)} m² gesetzt`
+          );
+        }
+        if (
+          data.ceiling_positions_updated > 0 &&
+          data.total_ceiling_area_m2 !== undefined
+        ) {
+          parts.push(
+            `${data.ceiling_positions_updated} Decken-Position${
+              data.ceiling_positions_updated === 1 ? "" : "en"
+            } auf ${fmt(data.total_ceiling_area_m2)} m² gesetzt`
+          );
+        }
+        if (parts.length === 0) {
+          parts.push(
+            "Keine passenden Positionen gefunden — bitte Beschreibung prüfen"
+          );
+        }
+      } else {
+        parts.push(
+          `Wandflächen übernommen: ${data.positions_updated} Position${
+            data.positions_updated === 1 ? "" : "en"
+          } auf ${fmt(data.total_wall_area_m2)} m² gesetzt`
+        );
+      }
       if (data.positions_skipped_locked > 0) {
         parts.push(
           `${data.positions_skipped_locked} gesperrte Position${
@@ -176,8 +226,18 @@ export function LVEditorPage() {
   // Shared exporter for xlsx and pdf. Keeping one code path avoids drift
   // between the two formats — the only thing that changes is the query
   // param and the resulting filename extension.
+  //
+  // ``exportingFormat`` drives the per-button loading spinner. The
+  // axios layer does up to 2 automatic retries on 502/503/504 (see
+  // ``exportLV`` in api/lv.ts) so the user may sit on the spinner for
+  // up to ~10s on a cold Railway dyno before either the PDF arrives
+  // or the final error is shown.
+  const [exportingFormat, setExportingFormat] = useState<"xlsx" | "pdf" | null>(null);
   const handleExport = async (format: "xlsx" | "pdf") => {
     if (!activeLvId) return;
+    if (exportingFormat) return; // Block concurrent exports — the
+    // server can handle them but two spinners confuse the user.
+    setExportingFormat(format);
     try {
       setErrorMsg(null);
       const blob = await exportLV(activeLvId, format);
@@ -189,6 +249,8 @@ export function LVEditorPage() {
       URL.revokeObjectURL(url);
     } catch (err) {
       setErrorMsg(getErrorMessage(err));
+    } finally {
+      setExportingFormat(null);
     }
   };
 
@@ -256,19 +318,31 @@ export function LVEditorPage() {
                 </button>
                 <button
                   onClick={() => handleExport("xlsx")}
-                  className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm hover:bg-accent"
+                  disabled={exportingFormat !== null}
+                  aria-busy={exportingFormat === "xlsx"}
+                  className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
                   title="Als Excel-Datei exportieren (Pro-Plan)"
                 >
-                  <Download className="h-3.5 w-3.5" />
-                  Excel Export
+                  {exportingFormat === "xlsx" ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Download className="h-3.5 w-3.5" />
+                  )}
+                  {exportingFormat === "xlsx" ? "Exportiere…" : "Excel Export"}
                 </button>
                 <button
                   onClick={() => handleExport("pdf")}
-                  className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm hover:bg-accent"
-                  title="Als PDF exportieren"
+                  disabled={exportingFormat !== null}
+                  aria-busy={exportingFormat === "pdf"}
+                  className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
+                  title="Als PDF exportieren (kann beim ersten Export nach einem Deployment einige Sekunden länger dauern)"
                 >
-                  <FileText className="h-3.5 w-3.5" />
-                  PDF Export
+                  {exportingFormat === "pdf" ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <FileText className="h-3.5 w-3.5" />
+                  )}
+                  {exportingFormat === "pdf" ? "Exportiere…" : "PDF Export"}
                 </button>
               </>
             )}

@@ -31,6 +31,35 @@ logger = logging.getLogger(__name__)
 STATIC_DIR = Path("/app/static")
 
 
+def _prewarm_reportlab() -> None:
+    """Import every reportlab module the PDF exporter touches.
+
+    Reportlab lazy-imports a dozen submodules (pdfgen.canvas,
+    platypus.SimpleDocTemplate, lib.pagesizes, lib.styles, …) on the
+    first call to ``export_lv_pdf``. On a cold Railway container that
+    first call can take 15-40s just to hydrate the imports, which
+    blows past the edge proxy's request timeout and surfaces to the
+    user as a 502 Bad Gateway — the PDF "fails" then works on retry.
+    Importing the heavy bits at startup trades ~3s of boot time for
+    a consistent first-PDF latency in the 1-2s range.
+
+    Failures here are non-fatal: if reportlab can't import, the PDF
+    export endpoint will surface a clean 500 later instead of crashing
+    the whole process at boot.
+    """
+    try:
+        # These three are the top of the dependency graph used in
+        # app/export/pdf_exporter.py — importing them warms everything
+        # transitively.
+        import reportlab.pdfgen.canvas  # noqa: F401
+        import reportlab.lib.pagesizes  # noqa: F401
+        import reportlab.lib.styles  # noqa: F401
+        import reportlab.platypus  # noqa: F401
+        logger.info("startup.reportlab_prewarmed")
+    except Exception as exc:  # pragma: no cover — best-effort
+        logger.warning("startup.reportlab_prewarm_failed exc=%s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Run Alembic migrations on startup
@@ -45,6 +74,11 @@ async def lifespan(app: FastAPI):
             logger.error("Alembic migration failed: %s", result.stderr)
     except Exception as e:
         logger.error("Failed to run migrations: %s", e)
+
+    # Pre-warm reportlab — see _prewarm_reportlab docstring. This
+    # runs before we yield so the first PDF export request doesn't
+    # pay the cold-start cost (was: ~30s → 502).
+    _prewarm_reportlab()
 
     # Print every diagnostic-worthy setting exactly once at boot so
     # Railway startup logs answer "is my env var actually set?" without
