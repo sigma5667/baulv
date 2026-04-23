@@ -14,6 +14,7 @@ import { ProjectDetailPage } from "./pages/ProjectDetailPage";
 import { StructurePage } from "./pages/StructurePage";
 import { PlanAnalysisPage } from "./pages/PlanAnalysisPage";
 import { LVEditorPage } from "./pages/LVEditorPage";
+import { TemplatesPage } from "./pages/TemplatesPage";
 import { ProfilePage } from "./pages/ProfilePage";
 import { SubscriptionPage } from "./pages/SubscriptionPage";
 import { ChatPage } from "./pages/ChatPage";
@@ -31,6 +32,7 @@ function AuthenticatedApp() {
           <Route path="/projects/:id/structure" element={<StructurePage />} />
           <Route path="/projects/:id/plans" element={<PlanAnalysisPage />} />
           <Route path="/projects/:id/lv/:lvId?" element={<LVEditorPage />} />
+          <Route path="/templates" element={<TemplatesPage />} />
           <Route path="/chat" element={<ChatPage />} />
           <Route path="/profile" element={<ProfilePage />} />
           <Route path="/subscription" element={<SubscriptionPage />} />

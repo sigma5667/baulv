@@ -9,6 +9,7 @@ import {
   CreditCard,
   LogOut,
   MessageSquare,
+  LibraryBig,
 } from "lucide-react";
 import { useAuth } from "../../hooks/useAuth";
 import { BetaUnlockBanner } from "../BetaUnlockBanner";
@@ -16,6 +17,7 @@ import { Footer } from "./Footer";
 
 const navItems = [
   { path: "/app", label: "Dashboard", icon: LayoutDashboard },
+  { path: "/app/templates", label: "Vorlagen", icon: LibraryBig },
   { path: "/app/chat", label: "KI-Berater", icon: MessageSquare },
 ];
 

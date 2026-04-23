@@ -14,6 +14,8 @@ from app.db.models.lv import Leistungsverzeichnis, Leistungsgruppe, Position
 from app.db.models.project import Building, Floor, Room, Unit
 from app.db.models.user import User
 from app.schemas.lv import LVCreate, LVUpdate, LVResponse, PositionUpdate, PositionResponse
+from app.schemas.template import LVFromTemplateRequest, LVFromTemplateResponse
+from app.db.models.lv_template import LVTemplate
 from app.calculation_engine.engine import calculate_lv
 from app.lv_generator.generator import generate_position_texts
 from app.export.xlsx_exporter import export_lv_xlsx
@@ -47,6 +49,141 @@ async def create_lv(
     )
     result = await db.execute(stmt)
     return result.scalars().first()
+
+
+@router.post(
+    "/from-template",
+    response_model=LVFromTemplateResponse,
+    status_code=201,
+    tags=["Leistungsverzeichnis"],
+)
+async def create_lv_from_template(
+    data: LVFromTemplateRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Spawn a new Leistungsverzeichnis inside a project from a template.
+
+    Copies the template's gruppen/positionen structure into fresh DB
+    rows (``leistungsgruppen`` + ``positionen``) with no quantities and
+    no prices — those flow in later from the project's rooms (``/calculate``)
+    and from the user's manual input.
+
+    Ownership is enforced on both sides:
+
+    * The caller must own the target project.
+    * The template must be either a system template or owned by the
+      caller.
+
+    Returns the new LV's id + counts so the frontend can navigate
+    straight to it without a second round trip.
+    """
+    await verify_project_owner(data.project_id, user, db)
+
+    tpl = await db.get(LVTemplate, data.template_id)
+    if not tpl:
+        raise HTTPException(404, "Vorlage nicht gefunden")
+    if not tpl.is_system and tpl.created_by_user_id != user.id:
+        # 404-mask across tenants so existence isn't leaked.
+        raise HTTPException(404, "Vorlage nicht gefunden")
+
+    payload = tpl.template_data or {}
+    gruppen_payload = payload.get("gruppen") or []
+    if not gruppen_payload:
+        # Defensive — a system template should never be empty, but a
+        # corrupt user template could be. Refuse cleanly instead of
+        # creating a blank LV.
+        raise HTTPException(
+            400,
+            "Die ausgewählte Vorlage enthält keine Positionen.",
+        )
+
+    try:
+        lv_name = (data.name or tpl.name).strip() or tpl.name
+        lv = Leistungsverzeichnis(
+            project_id=data.project_id,
+            name=lv_name,
+            trade=tpl.gewerk,
+        )
+        db.add(lv)
+        await db.flush()  # need lv.id for FKs below
+
+        gruppen_created = 0
+        positionen_created = 0
+        for g_idx, gruppe_src in enumerate(gruppen_payload):
+            if not isinstance(gruppe_src, dict):
+                continue
+            gruppe = Leistungsgruppe(
+                lv_id=lv.id,
+                nummer=str(gruppe_src.get("nummer") or f"{g_idx + 1:02d}"),
+                bezeichnung=str(gruppe_src.get("bezeichnung") or ""),
+                sort_order=g_idx,
+            )
+            db.add(gruppe)
+            await db.flush()
+            gruppen_created += 1
+
+            for p_idx, pos_src in enumerate(gruppe_src.get("positionen") or []):
+                if not isinstance(pos_src, dict):
+                    continue
+                kurztext = str(pos_src.get("kurztext") or "").strip()
+                if not kurztext:
+                    continue  # skip malformed rows rather than 500
+                pos = Position(
+                    gruppe_id=gruppe.id,
+                    positions_nummer=str(
+                        pos_src.get("positions_nummer")
+                        or f"{gruppe.nummer}.{p_idx + 1:02d}"
+                    ),
+                    kurztext=kurztext,
+                    langtext=pos_src.get("langtext"),
+                    einheit=str(pos_src.get("einheit") or "Stk"),
+                    # menge + einheitspreis stay NULL — Berechnen and
+                    # the user fill them in downstream.
+                    menge=None,
+                    einheitspreis=None,
+                    positionsart="normal",
+                    text_source="template",
+                    is_locked=False,
+                    sort_order=p_idx,
+                )
+                db.add(pos)
+                positionen_created += 1
+        await db.flush()
+
+        logger.info(
+            "lv.from_template lv_id=%s project_id=%s template_id=%s "
+            "user_id=%s gruppen=%d positionen=%d",
+            lv.id,
+            data.project_id,
+            data.template_id,
+            user.id,
+            gruppen_created,
+            positionen_created,
+        )
+
+        return LVFromTemplateResponse(
+            lv_id=lv.id,
+            project_id=lv.project_id,
+            name=lv.name,
+            trade=lv.trade,
+            gruppen_created=gruppen_created,
+            positionen_created=positionen_created,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception(
+            "lv.from_template_failed project_id=%s template_id=%s user_id=%s",
+            data.project_id,
+            data.template_id,
+            user.id,
+        )
+        raise HTTPException(
+            500,
+            "LV konnte nicht aus der Vorlage erstellt werden. Der Fehler "
+            "wurde protokolliert.",
+        )
 
 
 @router.get("/projects/{project_id}/lv", response_model=list[LVResponse],

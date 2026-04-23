@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -16,6 +16,8 @@ import {
   Check,
   X,
   Ruler,
+  LibraryBig,
+  BookmarkPlus,
 } from "lucide-react";
 import {
   fetchProjectLVs,
@@ -26,7 +28,16 @@ import {
   exportLV,
   syncWallAreas,
 } from "../api/lv";
+import {
+  fetchTemplates,
+  createLVFromTemplate,
+  createTemplateFromLV,
+} from "../api/templates";
 import type { LVCreate, Leistungsgruppe, Position, Berechnungsnachweis } from "../types/lv";
+import {
+  TEMPLATE_CATEGORY_LABELS,
+  type TemplateCategory,
+} from "../types/template";
 
 const TRADES = [
   { value: "malerarbeiten", label: "Malerarbeiten" },
@@ -80,7 +91,9 @@ function getErrorMessage(err: unknown): string {
 export function LVEditorPage() {
   const { id: projectId, lvId } = useParams<{ id: string; lvId?: string }>();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [showCreate, setShowCreate] = useState(false);
+  const [showSaveTemplate, setShowSaveTemplate] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
@@ -103,6 +116,59 @@ export function LVEditorPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["lvs", projectId] });
       setShowCreate(false);
+    },
+  });
+
+  // "Aus Vorlage starten" path — same modal as "Neues LV" but routed
+  // through the from-template endpoint which pre-seeds the new LV
+  // with the template's gruppen/positionen (no prices, no quantities).
+  const createFromTemplateMutation = useMutation({
+    mutationFn: async (args: { templateId: string; name?: string }) => {
+      return createLVFromTemplate({
+        project_id: projectId!,
+        template_id: args.templateId,
+        name: args.name,
+      });
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["lvs", projectId] });
+      setShowCreate(false);
+      setErrorMsg(null);
+      setSuccessMsg(
+        `LV "${data.name}" aus Vorlage erstellt — ${data.positionen_created} Positionen übernommen.`
+      );
+      // Jump straight to the new LV.
+      navigate(`/app/projects/${projectId}/lv/${data.lv_id}`);
+    },
+    onError: (err) => {
+      setSuccessMsg(null);
+      setErrorMsg(getErrorMessage(err));
+    },
+  });
+
+  // "Als Vorlage speichern" — freezes the current LV's group/position
+  // structure (without prices or quantities) as a new user template.
+  const saveTemplateMutation = useMutation({
+    mutationFn: (args: {
+      name: string;
+      description: string;
+      category: TemplateCategory;
+    }) =>
+      createTemplateFromLV({
+        lv_id: activeLvId!,
+        name: args.name,
+        description: args.description,
+        category: args.category,
+      }),
+    onSuccess: (tpl) => {
+      queryClient.invalidateQueries({ queryKey: ["templates"] });
+      setShowSaveTemplate(false);
+      setErrorMsg(null);
+      setSuccessMsg(`Vorlage "${tpl.name}" gespeichert.`);
+    },
+    onError: (err) => {
+      setSuccessMsg(null);
+      setErrorMsg(getErrorMessage(err));
     },
   });
 
@@ -344,6 +410,17 @@ export function LVEditorPage() {
                   )}
                   {exportingFormat === "pdf" ? "Exportiere…" : "PDF Export"}
                 </button>
+                <button
+                  onClick={() => setShowSaveTemplate(true)}
+                  disabled={
+                    !activeLV || (activeLV.gruppen?.length ?? 0) === 0
+                  }
+                  className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                  title="Dieses LV als wiederverwendbare Vorlage speichern (Preise und Mengen werden nicht übernommen)"
+                >
+                  <BookmarkPlus className="h-3.5 w-3.5" />
+                  Als Vorlage speichern
+                </button>
               </>
             )}
           </div>
@@ -354,11 +431,27 @@ export function LVEditorPage() {
       {showCreate && (
         <div className="border-b bg-muted/30 px-6 py-4">
           <CreateLVForm
-            onSubmit={(data) => createMutation.mutate(data)}
+            onCreateBlank={(data) => createMutation.mutate(data)}
+            onCreateFromTemplate={(templateId, name) =>
+              createFromTemplateMutation.mutate({ templateId, name })
+            }
             onCancel={() => setShowCreate(false)}
-            isLoading={createMutation.isPending}
+            isLoading={
+              createMutation.isPending ||
+              createFromTemplateMutation.isPending
+            }
           />
         </div>
+      )}
+
+      {/* Save-as-template modal */}
+      {showSaveTemplate && activeLV && (
+        <SaveAsTemplateModal
+          lvName={activeLV.name}
+          onCancel={() => setShowSaveTemplate(false)}
+          onSubmit={(data) => saveTemplateMutation.mutate(data)}
+          isLoading={saveTemplateMutation.isPending}
+        />
       )}
 
       {/* LV tabs */}
@@ -460,61 +553,337 @@ export function LVEditorPage() {
 }
 
 
+// CreateLVForm — two modes:
+//   1. "Leer starten"     → calls onCreateBlank with { name, trade }
+//   2. "Aus Vorlage ..."  → calls onCreateFromTemplate(templateId, name?)
+// The template list is lazy-loaded (only when the user toggles into
+// template mode) so dashboard navigation stays snappy.
 function CreateLVForm({
-  onSubmit,
+  onCreateBlank,
+  onCreateFromTemplate,
   onCancel,
   isLoading,
 }: {
-  onSubmit: (data: LVCreate) => void;
+  onCreateBlank: (data: LVCreate) => void;
+  onCreateFromTemplate: (templateId: string, name?: string) => void;
   onCancel: () => void;
   isLoading: boolean;
 }) {
+  const [mode, setMode] = useState<"blank" | "template">("blank");
   const [trade, setTrade] = useState(TRADES[0].value);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
+  const [customName, setCustomName] = useState("");
   const selected = TRADES.find((t) => t.value === trade)!;
+
+  // Only fetch templates when the user actually toggles into template
+  // mode — avoids a needless round-trip for the common "blank LV" path.
+  const { data: templates = [], isLoading: templatesLoading } = useQuery({
+    queryKey: ["templates"],
+    queryFn: () => fetchTemplates(),
+    enabled: mode === "template",
+  });
+
+  const selectedTemplate = templates.find((t) => t.id === selectedTemplateId);
+
+  const handleSubmit = () => {
+    if (mode === "blank") {
+      onCreateBlank({
+        name: customName.trim() || `LV ${selected.label}`,
+        trade: selected.value,
+      });
+    } else {
+      if (!selectedTemplateId) return;
+      onCreateFromTemplate(
+        selectedTemplateId,
+        customName.trim() || undefined
+      );
+    }
+  };
+
+  const canSubmit =
+    !isLoading &&
+    (mode === "blank" || (mode === "template" && !!selectedTemplateId));
 
   return (
     <div className="space-y-4">
-      <div className="flex items-end gap-4">
-        <div>
-          <label className="mb-1 block text-sm font-medium">Gewerk</label>
-          <select
-            value={trade}
-            onChange={(e) => setTrade(e.target.value)}
-            className="rounded-md border px-3 py-2 text-sm"
-          >
-            {TRADES.map((t) => (
-              <option key={t.value} value={t.value}>
-                {t.label}
-              </option>
-            ))}
-          </select>
-        </div>
+      {/* Mode toggle */}
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => setMode("blank")}
+          className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors ${
+            mode === "blank"
+              ? "border-primary bg-primary/10 text-primary"
+              : "text-muted-foreground hover:bg-accent"
+          }`}
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Leer starten
+        </button>
+        <button
+          type="button"
+          onClick={() => setMode("template")}
+          className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors ${
+            mode === "template"
+              ? "border-primary bg-primary/10 text-primary"
+              : "text-muted-foreground hover:bg-accent"
+          }`}
+        >
+          <LibraryBig className="h-3.5 w-3.5" />
+          Aus Vorlage starten
+        </button>
       </div>
 
+      {mode === "blank" ? (
+        <div className="flex flex-wrap items-end gap-4">
+          <div>
+            <label className="mb-1 block text-sm font-medium">Gewerk</label>
+            <select
+              value={trade}
+              onChange={(e) => setTrade(e.target.value)}
+              className="rounded-md border px-3 py-2 text-sm"
+            >
+              {TRADES.map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="min-w-[20rem] flex-1">
+            <label className="mb-1 block text-sm font-medium">
+              Bezeichnung (optional)
+            </label>
+            <input
+              type="text"
+              value={customName}
+              onChange={(e) => setCustomName(e.target.value)}
+              placeholder={`LV ${selected.label}`}
+              className="w-full rounded-md border px-3 py-2 text-sm"
+            />
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <div>
+            <label className="mb-1 block text-sm font-medium">Vorlage</label>
+            {templatesLoading ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Vorlagen werden geladen…
+              </div>
+            ) : templates.length === 0 ? (
+              <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                Keine Vorlagen gefunden. Öffnen Sie{" "}
+                <Link
+                  to="/app/templates"
+                  className="font-medium underline hover:no-underline"
+                >
+                  die Vorlagen-Seite
+                </Link>
+                , um eine anzulegen oder eine System-Vorlage zu nutzen.
+              </div>
+            ) : (
+              <select
+                value={selectedTemplateId}
+                onChange={(e) => setSelectedTemplateId(e.target.value)}
+                className="w-full rounded-md border px-3 py-2 text-sm"
+              >
+                <option value="">— Vorlage wählen —</option>
+                {templates.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.is_system ? "[System] " : ""}
+                    {t.name} · {t.positionen_count} Positionen
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+          {selectedTemplate && (
+            <div className="rounded-md bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+              {selectedTemplate.description || "Keine Beschreibung."} —{" "}
+              <strong>{selectedTemplate.gruppen_count}</strong> Gruppen,{" "}
+              <strong>{selectedTemplate.positionen_count}</strong> Positionen.
+            </div>
+          )}
+          <div>
+            <label className="mb-1 block text-sm font-medium">
+              LV-Name (optional)
+            </label>
+            <input
+              type="text"
+              value={customName}
+              onChange={(e) => setCustomName(e.target.value)}
+              placeholder={
+                selectedTemplate
+                  ? selectedTemplate.name
+                  : "Name der neuen LV"
+              }
+              className="w-full rounded-md border px-3 py-2 text-sm"
+            />
+          </div>
+        </div>
+      )}
+
       <p className="text-xs text-muted-foreground">
-        Die Berechnungsregeln für dieses Gewerk sind fest integriert — BauLV
-        wendet sie automatisch auf die Räume Ihres Projekts an.
+        Die Berechnungsregeln für das gewählte Gewerk sind fest integriert
+        — BauLV wendet sie automatisch auf die Räume Ihres Projekts an.
+        Beim Erstellen aus einer Vorlage werden nur Struktur und Texte
+        übernommen (keine Preise, keine Mengen).
       </p>
 
       <div className="flex gap-2">
         <button
-          onClick={() =>
-            onSubmit({
-              name: `LV ${selected.label}`,
-              trade: selected.value,
-            })
-          }
-          disabled={isLoading}
-          className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          type="button"
+          onClick={handleSubmit}
+          disabled={!canSubmit}
+          className="flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {isLoading ? "Erstelle..." : "LV erstellen"}
+          {isLoading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+          {isLoading
+            ? "Erstelle…"
+            : mode === "blank"
+            ? "LV erstellen"
+            : "LV aus Vorlage erstellen"}
         </button>
         <button
+          type="button"
           onClick={onCancel}
           className="rounded-md border px-4 py-2 text-sm hover:bg-accent"
         >
           Abbrechen
         </button>
+      </div>
+    </div>
+  );
+}
+
+// SaveAsTemplateModal — captures a name/category/description from the
+// user and hands them to the parent mutation. The parent is responsible
+// for actually calling createTemplateFromLV with the active LV id; this
+// component is purely a UI shell.
+function SaveAsTemplateModal({
+  lvName,
+  onCancel,
+  onSubmit,
+  isLoading,
+}: {
+  lvName: string;
+  onCancel: () => void;
+  onSubmit: (data: {
+    name: string;
+    description: string;
+    category: TemplateCategory;
+  }) => void;
+  isLoading: boolean;
+}) {
+  const [name, setName] = useState(lvName);
+  const [description, setDescription] = useState("");
+  const [category, setCategory] =
+    useState<TemplateCategory>("einfamilienhaus");
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+    onSubmit({
+      name: name.trim(),
+      description: description.trim(),
+      category,
+    });
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      onClick={onCancel}
+    >
+      <div
+        className="w-full max-w-md rounded-lg border bg-card shadow-lg"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b px-5 py-3">
+          <h2 className="flex items-center gap-2 text-base font-semibold">
+            <BookmarkPlus className="h-4 w-4 text-primary" />
+            Als Vorlage speichern
+          </h2>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded p-1 hover:bg-accent"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <form onSubmit={handleSubmit} className="space-y-4 px-5 py-4">
+          <p className="text-xs text-muted-foreground">
+            Die Struktur (Leistungsgruppen + Positionen mit Kurz-/Langtext)
+            wird übernommen. Preise und Mengen werden nicht gespeichert —
+            die Vorlage bleibt projekt- und preisunabhängig.
+          </p>
+          <div>
+            <label className="mb-1 block text-sm font-medium">Name</label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+              className="w-full rounded-md border px-3 py-2 text-sm"
+              placeholder="z. B. Wohnanlage Standard — Malerarbeiten"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium">
+              Kategorie
+            </label>
+            <select
+              value={category}
+              onChange={(e) =>
+                setCategory(e.target.value as TemplateCategory)
+              }
+              className="w-full rounded-md border px-3 py-2 text-sm"
+            >
+              {(
+                Object.entries(TEMPLATE_CATEGORY_LABELS) as [
+                  TemplateCategory,
+                  string
+                ][]
+              ).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium">
+              Beschreibung (optional)
+            </label>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={3}
+              className="w-full rounded-md border px-3 py-2 text-sm"
+              placeholder="Wann eignet sich diese Vorlage am besten?"
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={onCancel}
+              className="rounded-md border px-4 py-2 text-sm hover:bg-accent"
+            >
+              Abbrechen
+            </button>
+            <button
+              type="submit"
+              disabled={isLoading || !name.trim()}
+              className="flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isLoading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              {isLoading ? "Speichere…" : "Vorlage speichern"}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );

@@ -5,6 +5,7 @@ from app.api.plans import router as plans_router
 from app.api.buildings import router as buildings_router
 from app.api.rooms import router as rooms_router
 from app.api.lv import router as lv_router
+from app.api.templates import router as templates_router
 from app.api.chat import router as chat_router
 from app.api.support_chat import router as support_chat_router
 from app.api.auth import router as auth_router
@@ -19,6 +20,7 @@ api_router.include_router(plans_router, prefix="/plans", tags=["Plans"])
 api_router.include_router(buildings_router, tags=["Buildings"])
 api_router.include_router(rooms_router, tags=["Rooms"])
 api_router.include_router(lv_router, prefix="/lv", tags=["Leistungsverzeichnis"])
+api_router.include_router(templates_router, prefix="/templates", tags=["LV-Vorlagen"])
 api_router.include_router(chat_router, prefix="/chat", tags=["Chat"])
 # Public, unauthenticated: landing-page support widget.
 api_router.include_router(support_chat_router, tags=["Support Chat"])
