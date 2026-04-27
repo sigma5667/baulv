@@ -9,11 +9,19 @@ from app.api.templates import router as templates_router
 from app.api.chat import router as chat_router
 from app.api.support_chat import router as support_chat_router
 from app.api.auth import router as auth_router
+from app.api.api_keys import router as api_keys_router
 from app.api.stripe_api import router as stripe_router
 
 api_router = APIRouter()
 
 api_router.include_router(auth_router, prefix="/auth", tags=["Auth"])
+# Programmatic-access tokens (PATs) for headless agents. Sub-mounted
+# under ``/auth/me/api-keys`` so they live with the rest of the
+# "current user" surface; auth itself is JWT-only on this router
+# (PATs can't manage their own lifecycle — see app/api/api_keys.py).
+api_router.include_router(
+    api_keys_router, prefix="/auth/me/api-keys", tags=["API Keys"]
+)
 api_router.include_router(stripe_router, prefix="/stripe", tags=["Stripe"])
 api_router.include_router(projects_router, prefix="/projects", tags=["Projects"])
 api_router.include_router(plans_router, prefix="/plans", tags=["Plans"])

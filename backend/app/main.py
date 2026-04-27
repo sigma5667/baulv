@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from app.config import settings
 from app.api.router import api_router
+from app.mcp import build_mcp_app
 
 # Configure root logger once at import time so our ``app.*`` loggers
 # actually emit to stdout under gunicorn/uvicorn on Railway. Without
@@ -136,6 +137,16 @@ def create_app() -> FastAPI:
     # API routes
     app.include_router(api_router, prefix="/api")
 
+    # MCP (Model Context Protocol) endpoint for headless agents —
+    # Claude Desktop, n8n, ChatGPT custom connectors. Mounted as a
+    # Starlette sub-app because the SSE transport ships its own ASGI
+    # POST handler that doesn't compose with FastAPI's body parsing
+    # (would double-consume the JSON-RPC payload). See ``app/mcp/``
+    # for the auth model and tool catalogue. Must be mounted BEFORE
+    # the SPA catch-all below so ``/mcp/*`` requests reach this app
+    # instead of being served the index.html.
+    app.mount("/mcp", build_mcp_app())
+
     # Serve frontend static files in production
     if STATIC_DIR.exists() and (STATIC_DIR / "index.html").exists():
         # Serve static assets (JS, CSS, images)
@@ -181,6 +192,14 @@ def create_app() -> FastAPI:
         async def serve_spa(request: Request, full_path: str):
             # Don't catch API routes
             if full_path.startswith("api/"):
+                return JSONResponse({"error": "not found"}, status_code=404)
+            # MCP requests are handled by the Starlette sub-app mounted
+            # at /mcp; the mount registration above already takes
+            # precedence over this catch-all. We add the explicit guard
+            # anyway so a future refactor that shuffles registration
+            # order can't accidentally start serving index.html for
+            # missing MCP routes — better to 404 cleanly.
+            if full_path.startswith("mcp/") or full_path == "mcp":
                 return JSONResponse({"error": "not found"}, status_code=404)
             # Try to serve actual file first (e.g., favicon.ico). Static
             # files get normal (browser-default) caching — they're

@@ -26,6 +26,10 @@ dependencies = [
     "stripe>=7.0.0",
     "bcrypt>=4.0.0",
     "email-validator>=2.0.0",
+    # Model Context Protocol SDK — backs the /mcp SSE endpoint that
+    # external agents (Claude Desktop, n8n, ChatGPT custom connectors)
+    # connect to. See app/mcp/.
+    "mcp>=1.0.0",
 ]
 
 [project.optional-dependencies]
