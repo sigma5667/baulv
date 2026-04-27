@@ -51,6 +51,97 @@ async def create_lv(
     return result.scalars().first()
 
 
+async def _copy_template_payload_into_new_lv(
+    tpl: LVTemplate,
+    project_id: UUID,
+    name_override: str | None,
+    db: AsyncSession,
+) -> tuple[Leistungsverzeichnis, int, int]:
+    """Copy a template's gruppen/positionen payload into a fresh LV.
+
+    The caller must have already authenticated the user and verified
+    ownership of both the target project and the template. This helper
+    is the pure copy mechanic — no auth, no audit logging — and is
+    shared by the REST endpoint (``create_lv_from_template`` below)
+    and the MCP ``create_lv_from_template`` tool. Keeping it in one
+    place is the explicit "kein Drift zwischen REST und MCP"
+    contract: any future tweak to the copy semantics flows to both
+    surfaces simultaneously.
+
+    Returns ``(lv, gruppen_created, positionen_created)``. The LV row
+    is added to the session and flushed so its id is available;
+    callers are responsible for the surrounding commit.
+
+    Raises:
+        HTTPException(400): the template's payload has no gruppen.
+            The endpoint code translates that into the same
+            user-facing message either way.
+    """
+    payload = tpl.template_data or {}
+    gruppen_payload = payload.get("gruppen") or []
+    if not gruppen_payload:
+        # Defensive — a system template should never be empty, but a
+        # corrupt user template could be. Refuse cleanly instead of
+        # creating a blank LV.
+        raise HTTPException(
+            400,
+            "Die ausgewählte Vorlage enthält keine Positionen.",
+        )
+
+    lv_name = (name_override or tpl.name).strip() or tpl.name
+    lv = Leistungsverzeichnis(
+        project_id=project_id,
+        name=lv_name,
+        trade=tpl.gewerk,
+    )
+    db.add(lv)
+    await db.flush()  # need lv.id for FKs below
+
+    gruppen_created = 0
+    positionen_created = 0
+    for g_idx, gruppe_src in enumerate(gruppen_payload):
+        if not isinstance(gruppe_src, dict):
+            continue
+        gruppe = Leistungsgruppe(
+            lv_id=lv.id,
+            nummer=str(gruppe_src.get("nummer") or f"{g_idx + 1:02d}"),
+            bezeichnung=str(gruppe_src.get("bezeichnung") or ""),
+            sort_order=g_idx,
+        )
+        db.add(gruppe)
+        await db.flush()
+        gruppen_created += 1
+
+        for p_idx, pos_src in enumerate(gruppe_src.get("positionen") or []):
+            if not isinstance(pos_src, dict):
+                continue
+            kurztext = str(pos_src.get("kurztext") or "").strip()
+            if not kurztext:
+                continue  # skip malformed rows rather than 500
+            pos = Position(
+                gruppe_id=gruppe.id,
+                positions_nummer=str(
+                    pos_src.get("positions_nummer")
+                    or f"{gruppe.nummer}.{p_idx + 1:02d}"
+                ),
+                kurztext=kurztext,
+                langtext=pos_src.get("langtext"),
+                einheit=str(pos_src.get("einheit") or "Stk"),
+                # menge + einheitspreis stay NULL — Berechnen and
+                # the user fill them in downstream.
+                menge=None,
+                einheitspreis=None,
+                positionsart="normal",
+                text_source="template",
+                is_locked=False,
+                sort_order=p_idx,
+            )
+            db.add(pos)
+            positionen_created += 1
+    await db.flush()
+    return lv, gruppen_created, positionen_created
+
+
 @router.post(
     "/from-template",
     response_model=LVFromTemplateResponse,
@@ -87,69 +178,12 @@ async def create_lv_from_template(
         # 404-mask across tenants so existence isn't leaked.
         raise HTTPException(404, "Vorlage nicht gefunden")
 
-    payload = tpl.template_data or {}
-    gruppen_payload = payload.get("gruppen") or []
-    if not gruppen_payload:
-        # Defensive — a system template should never be empty, but a
-        # corrupt user template could be. Refuse cleanly instead of
-        # creating a blank LV.
-        raise HTTPException(
-            400,
-            "Die ausgewählte Vorlage enthält keine Positionen.",
-        )
-
     try:
-        lv_name = (data.name or tpl.name).strip() or tpl.name
-        lv = Leistungsverzeichnis(
-            project_id=data.project_id,
-            name=lv_name,
-            trade=tpl.gewerk,
-        )
-        db.add(lv)
-        await db.flush()  # need lv.id for FKs below
-
-        gruppen_created = 0
-        positionen_created = 0
-        for g_idx, gruppe_src in enumerate(gruppen_payload):
-            if not isinstance(gruppe_src, dict):
-                continue
-            gruppe = Leistungsgruppe(
-                lv_id=lv.id,
-                nummer=str(gruppe_src.get("nummer") or f"{g_idx + 1:02d}"),
-                bezeichnung=str(gruppe_src.get("bezeichnung") or ""),
-                sort_order=g_idx,
+        lv, gruppen_created, positionen_created = (
+            await _copy_template_payload_into_new_lv(
+                tpl, data.project_id, data.name, db
             )
-            db.add(gruppe)
-            await db.flush()
-            gruppen_created += 1
-
-            for p_idx, pos_src in enumerate(gruppe_src.get("positionen") or []):
-                if not isinstance(pos_src, dict):
-                    continue
-                kurztext = str(pos_src.get("kurztext") or "").strip()
-                if not kurztext:
-                    continue  # skip malformed rows rather than 500
-                pos = Position(
-                    gruppe_id=gruppe.id,
-                    positions_nummer=str(
-                        pos_src.get("positions_nummer")
-                        or f"{gruppe.nummer}.{p_idx + 1:02d}"
-                    ),
-                    kurztext=kurztext,
-                    langtext=pos_src.get("langtext"),
-                    einheit=str(pos_src.get("einheit") or "Stk"),
-                    # menge + einheitspreis stay NULL — Berechnen and
-                    # the user fill them in downstream.
-                    menge=None,
-                    einheitspreis=None,
-                    positionsart="normal",
-                    text_source="template",
-                    is_locked=False,
-                    sort_order=p_idx,
-                )
-                db.add(pos)
-                positionen_created += 1
-        await db.flush()
+        )
 
         logger.info(
             "lv.from_template lv_id=%s project_id=%s template_id=%s "
