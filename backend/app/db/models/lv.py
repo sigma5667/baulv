@@ -31,6 +31,13 @@ class Leistungsgruppe(Base):
     nummer: Mapped[str] = mapped_column(String(20))
     bezeichnung: Mapped[str] = mapped_column(String(500))
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    # Added in v18 (alongside the upsert refactor) so callers — especially
+    # MCP agents — can tell when a group was first surfaced for an LV vs.
+    # last touched. Mirrors the Position timestamps for consistency. The
+    # accompanying migration backfills both columns to ``now()`` so existing
+    # rows remain valid.
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
 
     lv: Mapped["Leistungsverzeichnis"] = relationship(back_populates="gruppen")
     positionen: Mapped[list["Position"]] = relationship(back_populates="gruppe", cascade="all, delete-orphan")

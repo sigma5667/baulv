@@ -1,24 +1,68 @@
 """Calculation engine orchestrator.
 
 Loads room data, instantiates the correct trade calculator,
-runs the deterministic calculation, and stores results.
+runs the deterministic calculation, and persists the result as an
+**upsert** against the existing LV — preserving identity (and any
+manual edits) of positions across repeated calculate runs.
+
+History
+=======
+
+Up to v17 this module worked by deleting **every** ``Leistungsgruppe``
+of the LV (which CASCADEd to every ``Position`` and every
+``Berechnungsnachweis``) and recreating the lot from the calculator's
+output. Two consequences:
+
+* Position IDs rotated on every ``/calculate``. Agents (or anything
+  that holds a position reference across runs) saw their IDs evaporate.
+* ``is_locked = True``, ``langtext`` (manual edits) and
+  ``einheitspreis`` were silently lost on every calculate, despite
+  the lock-button promise that "this position is protected".
+
+v18 fixes both by upserting:
+
+* Existing groups are matched by ``(lv_id, nummer)`` and only their
+  ``bezeichnung`` / ``sort_order`` are refreshed.
+* Existing positions are matched by ``(gruppe_id, positions_nummer)``
+  and only the **calculator-owned** fields (``kurztext``, ``einheit``,
+  ``menge``, ``sort_order``) are updated.
+* User-owned fields (``langtext``, ``einheitspreis``, ``is_locked``,
+  ``text_source``) are never touched on update.
+* ``is_locked = True`` short-circuits the entire update — the position
+  keeps every field it had, BNs included, and survives the cleanup
+  phase even when the new run no longer produces it.
+* Positions the new run no longer produces are deleted (CASCADE on
+  BNs) — but only when ``is_locked = False``.
+* Groups left empty after position cleanup are deleted.
+
+Berechnungsnachweise are still **replaced** per (unlocked) position.
+BN IDs are intentionally not stable across runs — they're pure proof
+of derivation, not addressable entities. Agents reference positions,
+not BNs. See ``docs/ID_MIGRATION.md`` for the full reasoning.
 """
 
+import logging
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.calculation_engine.registry import TradeRegistry
-from app.calculation_engine.types import RoomWithOpenings, OpeningData, PositionQuantity
-from app.db.models.project import Room, Opening, Unit, Floor, Building
-from app.db.models.lv import Leistungsverzeichnis, Leistungsgruppe, Position
+from app.calculation_engine.types import (
+    OpeningData,
+    PositionQuantity,
+    RoomWithOpenings,
+)
 from app.db.models.calculation import Berechnungsnachweis
+from app.db.models.lv import Leistungsgruppe, Leistungsverzeichnis, Position
+from app.db.models.project import Building, Floor, Room, Unit
 
 # Ensure trade modules are imported and registered
 import app.calculation_engine.trades  # noqa: F401
+
+logger = logging.getLogger(__name__)
 
 
 def _code_to_sort_order(code: str) -> int:
@@ -99,30 +143,73 @@ async def load_rooms_for_project(project_id: UUID, db: AsyncSession) -> list[Roo
     return room_data
 
 
+def _replace_berechnungsnachweise(
+    db: AsyncSession,
+    pos: Position,
+    measurement_lines: list,
+) -> None:
+    """Replace all Berechnungsnachweise of an unlocked position.
+
+    Removes the existing BNs via the relationship so SQLAlchemy's
+    ``delete-orphan`` cascade evicts them on the next flush, then adds
+    fresh rows for every ``MeasurementLine`` in the calculator's output.
+
+    BN IDs are deliberately not preserved — see the module docstring.
+    """
+    for bn in list(pos.berechnungsnachweise):
+        pos.berechnungsnachweise.remove(bn)
+    for line in measurement_lines:
+        nachweis = Berechnungsnachweis(
+            position_id=pos.id,
+            room_id=UUID(line.room_id),
+            raw_quantity=float(line.raw_quantity),
+            formula_description=line.formula_description,
+            formula_expression=line.formula_expression,
+            onorm_factor=float(line.onorm_factor),
+            onorm_rule_ref=line.onorm_rule_ref,
+            onorm_paragraph=line.onorm_paragraph,
+            deductions=[
+                {
+                    "opening": d.opening,
+                    "area": d.area,
+                    "deducted": d.deducted,
+                    "reason": d.reason,
+                }
+                for d in line.deductions
+            ],
+            net_quantity=float(line.net_quantity),
+            unit=line.unit,
+            notes=line.notes,
+        )
+        db.add(nachweis)
+
+
 async def calculate_lv(
     lv_id: UUID,
     db: AsyncSession,
 ) -> list[PositionQuantity]:
-    """Run the calculation engine for an LV.
+    """Run the calculation engine for an LV and upsert the result.
 
-    1. Load the LV to get trade info
-    2. Load all rooms for the project
-    3. Instantiate the trade calculator
-    4. Run deterministic calculation
-    5. Store positions + Berechnungsnachweise in DB
+    See module docstring for the full upsert contract. Returns the raw
+    ``PositionQuantity`` list from the calculator so the API layer can
+    report counts for the response payload.
     """
-    # Load LV with gruppen eagerly loaded (required for async session)
+    # Eager-load the whole tree — we need positions and their BNs to
+    # decide what to update vs. replace vs. delete.
     stmt = (
         select(Leistungsverzeichnis)
         .where(Leistungsverzeichnis.id == lv_id)
-        .options(selectinload(Leistungsverzeichnis.gruppen))
+        .options(
+            selectinload(Leistungsverzeichnis.gruppen)
+            .selectinload(Leistungsgruppe.positionen)
+            .selectinload(Position.berechnungsnachweise),
+        )
     )
     result = await db.execute(stmt)
     lv = result.scalars().first()
     if not lv:
         raise ValueError(f"LV {lv_id} not found")
 
-    # Load rooms
     rooms = await load_rooms_for_project(lv.project_id, db)
     if not rooms:
         raise ValueError(
@@ -131,23 +218,39 @@ async def calculate_lv(
             "oder erstellen Sie Räume manuell über Gebäude → Stockwerk → Einheit → Raum."
         )
 
-    # Get calculator
     calculator = TradeRegistry.get(lv.trade)
-
-    # Run deterministic calculation
     results = calculator.calculate(rooms)
 
-    # Clear existing positions and calculations for this LV
-    for gruppe in lv.gruppen:
-        await db.delete(gruppe)
-    await db.flush()
+    # Index existing structure by stable secondary keys for O(1) lookup.
+    # ``existing_gruppen`` keys on ``nummer`` (unique within an LV).
+    # ``existing_positions`` keys on ``(gruppe_nummer, positions_nummer)``
+    # so a position's identity is independent of its DB ``gruppe_id``
+    # — that matters when a group is deleted and recreated, even though
+    # in v18+ that should never happen for matched groups.
+    existing_gruppen: dict[str, Leistungsgruppe] = {
+        g.nummer: g for g in lv.gruppen
+    }
+    existing_positions: dict[tuple[str, str], Position] = {}
+    for g in lv.gruppen:
+        for p in g.positionen:
+            existing_positions[(g.nummer, p.positions_nummer)] = p
 
-    # Store results
-    gruppen_map: dict[str, Leistungsgruppe] = {}
+    # Counters for the structured log line emitted at the end. Easier to
+    # grep than scattered "+1" lines per branch.
+    gruppen_created = 0
+    gruppen_updated = 0
+    positions_created = 0
+    positions_updated = 0
+    positions_locked_skipped = 0
+
+    # Track what the new run produced so the cleanup phase knows what to
+    # leave alone vs. delete vs. protect-because-locked.
+    seen_position_keys: set[tuple[str, str]] = set()
 
     for pos_qty in results:
-        # Get or create Leistungsgruppe
-        if pos_qty.gruppe_nummer not in gruppen_map:
+        # ---- Group upsert -------------------------------------------
+        gruppe = existing_gruppen.get(pos_qty.gruppe_nummer)
+        if gruppe is None:
             gruppe = Leistungsgruppe(
                 lv_id=lv_id,
                 nummer=pos_qty.gruppe_nummer,
@@ -156,42 +259,108 @@ async def calculate_lv(
             )
             db.add(gruppe)
             await db.flush()
-            gruppen_map[pos_qty.gruppe_nummer] = gruppe
+            existing_gruppen[pos_qty.gruppe_nummer] = gruppe
+            gruppen_created += 1
+        else:
+            # The group itself has no user-owned fields, so refreshing
+            # bezeichnung / sort_order is safe.
+            gruppe.bezeichnung = pos_qty.gruppe_name
+            gruppe.sort_order = _code_to_sort_order(pos_qty.gruppe_nummer)
+            gruppen_updated += 1
 
-        gruppe = gruppen_map[pos_qty.gruppe_nummer]
+        # ---- Position upsert ----------------------------------------
+        key = (pos_qty.gruppe_nummer, pos_qty.position_code)
+        seen_position_keys.add(key)
+        pos = existing_positions.get(key)
 
-        # Create Position
-        position = Position(
-            gruppe_id=gruppe.id,
-            positions_nummer=pos_qty.position_code,
-            kurztext=pos_qty.short_text,
-            einheit=pos_qty.unit,
-            menge=float(pos_qty.total_quantity),
-            sort_order=_code_to_sort_order(pos_qty.position_code),
-        )
-        db.add(position)
-        await db.flush()
-
-        # Create Berechnungsnachweise
-        for line in pos_qty.measurement_lines:
-            nachweis = Berechnungsnachweis(
-                position_id=position.id,
-                room_id=UUID(line.room_id),
-                raw_quantity=float(line.raw_quantity),
-                formula_description=line.formula_description,
-                formula_expression=line.formula_expression,
-                onorm_factor=float(line.onorm_factor),
-                onorm_rule_ref=line.onorm_rule_ref,
-                onorm_paragraph=line.onorm_paragraph,
-                deductions=[
-                    {"opening": d.opening, "area": d.area, "deducted": d.deducted, "reason": d.reason}
-                    for d in line.deductions
-                ],
-                net_quantity=float(line.net_quantity),
-                unit=line.unit,
-                notes=line.notes,
+        if pos is None:
+            # Brand new position — fully driven by the calculator.
+            pos = Position(
+                gruppe_id=gruppe.id,
+                positions_nummer=pos_qty.position_code,
+                kurztext=pos_qty.short_text,
+                einheit=pos_qty.unit,
+                menge=float(pos_qty.total_quantity),
+                sort_order=_code_to_sort_order(pos_qty.position_code),
+                text_source="calculated",
             )
-            db.add(nachweis)
+            db.add(pos)
+            await db.flush()
+            existing_positions[key] = pos
+            positions_created += 1
+            _replace_berechnungsnachweise(db, pos, pos_qty.measurement_lines)
+            continue
+
+        if pos.is_locked:
+            # Hard short-circuit: locked = nothing changes.
+            # Not even the BNs — the BNs back the *current* menge, and
+            # the menge is locked.
+            positions_locked_skipped += 1
+            logger.info(
+                "calculate.skip_locked lv_id=%s position_id=%s "
+                "positions_nummer=%s reason=upsert",
+                lv_id, pos.id, pos.positions_nummer,
+            )
+            continue
+
+        # Existing, unlocked position — refresh calculator-owned fields
+        # only. ``langtext`` / ``einheitspreis`` / ``is_locked`` /
+        # ``text_source`` survive the calculate so users (and agents)
+        # don't lose edits.
+        pos.kurztext = pos_qty.short_text
+        pos.einheit = pos_qty.unit
+        pos.menge = float(pos_qty.total_quantity)
+        pos.sort_order = _code_to_sort_order(pos_qty.position_code)
+        positions_updated += 1
+        _replace_berechnungsnachweise(db, pos, pos_qty.measurement_lines)
 
     await db.flush()
+
+    # ---- Cleanup: positions the new run no longer produces ----------
+    positions_deleted = 0
+    for key, pos in list(existing_positions.items()):
+        if key in seen_position_keys:
+            continue
+        if pos.is_locked:
+            # Keep — user explicitly locked it; an empty calculator run
+            # shouldn't be enough to evict it.
+            positions_locked_skipped += 1
+            logger.info(
+                "calculate.skip_locked lv_id=%s position_id=%s "
+                "positions_nummer=%s reason=orphan",
+                lv_id, pos.id, pos.positions_nummer,
+            )
+            continue
+        await db.delete(pos)
+        positions_deleted += 1
+    await db.flush()
+
+    # ---- Cleanup: groups that are now empty -------------------------
+    # A group can end up empty when the new run dropped all of its
+    # positions and none of them were locked. Locked positions held
+    # their group alive — that's the right behaviour, leaving the
+    # locked position dangling under no group would be worse.
+    gruppen_deleted = 0
+    empty_gruppen_stmt = (
+        select(Leistungsgruppe)
+        .outerjoin(Position, Position.gruppe_id == Leistungsgruppe.id)
+        .where(Leistungsgruppe.lv_id == lv_id)
+        .group_by(Leistungsgruppe.id)
+        .having(func.count(Position.id) == 0)
+    )
+    empty_gruppen = (await db.execute(empty_gruppen_stmt)).scalars().all()
+    for g in empty_gruppen:
+        await db.delete(g)
+        gruppen_deleted += 1
+    await db.flush()
+
+    logger.info(
+        "calculate.upsert lv_id=%s gruppen_created=%d gruppen_updated=%d "
+        "gruppen_deleted=%d positions_created=%d positions_updated=%d "
+        "positions_deleted=%d positions_locked_skipped=%d",
+        lv_id, gruppen_created, gruppen_updated, gruppen_deleted,
+        positions_created, positions_updated, positions_deleted,
+        positions_locked_skipped,
+    )
+
     return results

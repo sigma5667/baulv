@@ -34,7 +34,19 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "factory-boy>=3.3.0",
     "httpx>=0.27.0",
+    # Async SQLite driver. Used by the test harness in ``tests/conftest.py``
+    # so calculation-engine tests can spin up an isolated in-memory DB
+    # without needing a running Postgres instance.
+    "aiosqlite>=0.20.0",
 ]
+
+[tool.pytest.ini_options]
+# ``asyncio_mode = "auto"`` lets us write ``async def test_...`` without
+# decorating every test with ``@pytest.mark.asyncio``. The DB tests in
+# ``tests/test_calculation_engine/test_calculate_lv_upsert.py`` rely on
+# this.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
