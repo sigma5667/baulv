@@ -16,6 +16,7 @@ import { PlanAnalysisPage } from "./pages/PlanAnalysisPage";
 import { LVEditorPage } from "./pages/LVEditorPage";
 import { TemplatesPage } from "./pages/TemplatesPage";
 import { ProfilePage } from "./pages/ProfilePage";
+import { ApiKeysPage } from "./pages/ApiKeysPage";
 import { SubscriptionPage } from "./pages/SubscriptionPage";
 import { ChatPage } from "./pages/ChatPage";
 import { ImpressumPage } from "./pages/ImpressumPage";
@@ -35,6 +36,7 @@ function AuthenticatedApp() {
           <Route path="/templates" element={<TemplatesPage />} />
           <Route path="/chat" element={<ChatPage />} />
           <Route path="/profile" element={<ProfilePage />} />
+          <Route path="/api-keys" element={<ApiKeysPage />} />
           <Route path="/subscription" element={<SubscriptionPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

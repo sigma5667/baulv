@@ -170,6 +170,62 @@ async def test_verify_pat_rejects_revoked_token(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
+async def test_verify_pat_rejects_expired_token(db_session: AsyncSession):
+    """``expires_at`` in the past must reject the token, even though
+    revoked_at is still NULL. This is the time-bomb contract a user
+    relies on when picking a 30-day expiry on key creation."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select
+
+    from app.db.models.api_key import ApiKey
+
+    user = await _make_user(db_session)
+    token = await _mint_and_persist(db_session, user)
+
+    api_key = (
+        await db_session.execute(
+            select(ApiKey).where(ApiKey.user_id == user.id)
+        )
+    ).scalars().first()
+    assert api_key is not None
+    api_key.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    await db_session.commit()
+
+    resolved = await verify_pat(db_session, token)
+    assert resolved is None
+
+
+@pytest.mark.asyncio
+async def test_verify_pat_accepts_future_expiry(db_session: AsyncSession):
+    """``expires_at`` in the future must NOT reject the token. Sanity
+    check on the comparison direction — a confused ``>=`` vs ``<=`` in
+    the verifier would lock users out of every key they set an expiry
+    on."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select
+
+    from app.db.models.api_key import ApiKey
+
+    user = await _make_user(db_session)
+    token = await _mint_and_persist(db_session, user)
+
+    api_key = (
+        await db_session.execute(
+            select(ApiKey).where(ApiKey.user_id == user.id)
+        )
+    ).scalars().first()
+    assert api_key is not None
+    api_key.expires_at = datetime.now(timezone.utc) + timedelta(days=30)
+    await db_session.commit()
+
+    resolved = await verify_pat(db_session, token)
+    assert resolved is not None
+    assert resolved.id == user.id
+
+
+@pytest.mark.asyncio
 async def test_verify_pat_rejects_tampered_token(db_session: AsyncSession):
     """A token with a valid prefix but wrong body must not authenticate.
     Prevents the prefix-only attack of "I have your prefix, can I
@@ -187,13 +243,17 @@ async def test_verify_pat_rejects_tampered_token(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_resolve_principal_routes_pat(db_session: AsyncSession):
     """``resolve_principal`` is the bearer dispatcher — a PAT must
-    take the PAT branch and end up at the same User as ``verify_pat``."""
+    take the PAT branch, end up at the same User as ``verify_pat``,
+    and expose the matching ``ApiKey`` (so the rate-limit + audit
+    paths know which credential is in use)."""
     user = await _make_user(db_session)
     token = await _mint_and_persist(db_session, user)
 
     resolved = await resolve_principal(token, db_session)
     assert resolved is not None
-    assert resolved.id == user.id
+    assert resolved.user.id == user.id
+    assert resolved.api_key is not None
+    assert resolved.api_key.user_id == user.id
 
 
 @pytest.mark.asyncio

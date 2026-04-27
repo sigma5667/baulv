@@ -26,6 +26,49 @@ class ApiKeyCreate(BaseModel):
             "'n8n production'. Free text — used only for display."
         ),
     )
+    expires_in_days: int | None = Field(
+        default=None,
+        ge=1,
+        le=3650,  # ~10 years — anything past that, just don't expire
+        description=(
+            "Optional self-destruct window in days from now. NULL "
+            "(default) = never expires. Once set, ``verify_pat`` "
+            "rejects the credential after this many days, the same "
+            "way revocation does. Capped at 3650 days as a sanity "
+            "guard — beyond that, just don't set an expiry."
+        ),
+    )
+
+
+class ApiKeyUpdate(BaseModel):
+    """Request body for ``PATCH /api/auth/me/api-keys/{id}``.
+
+    Currently the only mutable field is ``expires_in_days``. Setting
+    it to ``None`` clears the expiry (key becomes "never expires");
+    a positive integer pushes the expiry to N days from now.
+    Renaming a key is intentionally not supported — the name is the
+    "what is this for" comment the user wrote at creation time, and
+    rewriting history confuses the audit log.
+    """
+
+    expires_in_days: int | None = Field(
+        default=None,
+        ge=1,
+        le=3650,
+        description=(
+            "New expiry window in days from now. ``None`` clears "
+            "any existing expiry."
+        ),
+    )
+    clear_expires: bool = Field(
+        default=False,
+        description=(
+            "If true, ignore ``expires_in_days`` and set ``expires_at`` "
+            "to NULL. Two-field shape because Pydantic doesn't have a "
+            "clean way to distinguish 'omit field' from 'set to null' "
+            "in a JSON body."
+        ),
+    )
 
 
 class ApiKeyResponse(BaseModel):
@@ -43,6 +86,7 @@ class ApiKeyResponse(BaseModel):
     )
     created_at: datetime
     last_used_at: datetime | None
+    expires_at: datetime | None
     revoked_at: datetime | None
 
     model_config = {"from_attributes": True}
@@ -65,3 +109,44 @@ class ApiKeyCreated(ApiKeyResponse):
             "against the ``/mcp`` endpoint."
         ),
     )
+
+
+class McpAuditEntryResponse(BaseModel):
+    """One row in the per-key audit log feed."""
+
+    id: UUID
+    api_key_id: UUID | None
+    tool_name: str
+    arguments: dict | None
+    result: str = Field(
+        ...,
+        description=(
+            "Outcome tag: ``ok`` | ``error`` | ``rate_limited``. "
+            "Promoted from a free-text column to a discrete vocabulary "
+            "for the frontend filter."
+        ),
+    )
+    error_message: str | None
+    latency_ms: int
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class PaginatedMcpAuditResponse(BaseModel):
+    """Cursor-less paginated response for the audit-log feed.
+
+    We use offset+limit (not opaque cursor) because the underlying
+    composite index ``(user_id, created_at DESC)`` makes offset cheap
+    *and* the frontend wants random-access pagination ("page 5 of 12")
+    that cursors don't trivially deliver. The ``total`` count is exact;
+    rows are immutable so the count doesn't drift mid-pagination.
+    """
+
+    items: list[McpAuditEntryResponse]
+    total: int = Field(
+        ...,
+        description="Total number of rows matching the query (exact).",
+    )
+    limit: int
+    offset: int

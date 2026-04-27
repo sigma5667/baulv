@@ -27,18 +27,36 @@ Two-credential resolution
 unambiguously start with ``pat_``; everything else gets the JWT path.
 Bad credentials always return ``None`` — we never raise here so the
 helper is reusable from non-FastAPI contexts.
+
+Two contextvars, not one
+========================
+
+Stage 4 (security pass) introduced rate-limiting and an MCP audit log.
+Both want to know "which *key* is being used", not just "which user" —
+the rate-limit bucket is per-key so a misbehaving script on one PAT
+can't starve the user's other agents, and the audit log records
+``api_key_id`` so users can drill down by credential.
+
+We track the api_key_id alongside user_id in a parallel contextvar.
+JWT requests bind ``None`` (the JWT path has no associated PAT row);
+the dispatcher treats that as "exempt from per-key rate-limit" and
+"audit log api_key_id is NULL". The transport layer is responsible
+for binding *and* resetting both vars in symmetric ``try/finally``
+blocks.
 """
 
 from __future__ import annotations
 
 import contextvars
+from dataclasses import dataclass
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api_key_auth import looks_like_pat, verify_pat
+from app.api_key_auth import looks_like_pat, verify_pat_with_key
 from app.auth import decode_token
+from app.db.models.api_key import ApiKey
 from app.db.models.session import UserSession
 from app.db.models.user import User
 
@@ -51,6 +69,29 @@ current_user_id_var: contextvars.ContextVar[UUID | None] = contextvars.ContextVa
     "mcp_current_user_id",
     default=None,
 )
+
+# Per-task api_key_id binding. ``None`` for JWT-authenticated requests
+# (no associated PAT row); UUID for PAT requests. Read by the
+# dispatcher to key the rate-limit bucket and to populate
+# ``McpAuditLogEntry.api_key_id``.
+current_api_key_id_var: contextvars.ContextVar[UUID | None] = contextvars.ContextVar(
+    "mcp_current_api_key_id",
+    default=None,
+)
+
+
+@dataclass(frozen=True)
+class Principal:
+    """The authenticated identity for one MCP request.
+
+    ``user`` is always present on success. ``api_key`` is the
+    ``ApiKey`` row for PAT requests or ``None`` for JWT requests —
+    callers that need the api_key_id (rate-limit, audit log) should
+    handle the None case explicitly rather than asserting.
+    """
+
+    user: User
+    api_key: ApiKey | None
 
 
 def get_current_user_id() -> UUID:
@@ -69,11 +110,22 @@ def get_current_user_id() -> UUID:
     return user_id
 
 
+def get_current_api_key_id() -> UUID | None:
+    """Read the api_key_id of the current request, or ``None`` for JWT.
+
+    Unlike ``get_current_user_id``, this does **not** raise on a None
+    binding — JWT-authenticated MCP requests legitimately have no
+    api_key_id. Callers (rate-limit, audit log) decide what to do
+    with the absence: rate-limit can skip, audit log records NULL.
+    """
+    return current_api_key_id_var.get()
+
+
 async def resolve_principal(
     token: str,
     db: AsyncSession,
-) -> User | None:
-    """Resolve a Bearer credential to a ``User``.
+) -> Principal | None:
+    """Resolve a Bearer credential to a ``Principal``.
 
     Returns ``None`` for any failure (bad scheme, signature, expiry,
     revocation). Never raises. The caller decides whether to translate
@@ -84,7 +136,11 @@ async def resolve_principal(
         return None
 
     if looks_like_pat(token):
-        return await verify_pat(db, token)
+        result = await verify_pat_with_key(db, token)
+        if result is None:
+            return None
+        user, api_key = result
+        return Principal(user=user, api_key=api_key)
 
     # JWT path — same machinery as the SPA. We deliberately reuse the
     # session-revocation check here so a "log out everywhere" performed
@@ -110,4 +166,7 @@ async def resolve_principal(
     if session_row.user_id != user_id:
         return None
 
-    return await db.get(User, user_id)
+    user = await db.get(User, user_id)
+    if user is None:
+        return None
+    return Principal(user=user, api_key=None)

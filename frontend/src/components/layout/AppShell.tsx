@@ -10,6 +10,7 @@ import {
   LogOut,
   MessageSquare,
   LibraryBig,
+  KeyRound,
 } from "lucide-react";
 import { useAuth } from "../../hooks/useAuth";
 import { BetaUnlockBanner } from "../BetaUnlockBanner";
@@ -97,6 +98,17 @@ export function AppShell({ children }: { children: ReactNode }) {
           >
             <User className="h-4 w-4 shrink-0" />
             {sidebarOpen && <span>Profil</span>}
+          </Link>
+          <Link
+            to="/app/api-keys"
+            className={`flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+              location.pathname === "/app/api-keys"
+                ? "bg-primary/10 text-primary"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground"
+            }`}
+          >
+            <KeyRound className="h-4 w-4 shrink-0" />
+            {sidebarOpen && <span>API-Keys</span>}
           </Link>
           <Link
             to="/app/subscription"

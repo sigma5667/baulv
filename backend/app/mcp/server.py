@@ -103,7 +103,15 @@ from app.db.models.lv_template import LVTemplate
 from app.db.models.project import Building, Floor, Project, Room, Unit
 from app.db.session import async_session_factory
 from app.db.models.user import User
-from app.mcp.principal import get_current_user_id
+from app.mcp.audit import (
+    RESULT_ERROR,
+    RESULT_OK,
+    RESULT_RATE_LIMITED,
+    now_monotonic_ms,
+    write_audit_entry,
+)
+from app.mcp.principal import get_current_api_key_id, get_current_user_id
+from app.rate_limit import RateLimitExceeded, get_limiter
 from app.schemas.lv import LVCreate, LVUpdate, PositionUpdate
 from app.schemas.project import ProjectCreate, ProjectUpdate
 from app.schemas.template import LVFromTemplateRequest, TemplateCreateFromLV
@@ -1458,6 +1466,106 @@ async def _tool_create_template_from_lv(
 # ---------------------------------------------------------------------------
 
 
+async def _dispatch_tool(
+    db: AsyncSession,
+    user: User,
+    name: str,
+    arguments: dict | None,
+) -> list[mcp_types.TextContent]:
+    """Pure tool-name dispatch. May raise; never wraps cross-cutting
+    concerns. Called by ``call_tool`` after rate-limit + auth checks.
+
+    Kept as a separate function (rather than inlined back in
+    ``call_tool``) so the audit-log wrapper can capture errors
+    uniformly without duplicating the try/except.
+    """
+    if name == "list_projects":
+        return _ok(await _tool_list_projects(db, user))
+
+    if name == "get_project":
+        project_id = _require_uuid(arguments, "project_id")
+        return _ok(await _tool_get_project(db, user, project_id))
+
+    if name == "get_project_structure":
+        project_id = _require_uuid(arguments, "project_id")
+        return _ok(
+            await _tool_get_project_structure(db, user, project_id)
+        )
+
+    if name == "list_rooms":
+        project_id = _require_uuid(arguments, "project_id")
+        return _ok(await _tool_list_rooms(db, user, project_id))
+
+    if name == "list_lvs":
+        project_id = _require_uuid(arguments, "project_id")
+        return _ok(await _tool_list_lvs(db, user, project_id))
+
+    if name == "get_lv":
+        lv_id = _require_uuid(arguments, "lv_id")
+        return _ok(await _tool_get_lv(db, user, lv_id))
+
+    if name == "get_position_with_proof":
+        position_id = _require_uuid(arguments, "position_id")
+        return _ok(
+            await _tool_get_position_with_proof(db, user, position_id)
+        )
+
+    if name == "list_templates":
+        args = arguments or {}
+        return _ok(
+            await _tool_list_templates(
+                db,
+                user,
+                category=args.get("category"),
+                gewerk=args.get("gewerk"),
+            )
+        )
+
+    # ------------------------------------------------------
+    # Mutation tools (3b). Each branch defers all validation
+    # to the handler — Pydantic-level errors come back as
+    # ``ValidationError`` and are caught by the outer wrapper;
+    # ownership failures come back as ``HTTPException`` from
+    # ``verify_*_owner`` and are also caught by the wrapper.
+    # ------------------------------------------------------
+
+    if name == "create_project":
+        return _ok(await _tool_create_project(db, user, arguments))
+
+    if name == "update_project":
+        project_id = _require_uuid(arguments, "project_id")
+        return _ok(
+            await _tool_update_project(db, user, project_id, arguments)
+        )
+
+    if name == "create_lv":
+        return _ok(await _tool_create_lv(db, user, arguments))
+
+    if name == "create_lv_from_template":
+        return _ok(
+            await _tool_create_lv_from_template(db, user, arguments)
+        )
+
+    if name == "update_lv":
+        lv_id = _require_uuid(arguments, "lv_id")
+        return _ok(await _tool_update_lv(db, user, lv_id, arguments))
+
+    if name == "update_position":
+        position_id = _require_uuid(arguments, "position_id")
+        return _ok(
+            await _tool_update_position(
+                db, user, position_id, arguments
+            )
+        )
+
+    if name == "create_template_from_lv":
+        return _ok(
+            await _tool_create_template_from_lv(db, user, arguments)
+        )
+
+    return _err(f"Unbekanntes Tool: {name}")
+
+
 @server.call_tool()
 async def call_tool(
     name: str, arguments: dict | None
@@ -1465,113 +1573,88 @@ async def call_tool(
     """Single entrypoint for every tool invocation.
 
     The MCP SDK calls this with the tool ``name`` and the JSON
-    ``arguments`` dict. We resolve the principal, open a DB session,
-    and dispatch to the right handler. Errors get translated into
-    user-readable German text — agents pass that through to the user
-    directly, which is the right UX for an MVP read-only surface.
+    ``arguments`` dict. We resolve the principal, gate on rate-limits,
+    dispatch to the right handler, and write an audit-log row. Errors
+    get translated into user-readable German text — agents pass that
+    through to the user directly, which is the right UX for an MVP
+    read-only surface.
+
+    Cross-cutting concerns wired here (Stage 4 / v19):
+
+    * **Rate-limit** — per-API-key budget (60 RPM + 1000/day flat).
+      JWT-authenticated calls (``api_key_id`` is None) skip the
+      limiter; the SPA's regular HTTP rate-limit covers that path.
+      A 429-equivalent is delivered as ``_err`` text since SSE has
+      no per-message HTTP status; the message is German and includes
+      the recommended retry interval.
+    * **Audit log** — exactly one ``McpAuditLogEntry`` row per call,
+      capturing ``tool_name``, sanitised ``arguments``, ``result``
+      tag (ok/error/rate_limited), error string, and latency_ms.
+      Best-effort: a write failure is logged and swallowed.
     """
     user_id = get_current_user_id()
-    logger.info("mcp.call_tool name=%s user_id=%s", name, user_id)
+    api_key_id = get_current_api_key_id()
+    logger.info(
+        "mcp.call_tool name=%s user_id=%s api_key_id=%s",
+        name,
+        user_id,
+        api_key_id,
+    )
 
+    started_at = now_monotonic_ms()
+    audit_result = RESULT_OK
+    audit_error: str | None = None
+
+    # --- Rate-limit gate ---------------------------------------------
+    # Only PAT requests are bucket-limited; JWT-authenticated MCP
+    # traffic is exempt here (no api_key_id) — those callers already
+    # go through the SPA's HTTP rate-limit.
+    if api_key_id is not None:
+        try:
+            await get_limiter().check_and_consume(api_key_id)
+        except RateLimitExceeded as exc:
+            latency = int(now_monotonic_ms() - started_at)
+            await write_audit_entry(
+                user_id=user_id,
+                api_key_id=api_key_id,
+                tool_name=name,
+                arguments=arguments,
+                result=RESULT_RATE_LIMITED,
+                error_message=(
+                    f"window={exc.window} "
+                    f"retry_after={exc.retry_after_seconds}s"
+                ),
+                latency_ms=latency,
+            )
+            # German user-facing message — the agent shows this string
+            # straight to its user. ``Retry-After`` cannot be set on
+            # the SSE response (single long-lived stream), so we fold
+            # the wait time into the message body.
+            return _err(
+                f"Rate-Limit erreicht ({exc.window}). Bitte in "
+                f"{exc.retry_after_seconds} Sekunden erneut versuchen."
+            )
+
+    response: list[mcp_types.TextContent]
     async with async_session_factory() as db:
         try:
             user = await db.get(User, user_id)
             if user is None:
                 # Token resolved at handshake but the user has since
                 # been deleted. Treat as auth failure.
-                return _err("Benutzer nicht mehr verfügbar.")
-
-            if name == "list_projects":
-                return _ok(await _tool_list_projects(db, user))
-
-            if name == "get_project":
-                project_id = _require_uuid(arguments, "project_id")
-                return _ok(await _tool_get_project(db, user, project_id))
-
-            if name == "get_project_structure":
-                project_id = _require_uuid(arguments, "project_id")
-                return _ok(
-                    await _tool_get_project_structure(db, user, project_id)
-                )
-
-            if name == "list_rooms":
-                project_id = _require_uuid(arguments, "project_id")
-                return _ok(await _tool_list_rooms(db, user, project_id))
-
-            if name == "list_lvs":
-                project_id = _require_uuid(arguments, "project_id")
-                return _ok(await _tool_list_lvs(db, user, project_id))
-
-            if name == "get_lv":
-                lv_id = _require_uuid(arguments, "lv_id")
-                return _ok(await _tool_get_lv(db, user, lv_id))
-
-            if name == "get_position_with_proof":
-                position_id = _require_uuid(arguments, "position_id")
-                return _ok(
-                    await _tool_get_position_with_proof(db, user, position_id)
-                )
-
-            if name == "list_templates":
-                args = arguments or {}
-                return _ok(
-                    await _tool_list_templates(
-                        db,
-                        user,
-                        category=args.get("category"),
-                        gewerk=args.get("gewerk"),
-                    )
-                )
-
-            # ------------------------------------------------------
-            # Mutation tools (3b). Each branch defers all validation
-            # to the handler — Pydantic-level errors come back as
-            # ``ValidationError`` and are caught below; ownership
-            # failures come back as ``HTTPException`` from
-            # ``verify_*_owner`` and are also caught below.
-            # ------------------------------------------------------
-
-            if name == "create_project":
-                return _ok(await _tool_create_project(db, user, arguments))
-
-            if name == "update_project":
-                project_id = _require_uuid(arguments, "project_id")
-                return _ok(
-                    await _tool_update_project(db, user, project_id, arguments)
-                )
-
-            if name == "create_lv":
-                return _ok(await _tool_create_lv(db, user, arguments))
-
-            if name == "create_lv_from_template":
-                return _ok(
-                    await _tool_create_lv_from_template(db, user, arguments)
-                )
-
-            if name == "update_lv":
-                lv_id = _require_uuid(arguments, "lv_id")
-                return _ok(await _tool_update_lv(db, user, lv_id, arguments))
-
-            if name == "update_position":
-                position_id = _require_uuid(arguments, "position_id")
-                return _ok(
-                    await _tool_update_position(
-                        db, user, position_id, arguments
-                    )
-                )
-
-            if name == "create_template_from_lv":
-                return _ok(
-                    await _tool_create_template_from_lv(db, user, arguments)
-                )
-
-            return _err(f"Unbekanntes Tool: {name}")
+                response = _err("Benutzer nicht mehr verfügbar.")
+                audit_result = RESULT_ERROR
+                audit_error = "user_not_found"
+            else:
+                response = await _dispatch_tool(db, user, name, arguments)
 
         except ValueError as exc:
             # Argument validation failures from ``_require_uuid`` —
             # the user/agent gave us a bad UUID. Return a clean
             # message so the agent can reformulate the call.
-            return _err(str(exc))
+            response = _err(str(exc))
+            audit_result = RESULT_ERROR
+            audit_error = f"ValueError: {exc}"
         except ValidationError as exc:
             # Pydantic v2 ``ValidationError`` does NOT inherit from
             # ``ValueError``, so we need an explicit branch here. We
@@ -1586,12 +1669,16 @@ async def call_tool(
                 detail = f"{loc}: {msg}" if loc else msg
             else:  # pragma: no cover — defensive fallback
                 detail = "Ungültige Argumente"
-            return _err(f"Ungültige Argumente: {detail}")
+            response = _err(f"Ungültige Argumente: {detail}")
+            audit_result = RESULT_ERROR
+            audit_error = f"ValidationError: {detail}"
         except HTTPException as exc:
             # Ownership / 404-mask path. Translate to plain text;
             # don't leak the FastAPI exception type to the MCP client.
-            return _err(str(exc.detail))
-        except Exception:
+            response = _err(str(exc.detail))
+            audit_result = RESULT_ERROR
+            audit_error = f"HTTPException({exc.status_code}): {exc.detail}"
+        except Exception as exc:
             # Defensive: a tool blowing up shouldn't crash the SSE
             # stream. We log the traceback and return an opaque
             # apology — the tool call surfaces as an error result,
@@ -1599,7 +1686,25 @@ async def call_tool(
             logger.exception(
                 "mcp.call_tool_failed name=%s user_id=%s", name, user_id
             )
-            return _err(
+            response = _err(
                 "Interner Fehler beim Verarbeiten dieses Tools. "
                 "Der Vorfall wurde protokolliert."
             )
+            audit_result = RESULT_ERROR
+            audit_error = f"{type(exc).__name__}: {exc}"
+
+    # Audit-write happens on its own session so the inner session's
+    # lifecycle (already exited at this point) doesn't constrain it.
+    # Best-effort: any failure is logged inside ``write_audit_entry``
+    # and swallowed.
+    latency_ms = int(now_monotonic_ms() - started_at)
+    await write_audit_entry(
+        user_id=user_id,
+        api_key_id=api_key_id,
+        tool_name=name,
+        arguments=arguments,
+        result=audit_result,
+        error_message=audit_error,
+        latency_ms=latency_ms,
+    )
+    return response

@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from app.config import settings
 from app.api.router import api_router
 from app.mcp import build_mcp_app
+from app.rate_limit import select_backend_at_boot as _select_rate_limit_backend
 
 # Configure root logger once at import time so our ``app.*`` loggers
 # actually emit to stdout under gunicorn/uvicorn on Railway. Without
@@ -104,6 +105,14 @@ async def lifespan(app: FastAPI):
             "back to false (or delete the env var) to restore normal "
             "plan gating."
         )
+
+    # Pick the rate-limit backend once at boot. Either Redis (if
+    # ``REDIS_URL`` is set) or the in-memory fallback that emits a
+    # WARN log. The first call to a rate-limited handler will lazily
+    # initialize too, but doing it here means the operator-visible
+    # "which backend am I on" log line lands at startup time, not on
+    # the first MCP request.
+    _select_rate_limit_backend()
     yield
 
 

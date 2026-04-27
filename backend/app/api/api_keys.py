@@ -23,11 +23,11 @@ your token? Mint a new one and revoke the old; there is no recovery.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api_key_auth import (
@@ -37,9 +37,17 @@ from app.api_key_auth import (
 )
 from app.auth import get_current_user
 from app.db.models.api_key import ApiKey
+from app.db.models.mcp_audit import McpAuditLogEntry
 from app.db.models.user import User
 from app.db.session import get_db
-from app.schemas.api_key import ApiKeyCreate, ApiKeyCreated, ApiKeyResponse
+from app.schemas.api_key import (
+    ApiKeyCreate,
+    ApiKeyCreated,
+    ApiKeyResponse,
+    ApiKeyUpdate,
+    McpAuditEntryResponse,
+    PaginatedMcpAuditResponse,
+)
 from app.services.audit import log_event
 
 
@@ -58,6 +66,13 @@ MAX_KEYS_PER_USER = 20
 # user-event taxonomy when they're really feature-local.
 EVENT_API_KEY_CREATED = "user.api_key_created"
 EVENT_API_KEY_REVOKED = "user.api_key_revoked"
+EVENT_API_KEY_UPDATED = "user.api_key_updated"
+
+
+# Pagination cap on the audit feed. The viewer is for human eyeballs,
+# and 100 rows already overflow most laptop screens. Higher values
+# would also force ``COUNT(*)`` to scan further when the user filters.
+_AUDIT_PAGE_MAX = 100
 
 
 @router.post(
@@ -98,12 +113,22 @@ async def create_api_key(
             ),
         )
 
+    expires_at: datetime | None = None
+    if payload.expires_in_days is not None:
+        # Compute against UTC now — the column is timezone-aware. The
+        # window is interpreted as "elapsed wall-clock days from now",
+        # which is what users expect when they pick "30 days".
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            days=payload.expires_in_days
+        )
+
     token = mint_token()
     api_key = ApiKey(
         user_id=user.id,
         name=payload.name.strip(),
         key_prefix=display_prefix(token),
         key_hash=hash_token(token),
+        expires_at=expires_at,
     )
     db.add(api_key)
     await db.flush()
@@ -114,7 +139,11 @@ async def create_api_key(
         event_type=EVENT_API_KEY_CREATED,
         user_id=user.id,
         request=request,
-        meta={"key_id": str(api_key.id), "name": api_key.name},
+        meta={
+            "key_id": str(api_key.id),
+            "name": api_key.name,
+            "expires_in_days": payload.expires_in_days,
+        },
     )
     await db.commit()
 
@@ -124,6 +153,7 @@ async def create_api_key(
         key_prefix=api_key.key_prefix,
         created_at=api_key.created_at,
         last_used_at=api_key.last_used_at,
+        expires_at=api_key.expires_at,
         revoked_at=api_key.revoked_at,
         token=token,
     )
@@ -150,6 +180,125 @@ async def list_api_keys(
     )
     keys = result.scalars().all()
     return [ApiKeyResponse.model_validate(k) for k in keys]
+
+
+@router.patch(
+    "/{key_id}",
+    response_model=ApiKeyResponse,
+    summary="Update a programmatic-access token's expiry",
+    description=(
+        "Currently the only mutable field is the expiry window. "
+        "Pass ``expires_in_days`` to push the expiry to N days from "
+        "now, or ``clear_expires=true`` to mark the key as never-"
+        "expiring. Renaming is not supported — the original name is "
+        "treated as immutable history."
+    ),
+)
+async def update_api_key(
+    key_id: UUID,
+    payload: ApiKeyUpdate,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ApiKeyResponse:
+    api_key = await db.get(ApiKey, key_id)
+    if api_key is None or api_key.user_id != user.id:
+        # 404-mask cross-user access to avoid leaking existence.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="API-Key nicht gefunden.",
+        )
+    if api_key.revoked_at is not None:
+        # Mutating a revoked key is a no-op semantically — but we
+        # surface a clear 409 rather than silently succeeding so the
+        # UI can show an actionable error.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Widerrufene Keys können nicht mehr geändert werden.",
+        )
+
+    if payload.clear_expires:
+        api_key.expires_at = None
+    elif payload.expires_in_days is not None:
+        api_key.expires_at = datetime.now(timezone.utc) + timedelta(
+            days=payload.expires_in_days
+        )
+    else:
+        # Neither field set — body was effectively empty. Don't error;
+        # treat as a no-op so the frontend can issue a "save" click
+        # without first reading the form.
+        pass
+
+    await db.flush()
+    await db.refresh(api_key)
+    await log_event(
+        db,
+        event_type=EVENT_API_KEY_UPDATED,
+        user_id=user.id,
+        request=request,
+        meta={
+            "key_id": str(api_key.id),
+            "expires_at": api_key.expires_at.isoformat()
+            if api_key.expires_at
+            else None,
+        },
+    )
+    await db.commit()
+    return ApiKeyResponse.model_validate(api_key)
+
+
+@router.get(
+    "/{key_id}/audit",
+    response_model=PaginatedMcpAuditResponse,
+    summary="Browse this key's MCP audit log",
+    description=(
+        "Returns the rows ``app.mcp.server`` wrote for this key, "
+        "newest first, paginated. Revoked keys still expose their "
+        "history. Cross-user access is 404-masked."
+    ),
+)
+async def get_api_key_audit(
+    key_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    limit: int = Query(50, ge=1, le=_AUDIT_PAGE_MAX),
+    offset: int = Query(0, ge=0),
+) -> PaginatedMcpAuditResponse:
+    api_key = await db.get(ApiKey, key_id)
+    if api_key is None or api_key.user_id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="API-Key nicht gefunden.",
+        )
+
+    # Total row count via a separate ``COUNT(*)`` — ``window``-style
+    # ``count(*) OVER ()`` would join the count to every row but make
+    # the query plan less obvious. The composite index makes both
+    # queries cheap even at thousands of rows.
+    total = (
+        await db.execute(
+            select(func.count(McpAuditLogEntry.id)).where(
+                McpAuditLogEntry.api_key_id == key_id
+            )
+        )
+    ).scalar_one()
+
+    rows = (
+        await db.execute(
+            select(McpAuditLogEntry)
+            .where(McpAuditLogEntry.api_key_id == key_id)
+            .order_by(McpAuditLogEntry.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+    ).scalars().all()
+
+    return PaginatedMcpAuditResponse(
+        items=[McpAuditEntryResponse.model_validate(r) for r in rows],
+        total=int(total),
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.delete(

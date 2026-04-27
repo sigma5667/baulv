@@ -79,6 +79,15 @@ class ApiKey(Base):
     last_used_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Optional self-destruct timestamp. NULL = never expires (current
+    # default). Once ``now() >= expires_at``, ``verify_pat`` rejects
+    # the credential the same way ``revoked_at`` does — but without a
+    # human pressing a button. The two states coexist (a key can be
+    # both expired *and* later revoked) so the audit history stays
+    # coherent.
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # Soft delete. Revoked keys still match by ``key_prefix`` for
     # audit-trail readability; the verify step rejects them.
     revoked_at: Mapped[datetime | None] = mapped_column(

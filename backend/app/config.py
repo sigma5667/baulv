@@ -57,6 +57,14 @@ class Settings(BaseSettings):
     # feature matrix from /auth/me/features instead.
     beta_unlock_all_features: bool = False
 
+    # Optional Redis URL (e.g. ``redis://default:pwd@host:6379/0``) used
+    # by the MCP per-key rate-limiter. When **set**, the limiter uses
+    # Redis token-bucket counters (correct under multi-worker / multi-
+    # node Railway deploys). When **unset**, the limiter falls back to
+    # an in-process dict — *single-worker only*, with a WARN log at
+    # boot. See ``app.rate_limit`` for details.
+    redis_url: str | None = None
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
     def model_post_init(self, __context) -> None:

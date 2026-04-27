@@ -41,7 +41,11 @@ from starlette.routing import Mount, Route
 from starlette.types import Receive, Scope, Send
 
 from app.db.session import async_session_factory
-from app.mcp.principal import current_user_id_var, resolve_principal
+from app.mcp.principal import (
+    current_api_key_id_var,
+    current_user_id_var,
+    resolve_principal,
+)
 from app.mcp.server import server
 
 
@@ -83,18 +87,24 @@ def _extract_bearer(scope: Scope) -> str | None:
 
 
 async def _authenticate_scope(scope: Scope):
-    """Resolve the request's Bearer token to a ``User`` or ``None``.
+    """Resolve the request's Bearer token to a ``Principal`` or ``None``.
 
     Opens its own session — auth runs before any tool handler, so we
     don't have a request-scoped session to reuse. The session is
-    closed when the ``async with`` exits; resolving never writes, so
-    no commit is required.
+    closed when the ``async with`` exits; resolving may touch
+    ``last_used_at``, so we commit before returning so the touch is
+    durable even if the surrounding SSE task lives for hours.
     """
     token = _extract_bearer(scope)
     if not token:
         return None
     async with async_session_factory() as db:
-        return await resolve_principal(token, db)
+        principal = await resolve_principal(token, db)
+        # ``verify_pat_with_key`` flushes ``last_used_at`` but doesn't
+        # commit — we own the transaction here, so close it cleanly.
+        if principal is not None:
+            await db.commit()
+        return principal
 
 
 _UNAUTHORIZED_BODY = b'{"detail":"Nicht authentifiziert"}'
@@ -132,8 +142,8 @@ def _make_sse_handler(
     """
 
     async def handle_sse(request: Request) -> Response:
-        user = await _authenticate_scope(request.scope)
-        if user is None:
+        principal = await _authenticate_scope(request.scope)
+        if principal is None:
             logger.info(
                 "mcp.sse_unauthorized client=%s",
                 request.client.host if request.client else "?",
@@ -144,13 +154,20 @@ def _make_sse_handler(
                 headers={"WWW-Authenticate": 'Bearer realm="baulv-mcp"'},
             )
 
-        # Bind the user for the lifetime of this SSE task. Every tool
-        # call dispatched from the inner ``server.run`` loop reads
-        # this back via ``get_current_user_id()``.
-        token = current_user_id_var.set(user.id)
+        user = principal.user
+        api_key_id = principal.api_key.id if principal.api_key else None
+
+        # Bind the user *and* api_key for the lifetime of this SSE
+        # task. Every tool call dispatched from the inner ``server.run``
+        # loop reads ``user_id`` back via ``get_current_user_id()`` and
+        # ``api_key_id`` via ``get_current_api_key_id()`` (the latter
+        # for rate-limiting + audit-log keying — None on JWT auth).
+        user_token = current_user_id_var.set(user.id)
+        api_key_token = current_api_key_id_var.set(api_key_id)
         logger.info(
-            "mcp.sse_connected user_id=%s client=%s",
+            "mcp.sse_connected user_id=%s api_key_id=%s client=%s",
             user.id,
+            api_key_id,
             request.client.host if request.client else "?",
         )
         try:
@@ -182,7 +199,11 @@ def _make_sse_handler(
                 "mcp.sse_run_failed user_id=%s", user.id
             )
         finally:
-            current_user_id_var.reset(token)
+            # Reset in reverse order. ``contextvars`` doesn't actually
+            # care about ordering, but mirroring the set/reset stack
+            # makes the lifetime explicit if anyone reads this code.
+            current_api_key_id_var.reset(api_key_token)
+            current_user_id_var.reset(user_token)
             logger.info("mcp.sse_disconnected user_id=%s", user.id)
 
         # Starlette expects the route to return a Response; the
@@ -220,8 +241,8 @@ def _wrap_messages_with_auth(
             await inner(scope, receive, send)
             return
 
-        user = await _authenticate_scope(scope)
-        if user is None:
+        principal = await _authenticate_scope(scope)
+        if principal is None:
             await _send_401(send)
             return
 

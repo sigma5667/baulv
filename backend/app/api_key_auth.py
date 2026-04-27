@@ -104,16 +104,24 @@ def looks_like_pat(credential: str) -> bool:
     return credential.startswith(PAT_SCHEME_PREFIX)
 
 
-async def verify_pat(
+async def verify_pat_with_key(
     db: AsyncSession,
     presented_token: str,
-) -> User | None:
-    """Resolve a presented PAT to its owning ``User``.
+) -> tuple[User, ApiKey] | None:
+    """Resolve a presented PAT to ``(User, ApiKey)``.
 
     Returns ``None`` on **any** failure (bad scheme, no matching prefix,
-    hash mismatch, revoked). The caller is expected to translate that
-    into 401 — we don't raise here so this function can also be used
-    in optional-auth contexts.
+    hash mismatch, revoked, expired). The caller translates that into
+    401 — we don't raise here so this function is reusable from
+    optional-auth contexts.
+
+    Why expose the ``ApiKey`` row alongside the user? Two downstream
+    consumers care about which *key* (not just which user) was used:
+
+    * The rate-limiter buckets per ``api_key_id`` so a runaway script
+      on one key doesn't starve the user's other agents.
+    * The MCP audit log records ``api_key_id`` so the user can answer
+      "what did *Claude Desktop* do" without joining via timestamps.
 
     Side effect on success: ``ApiKey.last_used_at`` is set to "now".
     The flush is left to the surrounding transaction; we don't commit
@@ -146,6 +154,13 @@ async def verify_pat(
         return None
     if matched.revoked_at is not None:
         return None
+    # Expiry check. Stored as timezone-aware UTC; we compare against an
+    # also-aware "now". A NULL ``expires_at`` means "never expires" —
+    # the historical default for keys minted before v19.
+    if matched.expires_at is not None and matched.expires_at <= datetime.now(
+        timezone.utc
+    ):
+        return None
 
     user = await db.get(User, matched.user_id)
     if user is None:
@@ -156,4 +171,20 @@ async def verify_pat(
 
     matched.last_used_at = datetime.now(timezone.utc)
     await db.flush()
-    return user
+    return user, matched
+
+
+async def verify_pat(
+    db: AsyncSession,
+    presented_token: str,
+) -> User | None:
+    """Backward-compatible alias for ``verify_pat_with_key``.
+
+    Returns just the ``User``, dropping the matched ``ApiKey``. Kept
+    for the small number of call sites that don't need the key —
+    notably the existing test suite. Production code paths that touch
+    rate-limiting or audit logging should use ``verify_pat_with_key``
+    directly.
+    """
+    result = await verify_pat_with_key(db, presented_token)
+    return None if result is None else result[0]

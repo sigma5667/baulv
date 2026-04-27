@@ -8,6 +8,7 @@ from app.db.models.user import User
 from app.db.models.audit import AuditLogEntry
 from app.db.models.session import UserSession
 from app.db.models.api_key import ApiKey
+from app.db.models.mcp_audit import McpAuditLogEntry
 
 __all__ = [
     "Project", "Building", "Floor", "Unit", "Room", "Opening",
@@ -20,4 +21,5 @@ __all__ = [
     "AuditLogEntry",
     "UserSession",
     "ApiKey",
+    "McpAuditLogEntry",
 ]
