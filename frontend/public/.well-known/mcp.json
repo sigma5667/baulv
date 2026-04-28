@@ -1,0 +1,129 @@
+{
+  "schemaVersion": "0.1.0",
+  "name": "baulv-mcp",
+  "title": "BauLV — KI-gestützte Bau-Ausschreibungssoftware",
+  "description": "MCP-Server für headless Agenten (Claude Desktop, n8n, ChatGPT-Connectors). BauLV automatisiert die Erstellung von Leistungsverzeichnissen für Maler-, Bodenleger- und Trockenbau-Betriebe in Österreich. Tools für Projekt-Anlage, LV-Vorlagen-Kopie, Mengen-/Preispflege.",
+  "version": "1.0.0",
+  "protocolVersion": "2025-11-25",
+  "language": "de",
+  "vendor": {
+    "name": "BauLV",
+    "url": "https://baulv.at",
+    "contact": "kontakt@baulv.at"
+  },
+  "documentation": {
+    "humanReadable": "https://baulv.at/llms.txt",
+    "tokenManagement": "https://baulv.at/app/api-keys",
+    "specification": "https://modelcontextprotocol.io"
+  },
+  "server": {
+    "transport": "sse",
+    "endpoint": "https://baulv.at/mcp/sse",
+    "messagesEndpoint": "https://baulv.at/mcp/messages/"
+  },
+  "authentication": {
+    "type": "bearer",
+    "scheme": "Bearer",
+    "tokenType": "personal-access-token",
+    "tokenPrefix": "pat_",
+    "documentation": "https://baulv.at/app/api-keys",
+    "instructions": "Im Web-UI unter /app/api-keys einen Token mit gewünschter Ablaufzeit erstellen. Plaintext wird einmalig angezeigt und muss als 'Authorization: Bearer pat_…' an den SSE-Endpoint gesendet werden."
+  },
+  "capabilities": {
+    "tools": {
+      "listChanged": false
+    },
+    "resources": null,
+    "prompts": null,
+    "logging": null
+  },
+  "rateLimits": {
+    "perMinute": 60,
+    "perDay": 1000,
+    "scope": "per-token",
+    "responseOnExceed": "Deutsche Fehlermeldung im Tool-Result mit Retry-After-Sekunden (SSE kennt keinen Per-Message-HTTP-Status)."
+  },
+  "audit": {
+    "enabled": true,
+    "scope": "per-tool-call",
+    "viewer": "https://baulv.at/app/api-keys",
+    "retention": "unbegrenzt; ON DELETE SET NULL bei User-Löschung (DSGVO Art. 32)"
+  },
+  "tools": [
+    {
+      "name": "list_projects",
+      "category": "read",
+      "description": "Listet alle Projekte des authentifizierten Users. Einstiegspunkt für jeden Agentenflow."
+    },
+    {
+      "name": "get_project",
+      "category": "read",
+      "description": "Liefert die Stammdaten eines einzelnen Projekts."
+    },
+    {
+      "name": "get_project_structure",
+      "category": "read",
+      "description": "Vollständiger Gebäudebaum: Buildings → Floors → Units → Rooms inkl. Wand-/Deckenflächen."
+    },
+    {
+      "name": "list_rooms",
+      "category": "read",
+      "description": "Flache Raumliste eines Projekts mit Geometrie und gecachten Wand-/Deckenflächen."
+    },
+    {
+      "name": "list_lvs",
+      "category": "read",
+      "description": "Listet alle Leistungsverzeichnisse eines Projekts."
+    },
+    {
+      "name": "get_lv",
+      "category": "read",
+      "description": "Komplettes LV inkl. Gruppen und Positionen (Kurz-/Langtext, Einheit, Menge, Einheitspreis)."
+    },
+    {
+      "name": "get_position_with_proof",
+      "category": "read",
+      "description": "Einzelne Position mit allen Berechnungsnachweisen (Raum, Formel, ÖNORM-Faktor, Abzüge)."
+    },
+    {
+      "name": "list_templates",
+      "category": "read",
+      "description": "Verfügbare LV-Vorlagen (System + eigene), optional gefiltert nach Kategorie/Gewerk."
+    },
+    {
+      "name": "create_project",
+      "category": "write",
+      "description": "Neues Projekt anlegen (respektiert Plan-Limits)."
+    },
+    {
+      "name": "update_project",
+      "category": "write",
+      "description": "Projekt-Metadaten patchen (Adresse, Status, Auftraggeber, …)."
+    },
+    {
+      "name": "create_lv",
+      "category": "write",
+      "description": "Leeres Leistungsverzeichnis in einem Projekt anlegen."
+    },
+    {
+      "name": "create_lv_from_template",
+      "category": "write",
+      "description": "Standard-Flow: Vorlage in ein Projekt kopieren, leeres Mengen-/Preisgerüst anlegen."
+    },
+    {
+      "name": "update_lv",
+      "category": "write",
+      "description": "LV-Metadaten patchen (Name, Status, Vorbemerkungen)."
+    },
+    {
+      "name": "update_position",
+      "category": "write",
+      "description": "Einzelne Position bearbeiten mit 'erst entsperren, dann ändern'-Workflow."
+    },
+    {
+      "name": "create_template_from_lv",
+      "category": "write",
+      "description": "Bestehendes LV als wiederverwendbare Vorlage speichern (preis-/mengenagnostisch)."
+    }
+  ]
+}

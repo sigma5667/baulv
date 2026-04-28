@@ -183,6 +183,47 @@ def create_app() -> FastAPI:
                 return FileResponse(str(f))
             return JSONResponse({"error": "not found"}, status_code=404)
 
+        # Agent-discovery files. These two URLs are what AI agents and
+        # headless connectors (Claude Desktop, ChatGPT Custom
+        # Connectors, n8n, etc.) crawl to find our MCP server. The
+        # source files live in ``frontend/public/`` so the dev server
+        # (Vite) and the production build (Docker stage 1) both pick
+        # them up. We add explicit handlers — instead of relying on
+        # the SPA catch-all below — for three reasons:
+        #
+        # 1. Bulletproof routing: ``.well-known/`` is a hidden
+        #    directory and we don't want to bet on every static-file
+        #    pipeline copying it without surprises.
+        # 2. Correct ``Content-Type``: ``FileResponse``'s mime
+        #    auto-detect maps ``.txt`` → ``text/plain``, but agent
+        #    crawlers expect ``text/markdown`` for ``llms.txt`` and a
+        #    JSON-typed response for ``mcp.json``. Wrong type can
+        #    cause some crawlers to skip the file.
+        # 3. CORS: agents come from arbitrary origins. The discovery
+        #    files are public-by-design, so a wildcard ACAO is the
+        #    right answer here.
+        @app.get("/llms.txt")
+        async def llms_txt():
+            f = STATIC_DIR / "llms.txt"
+            if f.exists():
+                return FileResponse(
+                    str(f),
+                    media_type="text/markdown; charset=utf-8",
+                    headers={"Access-Control-Allow-Origin": "*"},
+                )
+            return JSONResponse({"error": "not found"}, status_code=404)
+
+        @app.get("/.well-known/mcp.json")
+        async def well_known_mcp():
+            f = STATIC_DIR / ".well-known" / "mcp.json"
+            if f.exists():
+                return FileResponse(
+                    str(f),
+                    media_type="application/json; charset=utf-8",
+                    headers={"Access-Control-Allow-Origin": "*"},
+                )
+            return JSONResponse({"error": "not found"}, status_code=404)
+
         # Headers we want on every index.html response so no browser,
         # CDN, or proxy ever serves a stale HTML referencing a dead
         # hashed bundle. We tolerate caching of JS/CSS (content hash
