@@ -34,7 +34,8 @@
 // Keep this string in lock-step with APP_BUILD_TAG in src/main.tsx.
 // The activate handler below deletes any cache whose name doesn't
 // match, so bumping this is how we evict stale assets on every deploy.
-const CACHE_NAME = "baulv-v18-2026-04-27-stable-ids";
+// See ``docs/DEPLOY.md`` for the bump checklist.
+const CACHE_NAME = "baulv-v21-2026-04-29-inline-edit";
 const STATIC_ASSETS = [
   "/manifest.json",
   "/icons/icon-192.png",

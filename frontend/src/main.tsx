@@ -47,9 +47,10 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
 //      then fetches index.html fresh from the network (which the
 //      backend serves with Cache-Control: no-cache).
 //
-//   2. The new SW file (`sw.js` at `CACHE_NAME = "baulv-v4"`) uses
-//      network-first for HTML, so even if someone keeps it installed,
-//      deploys are visible on the next reload.
+//   2. The new SW file (`sw.js`, with its `CACHE_NAME` matching this
+//      build tag — see ``docs/DEPLOY.md``) uses network-first for HTML,
+//      so even if someone keeps it installed, deploys are visible on
+//      the next reload.
 //
 //   3. ``controllerchange`` triggers a guarded reload so the moment
 //      the new SW activates, the page reloads to pick up the new JS
@@ -65,7 +66,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
 // the kill-switch purge and the SW cache eviction fire on the same
 // deploy, so users never end up with a fresh HTML pointing at a SW
 // that's still serving the previous bundle's assets from cache.
-const APP_BUILD_TAG = "baulv-v18-2026-04-27-stable-ids";
+const APP_BUILD_TAG = "baulv-v21-2026-04-29-inline-edit";
 
 async function purgeStaleCaches() {
   if ("caches" in window) {
