@@ -1003,6 +1003,173 @@ function UnitNode(props: UnitNodeProps) {
 }
 
 // ---------------------------------------------------------------------------
+// InlineNumericEdit — click-to-edit cell for a single numeric Room field.
+//
+// Why this exists
+// ---------------
+// The wall-calc table is precisely the place where the user notices
+// "ah, this room has no perimeter / no real height — that's why my
+// gross is 0". Forcing them to open the full ``RoomForm`` to fix one
+// number is friction. This component lets them click the value
+// directly, type a fix, and watch the recalculated wall area redraw
+// — without ever leaving the structure tree.
+//
+// States
+// ------
+// ``ok``      — value present, low-key affordance: pencil icon shows
+//               on hover. Looks like prose, edits like a form.
+// ``missing`` — value is null. Loud red badge ("Bitte eintragen") so
+//               the user can't accidentally calculate against zero.
+// ``warning`` — value present but low-confidence (currently only used
+//               for ``ceiling_height_source === "default"``). Amber
+//               "Bitte prüfen" with edit icon — visible call to action
+//               that doesn't block reading the number.
+//
+// Save semantics
+// --------------
+// Comma → dot for German input. Empty input saves ``null`` (lets the
+// user *clear* a value). Escape cancels without saving. Enter or blur
+// commits. Invalid input (NaN, negative) silently reverts — keeps
+// the cell reasonable without inventing toast UX for typos.
+// ---------------------------------------------------------------------------
+
+function InlineNumericEdit({
+  value,
+  unit,
+  state,
+  missingLabel,
+  warningLabel,
+  tooltip,
+  isSaving,
+  onSave,
+  digits = 2,
+  ariaLabel,
+}: {
+  value: number | null;
+  unit: string;
+  state: "ok" | "missing" | "warning";
+  missingLabel: string;
+  warningLabel: string;
+  tooltip: string;
+  isSaving: boolean;
+  onSave: (next: number | null) => void;
+  digits?: number;
+  ariaLabel: string;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<string>("");
+
+  const startEdit = () => {
+    setDraft(value !== null ? value.toFixed(digits).replace(".", ",") : "");
+    setEditing(true);
+  };
+
+  const cancel = () => setEditing(false);
+
+  const commit = () => {
+    const trimmed = draft.trim();
+    if (trimmed === "") {
+      // Empty saves null. The user explicitly cleared the field.
+      if (value !== null) onSave(null);
+      setEditing(false);
+      return;
+    }
+    const parsed = parseFloat(trimmed.replace(",", "."));
+    if (Number.isNaN(parsed) || parsed < 0) {
+      // Garbage input — revert silently. The original value stays.
+      setEditing(false);
+      return;
+    }
+    if (value !== null && Math.abs(parsed - value) < 1e-6) {
+      // Same value — skip the round-trip.
+      setEditing(false);
+      return;
+    }
+    onSave(parsed);
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <span className="inline-flex items-center gap-1">
+        <input
+          type="text"
+          inputMode="decimal"
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              commit();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              cancel();
+            }
+          }}
+          aria-label={ariaLabel}
+          disabled={isSaving}
+          className="w-20 rounded border border-primary bg-background px-1.5 py-0.5 font-mono text-xs"
+        />
+        <span className="text-[10px] text-muted-foreground">{unit}</span>
+      </span>
+    );
+  }
+
+  if (state === "missing") {
+    return (
+      <button
+        type="button"
+        onClick={startEdit}
+        title={tooltip}
+        aria-label={ariaLabel}
+        className="inline-flex items-center gap-1 rounded border border-destructive/50 bg-destructive/10 px-1.5 py-0.5 text-[11px] font-medium text-destructive transition-colors hover:bg-destructive/20"
+      >
+        <AlertTriangle className="h-3 w-3" />
+        {missingLabel}
+      </button>
+    );
+  }
+
+  if (state === "warning") {
+    return (
+      <button
+        type="button"
+        onClick={startEdit}
+        title={tooltip}
+        aria-label={ariaLabel}
+        className="inline-flex items-center gap-1 rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-800 transition-colors hover:bg-amber-100"
+      >
+        <span className="font-mono">
+          {fmtNumber(value, digits)} {unit}
+        </span>
+        <span className="text-[9px] uppercase tracking-wide">
+          {warningLabel}
+        </span>
+        <Edit2 className="h-3 w-3" />
+      </button>
+    );
+  }
+
+  // state === "ok"
+  return (
+    <button
+      type="button"
+      onClick={startEdit}
+      title={`${tooltip} — Klicken zum Bearbeiten`}
+      aria-label={ariaLabel}
+      className="group inline-flex items-center gap-1 rounded px-1 transition-colors hover:bg-accent"
+    >
+      <span className="font-mono text-foreground">
+        {fmtNumber(value, digits)} {unit}
+      </span>
+      <Edit2 className="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-50" />
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // RoomNode — leaf of the tree. Edits are inline on the Room card (as
 // opposed to a modal) because the form is long and an inline editor
 // lets the user see the openings list alongside the main fields.
@@ -1034,6 +1201,18 @@ function RoomNode({
       setEditing(false);
       invalidate();
     },
+    onError: (e) => onReportError(normalizeError(e).message),
+  });
+
+  // Separate mutation for the inline single-field edits (perimeter,
+  // height). Same endpoint as ``updateRoomMut``, but without the
+  // ``setEditing(false)`` side-effect — inline edits don't open or
+  // close the full card editor, and we want them to fly through
+  // independently of whether the user happens to also be in card
+  // edit mode.
+  const quickSaveMut = useMutation({
+    mutationFn: (data: Partial<Room>) => updateRoom(room.id, data),
+    onSuccess: invalidate,
     onError: (e) => onReportError(normalizeError(e).message),
   });
 
@@ -1109,28 +1288,53 @@ function RoomNode({
               </span>
             )}
           </div>
-          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted-foreground">
-            <span>
-              Fläche:{" "}
+          <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+            <span className="inline-flex items-center gap-1">
+              Fläche:
               <span className="font-mono text-foreground">
                 {fmtNumber(room.area_m2)} m²
               </span>
             </span>
-            <span>
-              Umfang:{" "}
-              <span className="font-mono text-foreground">
-                {fmtNumber(room.perimeter_m)} m
-              </span>
+            <span className="inline-flex items-center gap-1">
+              Umfang:
+              <InlineNumericEdit
+                value={room.perimeter_m}
+                unit="m"
+                state={room.perimeter_m === null ? "missing" : "ok"}
+                missingLabel="Bitte eintragen"
+                warningLabel=""
+                tooltip="Wandumfang fehlt — bitte aus Plan messen oder schätzen"
+                isSaving={quickSaveMut.isPending}
+                onSave={(next) => quickSaveMut.mutate({ perimeter_m: next })}
+                ariaLabel={`Umfang von ${room.name} bearbeiten`}
+              />
             </span>
-            <span className={ceilingWarn ? "text-amber-700" : ""}>
-              Raumhöhe:{" "}
-              <span className="font-mono">
-                {fmtNumber(room.height_m)} m
-              </span>
-              {ceilingWarn && " (Standard)"}
+            <span className="inline-flex items-center gap-1">
+              Raumhöhe:
+              <InlineNumericEdit
+                value={room.height_m}
+                unit="m"
+                state={
+                  room.height_m === null
+                    ? "missing"
+                    : ceilingWarn
+                      ? "warning"
+                      : "ok"
+                }
+                missingLabel="Bitte eintragen"
+                warningLabel="Bitte prüfen"
+                tooltip={
+                  room.height_m === null
+                    ? "Raumhöhe fehlt — bitte aus Plan oder Schnitt messen"
+                    : "Deckenhöhe wurde auf 2,50 m geschätzt — bitte aus Plan oder Schnitt prüfen"
+                }
+                isSaving={quickSaveMut.isPending}
+                onSave={(next) => quickSaveMut.mutate({ height_m: next })}
+                ariaLabel={`Raumhöhe von ${room.name} bearbeiten`}
+              />
             </span>
-            <span>
-              Wandfläche netto:{" "}
+            <span className="inline-flex items-center gap-1">
+              Wandfläche netto:
               <span className="font-mono text-foreground">
                 {fmtNumber(room.wall_area_net_m2)} m²
               </span>
