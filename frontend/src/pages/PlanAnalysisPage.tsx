@@ -33,6 +33,7 @@ import {
   isUpgradeRequired,
   type NormalizedError,
 } from "../lib/errors";
+import { InlineNumericEdit } from "../components/room/InlineNumericEdit";
 import { pushDiagnostic } from "../lib/diagnostics";
 import type { Plan } from "../types/plan";
 import type { Room } from "../types/room";
@@ -1288,6 +1289,15 @@ function WallCalculationTable({
     onSuccess: invalidate,
   });
 
+  // Same wire shape as ``toggleMutation``, separate instance so that
+  // an in-flight inline edit (perimeter / height) doesn't disable the
+  // deduction toggles via ``isPending``, and vice versa. Cheap.
+  const quickEditMut = useMutation({
+    mutationFn: ({ id, updates }: { id: string; updates: Partial<Room> }) =>
+      updateRoom(id, updates),
+    onSuccess: invalidate,
+  });
+
   const bulkError = bulkMutation.error ? normalizeError(bulkMutation.error) : null;
   const missingHeights = rooms.filter(
     (r) => r.ceiling_height_source === "default"
@@ -1397,22 +1407,92 @@ function WallCalculationTable({
                       </span>
                     )}
                   </td>
-                  <td className="px-3 py-2 text-right font-mono">
-                    {fmt2(room.perimeter_m)}
+                  <td className="px-3 py-2 text-right">
+                    {/* Wandlänge — primary edit affordance for an
+                        empty perimeter. NULL renders as a red
+                        "Bitte eintragen" badge that doubles as the
+                        click target; a present value shows as
+                        muted prose with hover-pencil. */}
+                    <InlineNumericEdit
+                      value={room.perimeter_m}
+                      unit=""
+                      state={room.perimeter_m === null ? "missing" : "ok"}
+                      missingLabel="Bitte eintragen"
+                      warningLabel=""
+                      tooltip="Wandumfang fehlt — bitte aus Plan messen oder schätzen"
+                      isSaving={quickEditMut.isPending}
+                      onSave={(next) =>
+                        quickEditMut.mutate({
+                          id: room.id,
+                          updates: { perimeter_m: next },
+                        })
+                      }
+                      ariaLabel={`Wandlänge von ${room.name} bearbeiten`}
+                    />
                   </td>
-                  <td className="px-3 py-2 text-right font-mono">
-                    {fmt2(room.height_m)}
+                  <td className="px-3 py-2 text-right">
+                    {/* Deckenhöhe — three states. NULL → red
+                        "Bitte eintragen". Present but
+                        ceiling_height_source==='default' (calculator
+                        fell back to 2.50 m) → amber "Bitte prüfen".
+                        Otherwise → muted prose with hover-pencil. */}
+                    <InlineNumericEdit
+                      value={room.height_m}
+                      unit=""
+                      state={
+                        room.height_m === null
+                          ? "missing"
+                          : isDefault
+                            ? "warning"
+                            : "ok"
+                      }
+                      missingLabel="Bitte eintragen"
+                      warningLabel="Bitte prüfen"
+                      tooltip={
+                        room.height_m === null
+                          ? "Raumhöhe fehlt — bitte aus Plan oder Schnitt messen"
+                          : "Deckenhöhe wurde geschätzt — bitte aus Plan oder Schnitt prüfen"
+                      }
+                      isSaving={quickEditMut.isPending}
+                      onSave={(next) =>
+                        quickEditMut.mutate({
+                          id: room.id,
+                          updates: { height_m: next },
+                        })
+                      }
+                      ariaLabel={`Deckenhöhe von ${room.name} bearbeiten`}
+                    />
                   </td>
                   <td className="px-3 py-2">
-                    <span
-                      className={`rounded-full px-2 py-0.5 text-xs ${
-                        isDefault
-                          ? "bg-amber-200 text-amber-900"
-                          : "bg-gray-100 text-gray-700"
-                      }`}
-                    >
-                      {ceilingSourceLabel(room.ceiling_height_source)}
-                    </span>
+                    {isDefault ? (
+                      // Höhenquelle "Bitte prüfen" — second edit
+                      // affordance for the same height_m field, on
+                      // the source-column where the user used to see
+                      // a passive "Standard" label. Editing here
+                      // saves through the same mutation, so the
+                      // Deckenhöhe column updates in lockstep on
+                      // invalidation.
+                      <InlineNumericEdit
+                        value={room.height_m}
+                        unit=""
+                        state="warning"
+                        missingLabel="Bitte eintragen"
+                        warningLabel="Bitte prüfen"
+                        tooltip="Deckenhöhe wurde geschätzt — bitte aus Plan oder Schnitt prüfen"
+                        isSaving={quickEditMut.isPending}
+                        onSave={(next) =>
+                          quickEditMut.mutate({
+                            id: room.id,
+                            updates: { height_m: next },
+                          })
+                        }
+                        ariaLabel={`Höhenquelle von ${room.name} korrigieren`}
+                      />
+                    ) : (
+                      <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-700">
+                        {ceilingSourceLabel(room.ceiling_height_source)}
+                      </span>
+                    )}
                   </td>
                   <td className="px-3 py-2 text-right font-mono">
                     {fmt2(room.wall_area_gross_m2)}
