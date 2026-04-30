@@ -15,7 +15,6 @@ import {
   Info,
   Plus,
   Ruler,
-  AlertTriangle,
   Calculator,
   Building2,
 } from "lucide-react";
@@ -1299,9 +1298,6 @@ function WallCalculationTable({
   });
 
   const bulkError = bulkMutation.error ? normalizeError(bulkMutation.error) : null;
-  const missingHeights = rooms.filter(
-    (r) => r.ceiling_height_source === "default"
-  ).length;
 
   // Totals row — handy for the estimator to sanity-check the whole
   // project at a glance. Sum over net because that's what flows into
@@ -1317,20 +1313,12 @@ function WallCalculationTable({
 
   return (
     <div>
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          {missingHeights > 0 && (
-            <div
-              role="status"
-              className="flex items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs text-amber-900"
-            >
-              <AlertTriangle className="h-3.5 w-3.5" />
-              {missingHeights === 1
-                ? "1 Raum ohne erkannte Raumhöhe — bitte prüfen"
-                : `${missingHeights} Räume ohne erkannte Raumhöhe — bitte prüfen`}
-            </div>
-          )}
-        </div>
+      <div className="mb-3 flex flex-wrap items-center justify-end gap-3">
+        {/* The "X Räume ohne erkannte Raumhöhe" banner that used to
+            live here was removed in v22: 2,50 m is the Austrian
+            residential default and a soft fallback shouldn't read
+            as a failure. The cell-level subtle hint on each row
+            carries the same message without alarming the user. */}
         <button
           type="button"
           onClick={() => bulkMutation.mutate()}
@@ -1381,20 +1369,9 @@ function WallCalculationTable({
           <tbody className="divide-y">
             {rooms.map((room) => {
               const isDefault = room.ceiling_height_source === "default";
+              const isEstimated = room.perimeter_source === "estimated";
               return (
-                <tr
-                  key={room.id}
-                  className={
-                    isDefault
-                      ? "bg-amber-50 hover:bg-amber-100/70"
-                      : "hover:bg-muted/30"
-                  }
-                  title={
-                    isDefault
-                      ? "Raumhöhe nicht aus dem Plan erkannt — Standardwert 2,50 m verwendet. Bitte bestätigen oder korrigieren."
-                      : undefined
-                  }
-                >
+                <tr key={room.id} className="hover:bg-muted/30">
                   <td className="px-3 py-2 font-medium">
                     {room.name}
                     {room.is_staircase && (
@@ -1408,18 +1385,31 @@ function WallCalculationTable({
                     )}
                   </td>
                   <td className="px-3 py-2 text-right">
-                    {/* Wandlänge — primary edit affordance for an
-                        empty perimeter. NULL renders as a red
-                        "Bitte eintragen" badge that doubles as the
-                        click target; a present value shows as
-                        muted prose with hover-pencil. */}
+                    {/* Wandlänge — three visual states.
+                        - perimeter_m IS NULL          → red "Bitte
+                          eintragen" emergency-fallback badge
+                          (genuinely unknown — neither Vision nor area
+                          gave us anything to estimate from).
+                        - perimeter_source==='estimated' → value
+                          shown normally with subtle Info-icon hint
+                          ("geschätzt — bitte prüfen"). Tooltip
+                          explains; no alarming badge.
+                        - perimeter_source IN ('vision','manual', null)
+                          → vanilla muted prose with hover-pencil. */}
                     <InlineNumericEdit
                       value={room.perimeter_m}
                       unit=""
                       state={room.perimeter_m === null ? "missing" : "ok"}
                       missingLabel="Bitte eintragen"
                       warningLabel=""
-                      tooltip="Wandumfang fehlt — bitte aus Plan messen oder schätzen"
+                      hint={isEstimated ? "geschätzt — bitte prüfen" : undefined}
+                      tooltip={
+                        room.perimeter_m === null
+                          ? "Wandumfang fehlt — bitte aus Plan messen oder schätzen"
+                          : isEstimated
+                            ? "Wandumfang aus Fläche geschätzt — bitte aus Plan prüfen"
+                            : "Wandumfang"
+                      }
                       isSaving={quickEditMut.isPending}
                       onSave={(next) =>
                         quickEditMut.mutate({
@@ -1431,27 +1421,31 @@ function WallCalculationTable({
                     />
                   </td>
                   <td className="px-3 py-2 text-right">
-                    {/* Deckenhöhe — three states. NULL → red
-                        "Bitte eintragen". Present but
-                        ceiling_height_source==='default' (calculator
-                        fell back to 2.50 m) → amber "Bitte prüfen".
-                        Otherwise → muted prose with hover-pencil. */}
+                    {/* Deckenhöhe — only two real states now.
+                        - NULL                 → red "Bitte eintragen".
+                        - default OR resolved  → vanilla value cell.
+                          When the source is 'default' (2,50 m
+                          fallback) we surface a subtle Info-icon
+                          hint instead of an amber warning, because
+                          2,50 m is the Austrian residential standard
+                          and shouldn't read as a failure. */}
                     <InlineNumericEdit
                       value={room.height_m}
                       unit=""
-                      state={
-                        room.height_m === null
-                          ? "missing"
-                          : isDefault
-                            ? "warning"
-                            : "ok"
-                      }
+                      state={room.height_m === null ? "missing" : "ok"}
                       missingLabel="Bitte eintragen"
-                      warningLabel="Bitte prüfen"
+                      warningLabel=""
+                      hint={
+                        isDefault
+                          ? "Standardwert — prüfen falls anders"
+                          : undefined
+                      }
                       tooltip={
                         room.height_m === null
                           ? "Raumhöhe fehlt — bitte aus Plan oder Schnitt messen"
-                          : "Deckenhöhe wurde geschätzt — bitte aus Plan oder Schnitt prüfen"
+                          : isDefault
+                            ? "Standardwert 2,50 m — bitte aus Schnittplan prüfen falls anders"
+                            : "Deckenhöhe"
                       }
                       isSaving={quickEditMut.isPending}
                       onSave={(next) =>
@@ -1465,29 +1459,17 @@ function WallCalculationTable({
                   </td>
                   <td className="px-3 py-2">
                     {isDefault ? (
-                      // Höhenquelle "Bitte prüfen" — second edit
-                      // affordance for the same height_m field, on
-                      // the source-column where the user used to see
-                      // a passive "Standard" label. Editing here
-                      // saves through the same mutation, so the
-                      // Deckenhöhe column updates in lockstep on
-                      // invalidation.
-                      <InlineNumericEdit
-                        value={room.height_m}
-                        unit=""
-                        state="warning"
-                        missingLabel="Bitte eintragen"
-                        warningLabel="Bitte prüfen"
-                        tooltip="Deckenhöhe wurde geschätzt — bitte aus Plan oder Schnitt prüfen"
-                        isSaving={quickEditMut.isPending}
-                        onSave={(next) =>
-                          quickEditMut.mutate({
-                            id: room.id,
-                            updates: { height_m: next },
-                          })
-                        }
-                        ariaLabel={`Höhenquelle von ${room.name} korrigieren`}
-                      />
+                      // Höhenquelle: passive grey "Standard" pill.
+                      // The actual edit affordance lives on the
+                      // Deckenhöhe value cell — having it twice in a
+                      // row was redundant once 2,50 m stopped being
+                      // an alarm condition.
+                      <span
+                        className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-700"
+                        title="Standardwert 2,50 m — die Deckenhöhe-Zelle ist editierbar"
+                      >
+                        Standard
+                      </span>
                     ) : (
                       <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-700">
                         {ceilingSourceLabel(room.ceiling_height_source)}

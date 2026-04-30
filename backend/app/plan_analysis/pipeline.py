@@ -38,6 +38,7 @@ import asyncio
 import base64
 import json
 import logging
+import math
 from pathlib import Path
 from uuid import UUID
 
@@ -57,6 +58,34 @@ from app.services.wall_calculator import (
 # string the model hands back collapses to "default" — the frontend's
 # amber warning treats that as "user please confirm".
 _CEILING_SOURCE_VALUES = {"schnitt", "grundriss", "manual", "default"}
+
+
+def _resolve_perimeter(
+    extracted_perimeter: float | int | None,
+    extracted_area: float | int | None,
+) -> tuple[float | None, str | None]:
+    """Pick a perimeter for a freshly extracted room + label its source.
+
+    Three branches, in priority order:
+
+    1. Vision returned a positive perimeter — trust it, tag ``vision``.
+    2. Vision returned no perimeter but a positive area — fall back to
+       a near-square estimate with a 1.10 fudge factor for L-shapes
+       and minor irregularities (``4 · √A · 1.10``). Tag ``estimated``.
+       Same formula the migration 016 backfill applies to legacy rows.
+    3. Neither — leave both ``None``. The frontend renders the red
+       "Bitte eintragen" emergency-fallback so the gap is impossible
+       to overlook.
+
+    Mirrored in PG-SQL inside ``alembic/versions/016_perimeter_source_backfill.py``;
+    keep both in sync if the formula ever changes.
+    """
+    if extracted_perimeter is not None and float(extracted_perimeter) > 0:
+        return float(extracted_perimeter), "vision"
+    if extracted_area is not None and float(extracted_area) > 0:
+        return round(4 * math.sqrt(float(extracted_area)) * 1.10, 2), "estimated"
+    return None, None
+
 
 logger = logging.getLogger(__name__)
 
@@ -438,6 +467,15 @@ async def _store_extraction_result(
             if room_data.get("height_m") in (None, 0, 0.0):
                 ceiling_source = "default"
 
+            # Vision either returned a perimeter (good case),
+            # nothing-but-an-area (we estimate), or nothing at all
+            # (real unknown — leave null and let the UI flag it).
+            # See ``_resolve_perimeter`` docstring.
+            persisted_perimeter, perimeter_source = _resolve_perimeter(
+                room_data.get("perimeter_m"),
+                room_data.get("area_m2"),
+            )
+
             room = Room(
                 unit_id=unit.id,
                 plan_id=plan.id,
@@ -445,7 +483,8 @@ async def _store_extraction_result(
                 room_number=room_data.get("room_number"),
                 room_type=room_data.get("room_type"),
                 area_m2=room_data.get("area_m2"),
-                perimeter_m=room_data.get("perimeter_m"),
+                perimeter_m=persisted_perimeter,
+                perimeter_source=perimeter_source,
                 height_m=room_data.get("height_m"),
                 ceiling_height_source=ceiling_source,
                 floor_type=room_data.get("floor_type"),
@@ -480,16 +519,17 @@ async def _store_extraction_result(
                     )
                 )
 
-            # Eagerly compute wall area so the rooms table has numbers
-            # to show on first render — otherwise the frontend would
-            # display "—" until the user clicks "Wandflächen berechnen"
-            # for a plan whose data is perfectly extractable. If
-            # perimeter or height is missing we still store the result
-            # (gross 0 / default height) so the column isn't null — the
-            # UI uses ``ceiling_height_source='default'`` as the
-            # "please confirm" signal, not a null gross.
+            # Eagerly compute wall area so the rooms table has
+            # numbers to show on first render — otherwise the
+            # frontend would display "—" until the user clicks
+            # "Wandflächen berechnen". We feed the calculator the
+            # *resolved* perimeter (Vision-extracted OR estimated
+            # from area) so estimated rooms also start with a
+            # plausible non-zero gross/net rather than 0,00 m².
+            # Genuinely-unknown rooms (no perimeter, no area) still
+            # land at gross 0 — that's the "please enter" signal.
             calc = calculate_wall_areas(
-                perimeter_m=room_data.get("perimeter_m"),
+                perimeter_m=persisted_perimeter,
                 height_m=room_data.get("height_m"),
                 is_staircase=bool(room_data.get("is_staircase", False)),
                 deductions_enabled=True,

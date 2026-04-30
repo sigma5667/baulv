@@ -15,11 +15,26 @@ export interface Opening {
  * * ``schnitt``   — extracted from a Schnittzeichnung
  * * ``grundriss`` — labelled on the floorplan (e.g. "RH=2.50")
  * * ``manual``    — the user typed it in
- * * ``default``   — assumed 2.50 m because nothing else was available;
- *                   the UI highlights these rows in amber so the user
- *                   confirms before the number flows into the LV
+ * * ``default``   — assumed 2.50 m because nothing else was available
  */
 export type CeilingHeightSource = "schnitt" | "grundriss" | "manual" | "default";
+
+/**
+ * Provenance of the ``perimeter_m`` value.
+ *
+ * * ``vision``    — Claude Vision extracted it from the plan
+ * * ``estimated`` — the pipeline computed it from area
+ *                   (4 · √area · 1.10) because Vision returned nothing.
+ *                   The UI shows the value with a subtle "geschätzt"
+ *                   hint so the user knows to double-check it
+ *                   without being alarmed by a red badge.
+ * * ``manual``    — the user typed or corrected it via the inline
+ *                   editor or the manual room form
+ * * ``null``      — pre-016 row whose provenance we couldn't infer,
+ *                   or a genuinely unknown perimeter (no area, no
+ *                   Vision value). Rendered with no special hint.
+ */
+export type PerimeterSource = "vision" | "estimated" | "manual";
 
 export interface Room {
   id: string;
@@ -30,6 +45,7 @@ export interface Room {
   room_type: string | null;
   area_m2: number | null;
   perimeter_m: number | null;
+  perimeter_source: PerimeterSource | null;
   height_m: number | null;
   ceiling_height_source: CeilingHeightSource;
   floor_type: string | null;

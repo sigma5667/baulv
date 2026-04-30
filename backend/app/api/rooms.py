@@ -92,6 +92,14 @@ async def create_room(
     payload["ceiling_height_source"] = _normalise_ceiling_source(
         payload.get("ceiling_height_source") or "manual"
     )
+    # Same provenance logic for ``perimeter_source``: if the user
+    # passed a perimeter, it's a manual entry. Leave the column null
+    # when no perimeter is set so the table can render the empty-
+    # state badge instead of an unfounded "manual" tag.
+    if payload.get("perimeter_m") is not None and not payload.get(
+        "perimeter_source"
+    ):
+        payload["perimeter_source"] = "manual"
     room = Room(
         unit_id=unit_id,
         source="manual",
@@ -177,6 +185,17 @@ async def update_room(
         # User typed a height but didn't specify the source → treat
         # the new value as manual.
         updates["ceiling_height_source"] = "manual"
+
+    # Mirror behaviour for ``perimeter_source``: if the user supplies
+    # a new perimeter (without explicitly setting the source), tag
+    # the value as ``manual`` so the wall-calc table stops flagging
+    # it as an estimate. ``None`` clears mean the user wants to
+    # remove the value — we drop the source flag too so the row
+    # falls back to the "Bitte eintragen" empty-state badge.
+    if "perimeter_source" not in updates and "perimeter_m" in updates:
+        updates["perimeter_source"] = (
+            "manual" if updates["perimeter_m"] is not None else None
+        )
 
     for key, value in updates.items():
         setattr(room, key, value)

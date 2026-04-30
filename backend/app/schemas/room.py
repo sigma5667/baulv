@@ -38,6 +38,12 @@ class RoomCreate(BaseModel):
     room_type: str | None = None
     area_m2: float | None = None
     perimeter_m: float | None = None
+    # Provenance for ``perimeter_m``. Set explicitly by the
+    # plan-analysis pipeline and the PUT endpoint; left None here so
+    # a manual room creation through the UI doesn't have to think
+    # about it (the API layer defaults it to ``manual`` when the
+    # user supplies a perimeter).
+    perimeter_source: str | None = None
     height_m: float | None = None
     # Four accepted values: schnitt / grundriss / manual / default.
     # The default (for a user-created room) is ``manual`` — the user
@@ -60,6 +66,7 @@ class RoomUpdate(BaseModel):
     room_type: str | None = None
     area_m2: float | None = None
     perimeter_m: float | None = None
+    perimeter_source: str | None = None
     height_m: float | None = None
     ceiling_height_source: str | None = None
     floor_type: str | None = None
@@ -80,6 +87,7 @@ class RoomResponse(BaseModel):
     room_type: str | None
     area_m2: float | None
     perimeter_m: float | None
+    perimeter_source: str | None = None
     height_m: float | None
     ceiling_height_source: str
     floor_type: str | None

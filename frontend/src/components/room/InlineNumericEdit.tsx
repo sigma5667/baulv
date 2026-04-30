@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { AlertTriangle, Edit2 } from "lucide-react";
+import { AlertTriangle, Edit2, Info } from "lucide-react";
 
 /**
  * Click-to-edit cell for a single numeric Room field.
@@ -53,6 +53,7 @@ export function InlineNumericEdit({
   state,
   missingLabel,
   warningLabel,
+  hint,
   tooltip,
   isSaving,
   onSave,
@@ -64,6 +65,17 @@ export function InlineNumericEdit({
   state: "ok" | "missing" | "warning";
   missingLabel: string;
   warningLabel: string;
+  /**
+   * Subtle informational badge shown next to the value in the
+   * ``ok`` state — used when the value is technically present but
+   * worth a glance (e.g. ``perimeter_source === 'estimated'`` or
+   * ``ceiling_height_source === 'default'``). Pass ``null``/omit
+   * for vanilla values that need no annotation. The full text is
+   * surfaced via the cell's ``tooltip``; the badge itself is just
+   * a tiny info icon so the user notices there's something to
+   * hover.
+   */
+  hint?: string | null;
   tooltip: string;
   isSaving: boolean;
   onSave: (next: number | null) => void;
@@ -189,11 +201,17 @@ export function InlineNumericEdit({
   }
 
   // state === "ok"
+  // ``hint`` adds a subtle info icon between value and edit-pencil
+  // when set — used for ``estimated``/``default`` rows where we want
+  // the value to still look "normal" but the user should know there's
+  // a tooltip worth reading. The amber tint on the icon is faint
+  // enough not to compete with the row's content but visible enough
+  // that an attentive user will hover.
   return (
     <button
       type="button"
       onClick={startEdit}
-      title={`${tooltip} — Klicken zum Bearbeiten`}
+      title={hint ? `${tooltip} (${hint})` : `${tooltip} — Klicken zum Bearbeiten`}
       aria-label={ariaLabel}
       className="group inline-flex items-center gap-1 rounded px-1 transition-colors hover:bg-accent"
     >
@@ -202,6 +220,12 @@ export function InlineNumericEdit({
           ? `${value.toFixed(digits).replace(".", ",")}${unit ? " " + unit : ""}`
           : "—"}
       </span>
+      {hint && (
+        <Info
+          className="h-3 w-3 text-amber-600/60"
+          aria-hidden="true"
+        />
+      )}
       <Edit2 className="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-50" />
     </button>
   );

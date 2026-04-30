@@ -80,6 +80,16 @@ class Room(Base):
     room_type: Mapped[str | None] = mapped_column(String(100))
     area_m2: Mapped[float | None] = mapped_column(Numeric(10, 3))
     perimeter_m: Mapped[float | None] = mapped_column(Numeric(10, 3))
+    # Provenance flag for ``perimeter_m`` so the UI can differentiate
+    # an honest Vision extraction from a fallback estimate the
+    # pipeline computed out of the room area. Values: ``vision`` (KI
+    # extracted from plan), ``estimated`` (4·√area·1.10 fallback when
+    # Vision returned nothing), ``manual`` (user typed it via
+    # ``PUT /rooms/{id}``), NULL (legacy / unknown — pre-016 rows
+    # without an inferable source). Frontend keys off this to show
+    # the right hint without alarming the user when an estimate is
+    # good enough.
+    perimeter_source: Mapped[str | None] = mapped_column(String(20))
     height_m: Mapped[float | None] = mapped_column(Numeric(6, 3))
     floor_type: Mapped[str | None] = mapped_column(String(100))
     wall_type: Mapped[str | None] = mapped_column(String(100))

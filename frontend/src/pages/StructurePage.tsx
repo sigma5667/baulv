@@ -1137,7 +1137,18 @@ function RoomNode({
                 state={room.perimeter_m === null ? "missing" : "ok"}
                 missingLabel="Bitte eintragen"
                 warningLabel=""
-                tooltip="Wandumfang fehlt — bitte aus Plan messen oder schätzen"
+                hint={
+                  room.perimeter_source === "estimated"
+                    ? "geschätzt — bitte prüfen"
+                    : undefined
+                }
+                tooltip={
+                  room.perimeter_m === null
+                    ? "Wandumfang fehlt — bitte aus Plan messen oder schätzen"
+                    : room.perimeter_source === "estimated"
+                      ? "Wandumfang aus Fläche geschätzt — bitte aus Plan prüfen"
+                      : "Wandumfang"
+                }
                 isSaving={quickSaveMut.isPending}
                 onSave={(next) => quickSaveMut.mutate({ perimeter_m: next })}
                 ariaLabel={`Umfang von ${room.name} bearbeiten`}
@@ -1148,19 +1159,20 @@ function RoomNode({
               <InlineNumericEdit
                 value={room.height_m}
                 unit="m"
-                state={
-                  room.height_m === null
-                    ? "missing"
-                    : ceilingWarn
-                      ? "warning"
-                      : "ok"
-                }
+                state={room.height_m === null ? "missing" : "ok"}
                 missingLabel="Bitte eintragen"
-                warningLabel="Bitte prüfen"
+                warningLabel=""
+                hint={
+                  ceilingWarn
+                    ? "Standardwert — prüfen falls anders"
+                    : undefined
+                }
                 tooltip={
                   room.height_m === null
                     ? "Raumhöhe fehlt — bitte aus Plan oder Schnitt messen"
-                    : "Deckenhöhe wurde auf 2,50 m geschätzt — bitte aus Plan oder Schnitt prüfen"
+                    : ceilingWarn
+                      ? "Standardwert 2,50 m — bitte aus Schnittplan prüfen falls anders"
+                      : "Deckenhöhe"
                 }
                 isSaving={quickSaveMut.isPending}
                 onSave={(next) => quickSaveMut.mutate({ height_m: next })}
