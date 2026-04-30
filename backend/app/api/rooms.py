@@ -62,6 +62,20 @@ async def _recalculate_walls_and_persist(room: Room) -> WallCalculationResponse:
     point that flows through ``_recalculate_walls_and_persist``:
     POST /rooms (manual create), PUT /rooms/{id} (inline edit),
     POST /rooms/{id}/calculate-walls and the bulk variant.
+
+    Default-height write-back
+    -------------------------
+    When ``height_m`` was null, ``calculate_wall_areas`` substitutes
+    the 2,50 m fallback for its own arithmetic — but used to leave
+    ``room.height_m`` itself null in the DB. That produced an ugly
+    inconsistency in the wall-calc table: the row showed gross/net
+    computed against 2,50 m yet the Deckenhöhe column rendered the
+    red "Bitte eintragen" empty-state badge. We now write the
+    resolved value back so the DB is internally consistent — null
+    height + ``ceiling_height_source = 'default'`` becomes
+    ``height_m = 2.50`` + ``ceiling_height_source = 'default'``.
+    The frontend then renders the value with the subtle "Standard"
+    hint, exactly matching what the calc used.
     """
 
     # Auto-estimate guarantee — see docstring.
@@ -85,6 +99,12 @@ async def _recalculate_walls_and_persist(room: Room) -> WallCalculationResponse:
     # calculate_wall_areas may flip the source to "default" when
     # height was missing — keep the DB consistent with the UI signal.
     room.ceiling_height_source = calc.ceiling_height_source
+    # Default-height write-back — see docstring. Only fires when the
+    # row had no height to begin with; explicit user values are never
+    # overwritten because ``calc.height_used_m == room.height_m``
+    # in that branch and we'd be assigning the same value anyway.
+    if room.height_m is None:
+        room.height_m = calc.height_used_m
 
     return WallCalculationResponse(
         room_id=room.id,
@@ -322,9 +342,23 @@ async def bulk_calculate_walls(
     """Recalculate wall areas for every room in a project.
 
     Intended as a one-click "Wandflächen berechnen" action after the
-    user has confirmed or corrected ceiling heights. We load all rooms
-    with their openings in one query and iterate; the calculator is
-    synchronous pure-Python so there's no point in concurrency.
+    user has confirmed or corrected ceiling heights. We load all
+    rooms with their openings in one query and iterate; the
+    calculator is synchronous pure-Python so there's no point in
+    concurrency.
+
+    Auto-fill behaviour
+    -------------------
+    For every room that has an area but no perimeter at the time of
+    the call, the recalc step runs ``estimate_perimeter_from_area``
+    inside ``_recalculate_walls_and_persist`` (see its docstring)
+    and tags the resolved value ``perimeter_source = 'estimated'``.
+    For every room that has no explicit height, the same step
+    writes the 2,50 m default back so the cell renders cleanly in
+    the wall-calc table. Together this means the user can click
+    "Wandflächen berechnen" once on a project full of partially-
+    extracted rooms and walk away with sensible numbers across the
+    board — no per-room "Bitte eintragen" parade.
     """
     await verify_project_owner(project_id, user, db)
     stmt = (
@@ -338,6 +372,17 @@ async def bulk_calculate_walls(
 
     results: list[WallCalculationResponse] = []
     for room in rooms:
+        # Defence in depth: the estimate also runs inside
+        # ``_recalculate_walls_and_persist``, but doing it here
+        # explicitly makes the "fill before recalc" intent visible
+        # at the call site. Idempotent — both checks are guarded by
+        # the same ``perimeter_m is None`` condition.
+        if room.perimeter_m is None or float(room.perimeter_m) <= 0:
+            estimated = estimate_perimeter_from_area(room.area_m2)
+            if estimated is not None:
+                room.perimeter_m = estimated
+                room.perimeter_source = "estimated"
+
         payload = await _recalculate_walls_and_persist(room)
         results.append(payload)
 

@@ -538,3 +538,170 @@ async def test_recalc_auto_estimates_when_perimeter_missing_but_area_present(
     assert fresh.perimeter_source == "estimated"
     assert fresh.wall_area_gross_m2 is not None
     assert float(fresh.wall_area_gross_m2) > 0
+
+
+# ---------------------------------------------------------------------------
+# v22.2 — height write-back + bulk-calc auto-fill across many rooms
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_recalc_writes_default_height_back_to_room(
+    db_session: AsyncSession,
+):
+    """Bug 1 from the v22.2 report: a row with ``height_m IS NULL``
+    + ``ceiling_height_source = 'default'`` showed gross/net
+    computed against 2,50 m (correct) but the Deckenhöhe column
+    rendered as the red empty-state badge (wrong). Root cause was
+    that ``_recalculate_walls_and_persist`` updated the cache and
+    the source flag but never wrote the resolved height back to
+    the DB — so the table read null and showed "Bitte eintragen".
+
+    After this fix the recalc step persists ``calc.height_used_m``
+    so the DB reflects what was used."""
+    user, unit = await _seed_unit(db_session)
+    room = Room(
+        id=uuid.uuid4(),
+        unit_id=unit.id,
+        name="Gang",
+        area_m2=Decimal("8.0"),
+        perimeter_m=Decimal("12.0"),
+        perimeter_source="vision",
+        # The bug-trigger combination: height null + source default.
+        height_m=None,
+        ceiling_height_source="default",
+    )
+    db_session.add(room)
+    await db_session.commit()
+
+    from sqlalchemy.orm import selectinload
+    from sqlalchemy import select
+
+    from app.api.rooms import _recalculate_walls_and_persist
+
+    stmt = (
+        select(Room).where(Room.id == room.id).options(selectinload(Room.openings))
+    )
+    fresh = (await db_session.execute(stmt)).scalars().first()
+    assert fresh is not None
+    await _recalculate_walls_and_persist(fresh)
+    await db_session.flush()
+
+    # Height must now be the resolved 2,50 m the calculator used,
+    # not the null we started with.
+    assert fresh.height_m is not None
+    assert float(fresh.height_m) == 2.5
+    assert fresh.ceiling_height_source == "default"
+
+
+@pytest.mark.asyncio
+async def test_recalc_does_not_overwrite_explicit_height(
+    db_session: AsyncSession,
+):
+    """The write-back guard must only fire when height was null —
+    a user-typed 2,80 m must not be silently replaced by 2,50."""
+    user, unit = await _seed_unit(db_session)
+    room = Room(
+        id=uuid.uuid4(),
+        unit_id=unit.id,
+        name="Salon",
+        area_m2=Decimal("30.0"),
+        perimeter_m=Decimal("22.0"),
+        perimeter_source="manual",
+        height_m=Decimal("2.80"),
+        ceiling_height_source="manual",
+    )
+    db_session.add(room)
+    await db_session.commit()
+
+    from sqlalchemy.orm import selectinload
+    from sqlalchemy import select
+
+    from app.api.rooms import _recalculate_walls_and_persist
+
+    stmt = (
+        select(Room).where(Room.id == room.id).options(selectinload(Room.openings))
+    )
+    fresh = (await db_session.execute(stmt)).scalars().first()
+    assert fresh is not None
+    await _recalculate_walls_and_persist(fresh)
+    await db_session.flush()
+
+    assert float(fresh.height_m) == 2.80
+    assert fresh.ceiling_height_source == "manual"
+
+
+@pytest.mark.asyncio
+async def test_bulk_calculate_walls_fills_missing_perimeters(
+    db_session: AsyncSession,
+):
+    """Bug 2 from the v22.2 report: a project with rooms missing
+    perimeter_m (typical for partial Vision extractions) should
+    have all of them estimated and recalculated by a single
+    "Wandflächen berechnen" click. Drives the actual endpoint to
+    cover both the explicit pre-fill in the bulk handler and the
+    redundant auto-estimate inside the recalc helper."""
+    from app.api.rooms import bulk_calculate_walls
+
+    user, unit = await _seed_unit(db_session)
+
+    # Three rooms simulating Tobi's case: each has an area but no
+    # perimeter, room names roughly mirror the real Beta-tester
+    # report.
+    sample_areas = {
+        "Gang": Decimal("8.0"),
+        "Keller 1": Decimal("16.0"),
+        "Technikraum": Decimal("9.0"),
+    }
+    for name, area in sample_areas.items():
+        db_session.add(
+            Room(
+                id=uuid.uuid4(),
+                unit_id=unit.id,
+                name=name,
+                area_m2=area,
+                perimeter_m=None,
+                perimeter_source=None,
+                height_m=None,
+                ceiling_height_source="default",
+            )
+        )
+    await db_session.commit()
+
+    # Need the project_id for the endpoint — fetch it via the unit.
+    from sqlalchemy import select
+
+    from app.db.models.project import Floor as FloorModel
+
+    floor = await db_session.get(FloorModel, unit.floor_id)
+    assert floor is not None
+    from app.db.models.project import Building as BuildingModel
+
+    building = await db_session.get(BuildingModel, floor.building_id)
+    assert building is not None
+    project_id = building.project_id
+
+    response = await bulk_calculate_walls(
+        project_id=project_id, user=user, db=db_session
+    )
+
+    assert response.rooms_calculated == 3
+    # Every room should have a non-zero gross now.
+    for r in response.results:
+        assert r.wall_area_gross_m2 > 0
+
+    # And the DB rows should reflect estimated perimeters + filled
+    # heights so the wall-calc table renders cleanly without
+    # re-fetching.
+    from app.db.models.project import Room as RoomModel
+
+    rows = (
+        await db_session.execute(
+            select(RoomModel).where(RoomModel.unit_id == unit.id)
+        )
+    ).scalars().all()
+    for row in rows:
+        assert row.perimeter_m is not None
+        assert row.perimeter_source == "estimated"
+        assert row.height_m is not None
+        assert float(row.height_m) == 2.5

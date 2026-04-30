@@ -1425,18 +1425,35 @@ function WallCalculationTable({
                     />
                   </td>
                   <td className="px-3 py-2 text-right">
-                    {/* Deckenhöhe — only two real states now.
-                        - NULL                 → red "Bitte eintragen".
-                        - default OR resolved  → vanilla value cell.
-                          When the source is 'default' (2,50 m
-                          fallback) we surface a subtle Info-icon
-                          hint instead of an amber warning, because
-                          2,50 m is the Austrian residential standard
-                          and shouldn't read as a failure. */}
+                    {/* Deckenhöhe — three states.
+                        - height_m IS NULL AND source != 'default'
+                          → red "Bitte eintragen" (genuinely missing —
+                          neither user nor calc has touched this row).
+                        - height_m IS NULL AND source == 'default'
+                          → defensive fallback display: show 2,50 m
+                          with the same amber Info-icon hint we use
+                          for the explicit-2,50 case. The backend
+                          recalc writes the resolved height back, so
+                          this branch shouldn't trigger after a
+                          deploy of v22.2+, but leaving the
+                          fallback in place keeps the table
+                          coherent if any data inconsistency slips
+                          through.
+                        - height_m present (default or measured) →
+                          vanilla value cell. Subtle hint when
+                          source is 'default'. */}
                     <InlineNumericEdit
-                      value={room.height_m}
+                      value={
+                        room.height_m === null && isDefault
+                          ? 2.5
+                          : room.height_m
+                      }
                       unit=""
-                      state={room.height_m === null ? "missing" : "ok"}
+                      state={
+                        room.height_m === null && !isDefault
+                          ? "missing"
+                          : "ok"
+                      }
                       missingLabel="Bitte eintragen"
                       warningLabel=""
                       hint={
@@ -1445,7 +1462,7 @@ function WallCalculationTable({
                           : undefined
                       }
                       tooltip={
-                        room.height_m === null
+                        room.height_m === null && !isDefault
                           ? "Raumhöhe fehlt — bitte aus Plan oder Schnitt messen"
                           : isDefault
                             ? "Standardwert 2,50 m — bitte aus Schnittplan prüfen falls anders"
