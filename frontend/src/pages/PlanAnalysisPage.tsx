@@ -1179,16 +1179,20 @@ function RoomAddForm({
             inputMode="decimal"
             value={area}
             onChange={(e) => setArea(e.target.value)}
+            placeholder="z.B. 25,5"
+            title="Wenn nur die Fläche bekannt ist, schätzt das System den Wandumfang automatisch (4·√A·1,10)."
             className="w-full rounded border bg-background px-2 py-1 text-right font-mono text-sm"
           />
         </label>
-        <label className="w-24">
+        <label className="w-32">
           <span className="block text-xs text-muted-foreground">RH m</span>
           <input
             type="text"
             inputMode="decimal"
             value={height}
             onChange={(e) => setHeight(e.target.value)}
+            placeholder="2,50 (Standard)"
+            title="Leer lassen verwendet 2,50 m (österreichischer Wohnbau-Standard)."
             className="w-full rounded border bg-background px-2 py-1 text-right font-mono text-sm"
           />
         </label>

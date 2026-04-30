@@ -163,3 +163,47 @@ def test_estimate_table_matches_migration_sql(area_m2: float, expected: float):
     perimeter, source = _resolve_perimeter(None, area_m2)
     assert perimeter == expected
     assert source == "estimated"
+
+
+# ---------------------------------------------------------------------------
+# Public helper ``estimate_perimeter_from_area`` — used by the
+# plan-analysis pipeline, the manual-create endpoint, and the recalc
+# helper. The pipeline-level ``_resolve_perimeter`` wraps it; here we
+# pin the public contract directly.
+# ---------------------------------------------------------------------------
+
+
+def test_public_helper_returns_estimate():
+    """Mirror of the canonical sample in the user spec."""
+    from app.services.wall_calculator import estimate_perimeter_from_area
+
+    assert estimate_perimeter_from_area(20.0) == 19.68
+
+
+def test_public_helper_returns_none_for_missing_area():
+    from app.services.wall_calculator import estimate_perimeter_from_area
+
+    assert estimate_perimeter_from_area(None) is None
+
+
+def test_public_helper_returns_none_for_zero_area():
+    from app.services.wall_calculator import estimate_perimeter_from_area
+
+    assert estimate_perimeter_from_area(0) is None
+    assert estimate_perimeter_from_area(0.0) is None
+
+
+def test_public_helper_returns_none_for_negative_area():
+    """Defensive — a hallucinated negative number must not crash
+    sqrt() or yield an imaginary perimeter."""
+    from app.services.wall_calculator import estimate_perimeter_from_area
+
+    assert estimate_perimeter_from_area(-5.0) is None
+
+
+def test_public_helper_accepts_int_inputs():
+    """Vision sometimes returns an int; promote without losing
+    precision."""
+    from app.services.wall_calculator import estimate_perimeter_from_area
+
+    assert estimate_perimeter_from_area(25) == 22.0  # 4 * 5 * 1.10

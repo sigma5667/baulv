@@ -15,6 +15,7 @@ from app.schemas.room import (
 )
 from app.services.wall_calculator import (
     calculate_wall_areas,
+    estimate_perimeter_from_area,
     openings_from_orm,
 )
 from app.auth import get_current_user
@@ -47,7 +48,28 @@ async def _recalculate_walls_and_persist(room: Room) -> WallCalculationResponse:
     in async code). The caller is also responsible for flushing the
     session — we only mutate attributes so the write batches with any
     other work in the same request.
+
+    Auto-estimate guarantee
+    -----------------------
+    If the room hits the recalc with ``perimeter_m`` missing but
+    ``area_m2`` populated, we fill the perimeter with a 4·√A·1.10
+    estimate before computing the wall areas — so the user never
+    sees gross 0,00 m² on a row that has enough information to
+    yield a sensible number. The new perimeter is tagged
+    ``perimeter_source='estimated'`` exactly like the pipeline
+    would tag it, so the UI can show the same subtle hint instead
+    of the red "Bitte eintragen" badge. This benefits every entry
+    point that flows through ``_recalculate_walls_and_persist``:
+    POST /rooms (manual create), PUT /rooms/{id} (inline edit),
+    POST /rooms/{id}/calculate-walls and the bulk variant.
     """
+
+    # Auto-estimate guarantee — see docstring.
+    if room.perimeter_m is None or float(room.perimeter_m) <= 0:
+        estimated = estimate_perimeter_from_area(room.area_m2)
+        if estimated is not None:
+            room.perimeter_m = estimated
+            room.perimeter_source = "estimated"
 
     calc = calculate_wall_areas(
         perimeter_m=float(room.perimeter_m) if room.perimeter_m is not None else None,
@@ -87,19 +109,58 @@ async def create_room(
     await verify_unit_owner(unit_id, user, db)
     openings_data = data.openings
     payload = data.model_dump(exclude={"openings"})
-    # User-created rooms default to "manual" for the height source
-    # when the caller didn't specify one — they typed it in.
-    payload["ceiling_height_source"] = _normalise_ceiling_source(
-        payload.get("ceiling_height_source") or "manual"
-    )
-    # Same provenance logic for ``perimeter_source``: if the user
-    # passed a perimeter, it's a manual entry. Leave the column null
-    # when no perimeter is set so the table can render the empty-
-    # state badge instead of an unfounded "manual" tag.
-    if payload.get("perimeter_m") is not None and not payload.get(
-        "perimeter_source"
-    ):
+
+    # ----------------------------------------------------------------
+    # ceiling_height_source — three branches.
+    #
+    # 1. Caller passed a source string explicitly → honour it (after
+    #    normalisation against the canonical set).
+    # 2. No source, no height (or height == 2.50, the Austrian
+    #    residential standard fallback) → ``default``. Treating an
+    #    explicit 2.50 the same as null protects against frontend
+    #    regressions that pre-fill the field with the placeholder
+    #    default and submit it untouched.
+    # 3. No source, height ≠ 2.50 → ``manual``. The user typed a
+    #    real measurement.
+    # ----------------------------------------------------------------
+    provided_source = payload.get("ceiling_height_source")
+    provided_height = payload.get("height_m")
+    if provided_source:
+        payload["ceiling_height_source"] = _normalise_ceiling_source(
+            provided_source
+        )
+    elif provided_height is None or float(provided_height) == 2.5:
+        payload["ceiling_height_source"] = "default"
+    else:
+        payload["ceiling_height_source"] = "manual"
+
+    # ----------------------------------------------------------------
+    # perimeter_m + perimeter_source — three branches, mirror logic.
+    #
+    # 1. Caller passed an explicit ``perimeter_source`` → honour it.
+    # 2. Caller passed a ``perimeter_m`` value → ``manual``.
+    # 3. No perimeter but a positive ``area_m2`` → estimate
+    #    (4 · √A · 1.10) and tag ``estimated``. Means a manual room
+    #    creation with just an area never falls through to gross
+    #    0,00 m² on first render.
+    # 4. Otherwise → leave both null. The "Bitte eintragen"
+    #    emergency-fallback badge fires in the UI.
+    # ----------------------------------------------------------------
+    provided_perimeter_source = payload.get("perimeter_source")
+    provided_perimeter = payload.get("perimeter_m")
+    provided_area = payload.get("area_m2")
+    if provided_perimeter_source:
+        # Explicit user choice — pass through.
+        pass
+    elif provided_perimeter is not None:
         payload["perimeter_source"] = "manual"
+    else:
+        estimated = estimate_perimeter_from_area(provided_area)
+        if estimated is not None:
+            payload["perimeter_m"] = estimated
+            payload["perimeter_source"] = "estimated"
+        # else: both stay null → empty-state badge in the UI.
+
     room = Room(
         unit_id=unit_id,
         source="manual",

@@ -289,3 +289,252 @@ async def test_create_room_without_perimeter_leaves_source_null(
 
     assert response.perimeter_m is None
     assert response.perimeter_source is None
+
+
+# ---------------------------------------------------------------------------
+# Helper for the v22.1 tests — same hierarchy boilerplate, fewer lines
+# in the test bodies below.
+# ---------------------------------------------------------------------------
+
+
+async def _seed_unit(db: AsyncSession) -> tuple[User, Unit]:
+    """Return a User and an Unit they own — minimum scaffolding for a
+    POST /units/{unit_id}/rooms call."""
+    user = User(
+        id=uuid.uuid4(),
+        email=f"u-{uuid.uuid4()}@example.com",
+        password_hash="x",
+        full_name="Test",
+    )
+    db.add(user)
+    await db.flush()
+    project = Project(id=uuid.uuid4(), user_id=user.id, name="P")
+    db.add(project)
+    await db.flush()
+    building = Building(id=uuid.uuid4(), project_id=project.id, name="H")
+    db.add(building)
+    await db.flush()
+    floor = Floor(id=uuid.uuid4(), building_id=building.id, name="EG")
+    db.add(floor)
+    await db.flush()
+    unit = Unit(id=uuid.uuid4(), floor_id=floor.id, name="T")
+    db.add(unit)
+    await db.commit()
+    return user, unit
+
+
+# ---------------------------------------------------------------------------
+# v22.1 — POST /rooms auto-estimate when only area is supplied
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_room_with_only_area_estimates_perimeter(
+    db_session: AsyncSession,
+):
+    """The whole point of v22.1: a manual room creation that has an
+    area but no perimeter must not land at gross 0,00 m². The
+    endpoint estimates 4·√A·1.10 and tags the source ``estimated``,
+    so the wall-calc table renders a sensible number with the
+    "geschätzt" hint instead of the red empty-state badge."""
+    user, unit = await _seed_unit(db_session)
+
+    response = await create_room(
+        unit_id=unit.id,
+        data=RoomCreate(name="Wohnzimmer", area_m2=20.0),
+        user=user,
+        db=db_session,
+    )
+
+    # 4 · √20 · 1.10 = 19.677… → 19.68 (full precision; see
+    # test_perimeter_estimate.py for why this is 19.68 and not 19.67).
+    assert response.perimeter_m == 19.68
+    assert response.perimeter_source == "estimated"
+    # Wall-area cache should also be filled — gross > 0 — because
+    # the recalc step ran with the freshly-estimated perimeter.
+    assert response.wall_area_gross_m2 is not None
+    assert response.wall_area_gross_m2 > 0
+
+
+@pytest.mark.asyncio
+async def test_create_room_with_neither_perimeter_nor_area_keeps_null(
+    db_session: AsyncSession,
+):
+    """User creates a room with just a name (no area, no perimeter).
+    Both perimeter_m and perimeter_source must stay null so the UI
+    can show the red 'Bitte eintragen' emergency-fallback. Estimating
+    out of nothing would be lying."""
+    user, unit = await _seed_unit(db_session)
+
+    response = await create_room(
+        unit_id=unit.id,
+        data=RoomCreate(name="Abstellraum"),
+        user=user,
+        db=db_session,
+    )
+
+    assert response.perimeter_m is None
+    assert response.perimeter_source is None
+
+
+@pytest.mark.asyncio
+async def test_create_room_with_explicit_perimeter_marks_manual(
+    db_session: AsyncSession,
+):
+    """User typed both perimeter and area — the perimeter wins and is
+    tagged ``manual``. We don't silently overwrite a typed perimeter
+    with an estimate from the area, even if they'd disagree."""
+    user, unit = await _seed_unit(db_session)
+
+    response = await create_room(
+        unit_id=unit.id,
+        data=RoomCreate(name="Bad", area_m2=10.0, perimeter_m=14.5),
+        user=user,
+        db=db_session,
+    )
+
+    assert response.perimeter_m == 14.5
+    assert response.perimeter_source == "manual"
+
+
+# ---------------------------------------------------------------------------
+# v22.1 — POST /rooms infers ceiling_height_source from height_m value
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_room_without_height_marks_default(
+    db_session: AsyncSession,
+):
+    """Empty form-submit (no height typed) → backend uses 2,50 m
+    fallback and tags the source ``default``. This is the "honest"
+    state for a freshly-added Abstellraum the user hasn't measured
+    yet — the wall-calc table renders a subtle 'Standardwert'
+    hint, not a manual badge."""
+    user, unit = await _seed_unit(db_session)
+
+    response = await create_room(
+        unit_id=unit.id,
+        data=RoomCreate(name="Stiegenhaus"),
+        user=user,
+        db=db_session,
+    )
+
+    assert response.ceiling_height_source == "default"
+
+
+@pytest.mark.asyncio
+async def test_create_room_with_explicit_2_50_height_marks_default(
+    db_session: AsyncSession,
+):
+    """Defensive belt: even if a frontend regression starts pre-
+    filling the height field with 2,50, the backend treats the
+    Austrian residential standard fallback as ``default``. The
+    user's intent is "use the standard"; tagging it ``manual``
+    would be wrong."""
+    user, unit = await _seed_unit(db_session)
+
+    response = await create_room(
+        unit_id=unit.id,
+        data=RoomCreate(name="WC", height_m=2.5),
+        user=user,
+        db=db_session,
+    )
+
+    assert response.ceiling_height_source == "default"
+
+
+@pytest.mark.asyncio
+async def test_create_room_with_explicit_other_height_marks_manual(
+    db_session: AsyncSession,
+):
+    """User typed a real measurement (e.g. 2,80 m for an Altbau) →
+    source ``manual``. Differentiation from the 2,50 default is the
+    whole reason the source flag exists."""
+    user, unit = await _seed_unit(db_session)
+
+    response = await create_room(
+        unit_id=unit.id,
+        data=RoomCreate(name="Salon", height_m=2.80),
+        user=user,
+        db=db_session,
+    )
+
+    assert response.ceiling_height_source == "manual"
+
+
+@pytest.mark.asyncio
+async def test_create_room_explicit_source_overrides_inferred(
+    db_session: AsyncSession,
+):
+    """Caller passing ``ceiling_height_source`` explicitly is
+    honoured even when the heuristic would say something else.
+    Lets the plan-analysis pipeline (which already labels its rooms
+    as ``schnitt`` / ``grundriss``) use the same endpoint without
+    losing those labels."""
+    user, unit = await _seed_unit(db_session)
+
+    response = await create_room(
+        unit_id=unit.id,
+        data=RoomCreate(
+            name="Wohnzimmer",
+            height_m=2.5,
+            ceiling_height_source="grundriss",
+        ),
+        user=user,
+        db=db_session,
+    )
+
+    assert response.ceiling_height_source == "grundriss"
+
+
+# ---------------------------------------------------------------------------
+# v22.1 — Auto-estimate also fires through PUT / bulk-calculate-walls,
+# because the logic lives in ``_recalculate_walls_and_persist``
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_recalc_auto_estimates_when_perimeter_missing_but_area_present(
+    db_session: AsyncSession,
+):
+    """A legacy or partially-filled room (perimeter null + area
+    populated) must come out of the recalc step with a non-zero
+    gross. Covers the bulk-calculate-walls path: a user clicking
+    "Wandflächen berechnen" on a project that contains rooms the
+    pipeline didn't fully fill should get sensible values across
+    the board, not a sea of 0,00 m².
+    """
+    user, unit = await _seed_unit(db_session)
+    room = Room(
+        id=uuid.uuid4(),
+        unit_id=unit.id,
+        name="Lager",
+        area_m2=Decimal("16.0"),
+        perimeter_m=None,
+        perimeter_source=None,
+        height_m=Decimal("2.5"),
+        ceiling_height_source="default",
+    )
+    db_session.add(room)
+    await db_session.commit()
+
+    # Force a recalc the way bulk-calculate-walls would.
+    from sqlalchemy.orm import selectinload
+    from sqlalchemy import select
+
+    from app.api.rooms import _recalculate_walls_and_persist
+
+    stmt = (
+        select(Room).where(Room.id == room.id).options(selectinload(Room.openings))
+    )
+    fresh = (await db_session.execute(stmt)).scalars().first()
+    assert fresh is not None
+    await _recalculate_walls_and_persist(fresh)
+    await db_session.flush()
+
+    # 4 · √16 · 1.10 = 17.60 exactly.
+    assert float(fresh.perimeter_m) == 17.60
+    assert fresh.perimeter_source == "estimated"
+    assert fresh.wall_area_gross_m2 is not None
+    assert float(fresh.wall_area_gross_m2) > 0

@@ -42,6 +42,7 @@ a REPL.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -63,6 +64,30 @@ OPENING_DEDUCTION_THRESHOLD_M2: float = 2.5
 # path are marked ``ceiling_height_source='default'`` so the UI can
 # highlight them in amber and prompt the user to confirm.
 DEFAULT_CEILING_HEIGHT_M: float = 2.5
+
+
+def estimate_perimeter_from_area(area_m2: float | int | None) -> float | None:
+    """Approximate room perimeter from area: ``4 · √A · 1.10``.
+
+    The 1.10 fudge factor covers slight L-shapes, niches and
+    non-square footprints — a near-square room is the conservative
+    default for Austrian residential floor plans. Returns ``None``
+    when the area is missing, zero or negative so the caller can
+    distinguish "no estimate possible" from "estimated 0".
+
+    Lives in this module — alongside the wall-area math itself —
+    because every code path that needs an estimate (the plan-analysis
+    pipeline, the manual room-creation endpoint, the recalc helper,
+    the migration 016 backfill in PG-SQL) shares the formula. The
+    SQL mirror in the migration must stay byte-equivalent if this
+    formula ever changes.
+    """
+    if area_m2 is None:
+        return None
+    value = float(area_m2)
+    if value <= 0:
+        return None
+    return round(4 * math.sqrt(value) * 1.10, 2)
 
 
 @dataclass(frozen=True)

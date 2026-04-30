@@ -1647,9 +1647,15 @@ function RoomForm({
   const [perimeter, setPerimeter] = useState<string>(
     initial?.perimeter_m?.toString().replace(".", ",") ?? ""
   );
+  // Empty when no height is on the existing record. We deliberately
+  // do NOT pre-fill with the floor's default (e.g. 2,50 m) because a
+  // pre-filled value the user never touches gets persisted as
+  // ``ceiling_height_source = "manual"`` — which lies about how the
+  // value got there and steals the "default" badge that warns the
+  // user to confirm. Empty input → backend persists null → recalc
+  // falls back to 2,50 m and tags the source ``default`` honestly.
   const [height, setHeight] = useState<string>(
-    initial?.height_m?.toString().replace(".", ",") ??
-      floorHeightM.toString().replace(".", ",")
+    initial?.height_m?.toString().replace(".", ",") ?? ""
   );
   const [roomType, setRoomType] = useState<string>(
     initial?.room_type ?? "normal"
@@ -1670,24 +1676,24 @@ function RoomForm({
       onSubmit={(e) => {
         e.preventDefault();
         if (!name.trim()) return;
-        // For manually-entered rooms the ceiling-height source is
-        // "manual" whenever the user has typed a value (even if they
-        // kept the pre-filled floor default — they saw it, they
-        // accepted it). If they cleared the field, we fall back to
-        // "default" so the amber warning appears.
-        const parsedHeight = parseNum(height);
-        const ceilingSource = parsedHeight === null ? "default" : "manual";
+        // We deliberately omit ``ceiling_height_source`` and
+        // ``perimeter_source`` from the payload. The POST /rooms
+        // endpoint infers them from the height/perimeter/area
+        // values themselves — null height → "default", explicit
+        // height ≠ 2,50 → "manual", explicit perimeter → "manual",
+        // no perimeter but area present → "estimated". Sending an
+        // explicit source from the frontend would shortcut that
+        // logic with a value the form can't reliably know.
         onSubmit({
           name: name.trim(),
           room_number: number.trim() || null,
           area_m2: parseNum(area),
           perimeter_m: parseNum(perimeter),
-          height_m: parsedHeight,
+          height_m: parseNum(height),
           room_type: roomType || null,
           is_staircase: roomType === "stairwell",
           is_wet_room: roomType === "bathroom",
           deductions_enabled: deductionsEnabled,
-          ceiling_height_source: ceilingSource,
         });
       }}
       className="space-y-3"
@@ -1757,11 +1763,11 @@ function RoomForm({
             inputMode="decimal"
             value={height}
             onChange={(e) => setHeight(e.target.value)}
-            placeholder={floorHeightM.toString().replace(".", ",")}
+            placeholder="z.B. 2,50 m (Standard wenn leer)"
             className="w-full rounded-md border px-3 py-1.5 text-sm"
           />
           <p className="mt-0.5 text-[10px] text-muted-foreground">
-            Vorgabe vom Stockwerk: {fmtNumber(floorHeightM)} m
+            Leer lassen verwendet 2,50 m (österreichischer Standard).
           </p>
         </div>
       </div>

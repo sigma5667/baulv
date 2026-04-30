@@ -38,7 +38,6 @@ import asyncio
 import base64
 import json
 import logging
-import math
 from pathlib import Path
 from uuid import UUID
 
@@ -51,6 +50,7 @@ from app.db.models.project import Building, Floor, Opening, Room, Unit
 from app.services.wall_calculator import (
     OpeningInput,
     calculate_wall_areas,
+    estimate_perimeter_from_area,
 )
 
 
@@ -69,21 +69,22 @@ def _resolve_perimeter(
     Three branches, in priority order:
 
     1. Vision returned a positive perimeter — trust it, tag ``vision``.
-    2. Vision returned no perimeter but a positive area — fall back to
-       a near-square estimate with a 1.10 fudge factor for L-shapes
-       and minor irregularities (``4 · √A · 1.10``). Tag ``estimated``.
-       Same formula the migration 016 backfill applies to legacy rows.
+    2. Vision returned no perimeter but a positive area — fall back
+       to ``estimate_perimeter_from_area``. Tag ``estimated``.
     3. Neither — leave both ``None``. The frontend renders the red
        "Bitte eintragen" emergency-fallback so the gap is impossible
        to overlook.
 
-    Mirrored in PG-SQL inside ``alembic/versions/016_perimeter_source_backfill.py``;
-    keep both in sync if the formula ever changes.
+    The actual estimation math lives in
+    ``app.services.wall_calculator.estimate_perimeter_from_area`` so
+    every entry point (this pipeline, the manual create-room
+    endpoint, the recalc helper, migration 016) shares the formula.
     """
     if extracted_perimeter is not None and float(extracted_perimeter) > 0:
         return float(extracted_perimeter), "vision"
-    if extracted_area is not None and float(extracted_area) > 0:
-        return round(4 * math.sqrt(float(extracted_area)) * 1.10, 2), "estimated"
+    estimated = estimate_perimeter_from_area(extracted_area)
+    if estimated is not None:
+        return estimated, "estimated"
     return None, None
 
 
