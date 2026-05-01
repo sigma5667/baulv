@@ -40,6 +40,29 @@ def _normalise_ceiling_source(value: str | None) -> str:
     return "default"
 
 
+# Accepted perimeter_source values:
+#   ``labeled``   — Vision read a printed perimeter label (v22.3 prompt)
+#   ``computed``  — Vision summed a dimension chain (v22.3 prompt)
+#   ``vision``    — pre-v22.3 extraction without source differentiation
+#   ``estimated`` — backend fallback (4·√A·1.10) when nothing else
+#   ``manual``    — user typed via API
+# Anything else gets dropped (set to None) — better an honest gap
+# than a stray label the frontend's tooltip switch wouldn't recognise.
+_PERIMETER_SOURCE_VALUES = {
+    "labeled",
+    "computed",
+    "vision",
+    "estimated",
+    "manual",
+}
+
+
+def _normalise_perimeter_source(value: str | None) -> str | None:
+    if value in _PERIMETER_SOURCE_VALUES:
+        return value
+    return None
+
+
 async def _recalculate_walls_and_persist(room: Room) -> WallCalculationResponse:
     """Run the calculator for one room, write results back, return payload.
 
@@ -170,8 +193,13 @@ async def create_room(
     provided_perimeter = payload.get("perimeter_m")
     provided_area = payload.get("area_m2")
     if provided_perimeter_source:
-        # Explicit user choice — pass through.
-        pass
+        # Explicit caller-supplied source — normalise against the
+        # accepted set (drops typos / unknown labels). The pipeline
+        # uses this path to forward Vision's ``labeled`` /
+        # ``computed`` markers through ``create_room``-style flows.
+        payload["perimeter_source"] = _normalise_perimeter_source(
+            provided_perimeter_source
+        )
     elif provided_perimeter is not None:
         payload["perimeter_source"] = "manual"
     else:
@@ -273,7 +301,11 @@ async def update_room(
     # it as an estimate. ``None`` clears mean the user wants to
     # remove the value — we drop the source flag too so the row
     # falls back to the "Bitte eintragen" empty-state badge.
-    if "perimeter_source" not in updates and "perimeter_m" in updates:
+    if "perimeter_source" in updates:
+        updates["perimeter_source"] = _normalise_perimeter_source(
+            updates["perimeter_source"]
+        )
+    elif "perimeter_m" in updates:
         updates["perimeter_source"] = (
             "manual" if updates["perimeter_m"] is not None else None
         )

@@ -631,6 +631,131 @@ async def test_recalc_does_not_overwrite_explicit_height(
     assert fresh.ceiling_height_source == "manual"
 
 
+# ---------------------------------------------------------------------------
+# v22.3 — perimeter_source normalisation accepts labeled/computed
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_room_accepts_labeled_perimeter_source(
+    db_session: AsyncSession,
+):
+    """Prompt v2 lets Vision send ``perimeter_source: 'labeled'``
+    when it read the value off an architect's inline label. The
+    create endpoint must pass that through unchanged so the
+    frontend tooltip says "Aus Plan abgelesen" instead of the
+    legacy "von KI erkannt"."""
+    user, unit = await _seed_unit(db_session)
+
+    response = await create_room(
+        unit_id=unit.id,
+        data=RoomCreate(
+            name="Wohnen / Kochen",
+            area_m2=32.84,
+            perimeter_m=24.32,
+            perimeter_source="labeled",
+        ),
+        user=user,
+        db=db_session,
+    )
+
+    assert response.perimeter_m == 24.32
+    assert response.perimeter_source == "labeled"
+
+
+@pytest.mark.asyncio
+async def test_create_room_accepts_computed_perimeter_source(
+    db_session: AsyncSession,
+):
+    """Same for the ``computed`` tag (Vision summed the dimension
+    chain itself)."""
+    user, unit = await _seed_unit(db_session)
+
+    response = await create_room(
+        unit_id=unit.id,
+        data=RoomCreate(
+            name="BAD",
+            area_m2=4.30,
+            perimeter_m=8.51,
+            perimeter_source="computed",
+        ),
+        user=user,
+        db=db_session,
+    )
+
+    assert response.perimeter_source == "computed"
+
+
+@pytest.mark.asyncio
+async def test_create_room_drops_unknown_perimeter_source(
+    db_session: AsyncSession,
+):
+    """If Vision (or a misbehaving caller) sends a source we don't
+    recognise, normalisation drops it to ``None`` rather than
+    storing a garbage label. The perimeter value itself is kept."""
+    user, unit = await _seed_unit(db_session)
+
+    response = await create_room(
+        unit_id=unit.id,
+        data=RoomCreate(
+            name="Salon",
+            area_m2=12.0,
+            perimeter_m=14.0,
+            perimeter_source="some-future-tag",
+        ),
+        user=user,
+        db=db_session,
+    )
+
+    assert response.perimeter_m == 14.0
+    assert response.perimeter_source is None
+
+
+@pytest.mark.asyncio
+async def test_update_room_accepts_labeled_perimeter_source(
+    db_session: AsyncSession,
+):
+    """The PUT endpoint mirrors the same normalisation. Used by
+    automated re-imports and any tooling that wants to re-tag a
+    row's provenance after a corrected Vision pass."""
+    user, room = await _seed_room(
+        db_session, perimeter_m=Decimal("18.0"), perimeter_source="vision"
+    )
+
+    await update_room(
+        room_id=room.id,
+        data=RoomUpdate(perimeter_m=24.32, perimeter_source="labeled"),
+        user=user,
+        db=db_session,
+    )
+
+    refreshed = await db_session.get(Room, room.id)
+    assert refreshed is not None
+    assert refreshed.perimeter_source == "labeled"
+
+
+@pytest.mark.asyncio
+async def test_update_room_drops_unknown_perimeter_source(
+    db_session: AsyncSession,
+):
+    """Mirror of the create-room normalisation: PUT drops unknown
+    tags rather than persisting them."""
+    user, room = await _seed_room(db_session)
+
+    await update_room(
+        room_id=room.id,
+        data=RoomUpdate(
+            perimeter_m=22.0, perimeter_source="not-a-real-tag"
+        ),
+        user=user,
+        db=db_session,
+    )
+
+    refreshed = await db_session.get(Room, room.id)
+    assert refreshed is not None
+    assert refreshed.perimeter_source is None
+
+
 @pytest.mark.asyncio
 async def test_bulk_calculate_walls_fills_missing_perimeters(
     db_session: AsyncSession,

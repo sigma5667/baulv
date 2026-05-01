@@ -81,14 +81,26 @@ class Room(Base):
     area_m2: Mapped[float | None] = mapped_column(Numeric(10, 3))
     perimeter_m: Mapped[float | None] = mapped_column(Numeric(10, 3))
     # Provenance flag for ``perimeter_m`` so the UI can differentiate
-    # an honest Vision extraction from a fallback estimate the
-    # pipeline computed out of the room area. Values: ``vision`` (KI
-    # extracted from plan), ``estimated`` (4·√area·1.10 fallback when
-    # Vision returned nothing), ``manual`` (user typed it via
-    # ``PUT /rooms/{id}``), NULL (legacy / unknown — pre-016 rows
-    # without an inferable source). Frontend keys off this to show
-    # the right hint without alarming the user when an estimate is
-    # good enough.
+    # how confident we are about the value. Confidence ladder
+    # (high → low for AI extractions, plus the user-driven
+    # ``manual`` which trumps everything):
+    #   ``labeled``   — Vision read the inline perimeter label the
+    #                   architect printed under the area on the
+    #                   plan (CAD output, 2-decimal precision)
+    #   ``computed``  — Vision summed the dimension chain along the
+    #                   walls itself
+    #   ``vision``    — pre-v22.3 extraction; we couldn't tell at
+    #                   ingest time which of the two strategies
+    #                   above produced the value, so we group them
+    #   ``estimated`` — backend fallback (4·√area·1.10) when Vision
+    #                   returned nothing — also what migration 016
+    #                   wrote into legacy rows that had only an area
+    #   ``manual``    — user typed or corrected the value via the
+    #                   inline editor or the create-room form
+    #   NULL          — genuinely unknown (no perimeter, no area)
+    # Frontend keys off this to render the right tooltip and decide
+    # whether to flash the red "Bitte eintragen" badge or the
+    # subtle amber "geschätzt" hint.
     perimeter_source: Mapped[str | None] = mapped_column(String(20))
     height_m: Mapped[float | None] = mapped_column(Numeric(6, 3))
     floor_type: Mapped[str | None] = mapped_column(String(100))

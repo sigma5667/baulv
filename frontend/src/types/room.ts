@@ -20,21 +20,33 @@ export interface Opening {
 export type CeilingHeightSource = "schnitt" | "grundriss" | "manual" | "default";
 
 /**
- * Provenance of the ``perimeter_m`` value.
+ * Provenance of the ``perimeter_m`` value. Confidence ladder
+ * (high → low for AI extractions, plus the user-driven ``manual``
+ * which trumps everything):
  *
- * * ``vision``    — Claude Vision extracted it from the plan
- * * ``estimated`` — the pipeline computed it from area
- *                   (4 · √area · 1.10) because Vision returned nothing.
- *                   The UI shows the value with a subtle "geschätzt"
- *                   hint so the user knows to double-check it
- *                   without being alarmed by a red badge.
- * * ``manual``    — the user typed or corrected it via the inline
- *                   editor or the manual room form
- * * ``null``      — pre-016 row whose provenance we couldn't infer,
- *                   or a genuinely unknown perimeter (no area, no
- *                   Vision value). Rendered with no special hint.
+ * * ``labeled``   — Vision read the inline perimeter label the
+ *                   architect printed under the area on the plan.
+ *                   Highest AI confidence (CAD output, 2-decimal).
+ * * ``computed``  — Vision summed the dimension chain along the
+ *                   walls itself. Medium AI confidence.
+ * * ``vision``    — pre-v22.3 extraction; we couldn't tell which
+ *                   of the two strategies above produced the
+ *                   value, so we group them under one tag.
+ * * ``estimated`` — backend fallback (4·√area·1.10) when Vision
+ *                   returned nothing. Lowest confidence among the
+ *                   non-null sources.
+ * * ``manual``    — the user typed or corrected the value via the
+ *                   inline editor or the manual room form.
+ *                   Highest overall confidence — user > Vision.
+ * * ``null``      — genuinely unknown (no perimeter, no area).
+ *                   Rendered as the red "Bitte eintragen" badge.
  */
-export type PerimeterSource = "vision" | "estimated" | "manual";
+export type PerimeterSource =
+  | "labeled"
+  | "computed"
+  | "vision"
+  | "estimated"
+  | "manual";
 
 export interface Room {
   id: string;

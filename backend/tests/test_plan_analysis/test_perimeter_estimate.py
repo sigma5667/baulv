@@ -207,3 +207,56 @@ def test_public_helper_accepts_int_inputs():
     from app.services.wall_calculator import estimate_perimeter_from_area
 
     assert estimate_perimeter_from_area(25) == 22.0  # 4 * 5 * 1.10
+
+
+# ---------------------------------------------------------------------------
+# v22.3 — Vision-supplied ``perimeter_source`` is forwarded
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_forwards_labeled_source_from_vision():
+    """Prompt v2 shipped with the ``labeled`` source tag — the
+    pipeline must accept it and pass it through unchanged so the
+    frontend can render the right "aus Plan abgelesen" tooltip
+    instead of the legacy ``vision`` catch-all."""
+    perimeter, source = _resolve_perimeter(24.32, 32.84, "labeled")
+    assert perimeter == 24.32
+    assert source == "labeled"
+
+
+def test_resolve_forwards_computed_source_from_vision():
+    """Mirror of the above for the ``computed`` source tag —
+    Vision summed the dimension chain itself."""
+    perimeter, source = _resolve_perimeter(18.5, 20.0, "computed")
+    assert perimeter == 18.5
+    assert source == "computed"
+
+
+def test_resolve_falls_back_to_vision_for_unknown_source_tag():
+    """Defence in depth: if Vision returns something we don't
+    recognise (typo, future tag, empty string), the value is still
+    persisted but the source collapses to the legacy ``vision``
+    label so the column never holds garbage."""
+    perimeter, source = _resolve_perimeter(15.0, 12.0, "made-up")
+    assert perimeter == 15.0
+    assert source == "vision"
+
+
+def test_resolve_falls_back_to_vision_for_missing_source_tag():
+    """Pre-prompt-v2 extractions don't supply a source — those keep
+    landing under the legacy ``vision`` label, no surprise change
+    to data already in the DB."""
+    perimeter, source = _resolve_perimeter(15.0, 12.0, None)
+    assert perimeter == 15.0
+    assert source == "vision"
+
+
+def test_resolve_ignores_source_tag_when_perimeter_is_missing():
+    """Vision can't claim ``labeled`` for a perimeter it didn't
+    actually return — the tag is bound to the value. When perimeter
+    is null we fall through to the area-based estimate (or null)
+    regardless of what the tag says."""
+    perimeter, source = _resolve_perimeter(None, 20.0, "labeled")
+    # Estimate fires; tag flips to ``estimated``.
+    assert source == "estimated"
+    assert perimeter is not None and perimeter > 0

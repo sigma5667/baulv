@@ -54,6 +54,7 @@ import {
   X,
 } from "lucide-react";
 import { InlineNumericEdit } from "../components/room/InlineNumericEdit";
+import { perimeterAnnotation } from "../lib/roomHints";
 import { fetchProject } from "../api/projects";
 import {
   fetchProjectStructure,
@@ -1097,6 +1098,7 @@ function RoomNode({
 
   const ceilingSource = room.ceiling_height_source;
   const ceilingWarn = ceilingSource === "default";
+  const perimeterHint = perimeterAnnotation(room);
 
   return (
     <div className="rounded-md border bg-card p-3">
@@ -1137,18 +1139,8 @@ function RoomNode({
                 state={room.perimeter_m === null ? "missing" : "ok"}
                 missingLabel="Bitte eintragen"
                 warningLabel=""
-                hint={
-                  room.perimeter_source === "estimated"
-                    ? "geschätzt — bitte prüfen"
-                    : undefined
-                }
-                tooltip={
-                  room.perimeter_m === null
-                    ? "Wandumfang fehlt — bitte aus Plan messen oder schätzen"
-                    : room.perimeter_source === "estimated"
-                      ? "Wandumfang aus Fläche geschätzt — bitte aus Plan prüfen"
-                      : "Wandumfang"
-                }
+                hint={perimeterHint.hint}
+                tooltip={perimeterHint.tooltip}
                 isSaving={quickSaveMut.isPending}
                 onSave={(next) => quickSaveMut.mutate({ perimeter_m: next })}
                 ariaLabel={`Umfang von ${room.name} bearbeiten`}

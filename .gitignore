@@ -29,6 +29,12 @@ Thumbs.db
 # Uploads
 backend/uploads/
 
+# Test PDFs — real architectural plans used to smoke-test the
+# Vision prompt locally (see scripts/test_vision_prompt.py and
+# docs/PROMPT_TEST_v22_3.md). Kept out of the repo so we don't
+# accidentally publish customer addresses.
+test-plaene/
+
 # Database
 *.db
 

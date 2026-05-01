@@ -33,6 +33,7 @@ import {
   type NormalizedError,
 } from "../lib/errors";
 import { InlineNumericEdit } from "../components/room/InlineNumericEdit";
+import { perimeterAnnotation } from "../lib/roomHints";
 import { pushDiagnostic } from "../lib/diagnostics";
 import type { Plan } from "../types/plan";
 import type { Room } from "../types/room";
@@ -1373,7 +1374,7 @@ function WallCalculationTable({
           <tbody className="divide-y">
             {rooms.map((room) => {
               const isDefault = room.ceiling_height_source === "default";
-              const isEstimated = room.perimeter_source === "estimated";
+              const perimeterHint = perimeterAnnotation(room);
               return (
                 <tr key={room.id} className="hover:bg-muted/30">
                   <td className="px-3 py-2 font-medium">
@@ -1389,31 +1390,20 @@ function WallCalculationTable({
                     )}
                   </td>
                   <td className="px-3 py-2 text-right">
-                    {/* Wandlänge — three visual states.
-                        - perimeter_m IS NULL          → red "Bitte
-                          eintragen" emergency-fallback badge
-                          (genuinely unknown — neither Vision nor area
-                          gave us anything to estimate from).
-                        - perimeter_source==='estimated' → value
-                          shown normally with subtle Info-icon hint
-                          ("geschätzt — bitte prüfen"). Tooltip
-                          explains; no alarming badge.
-                        - perimeter_source IN ('vision','manual', null)
-                          → vanilla muted prose with hover-pencil. */}
+                    {/* Wandlänge — annotation comes from
+                        ``perimeterAnnotation`` (see lib/roomHints.ts).
+                        Maps each ``perimeter_source`` to a hint badge
+                        and tooltip that mirrors the v22.3 confidence
+                        ladder. Red empty-state badge fires only when
+                        perimeter_m is genuinely null. */}
                     <InlineNumericEdit
                       value={room.perimeter_m}
                       unit=""
                       state={room.perimeter_m === null ? "missing" : "ok"}
                       missingLabel="Bitte eintragen"
                       warningLabel=""
-                      hint={isEstimated ? "geschätzt — bitte prüfen" : undefined}
-                      tooltip={
-                        room.perimeter_m === null
-                          ? "Wandumfang fehlt — bitte aus Plan messen oder schätzen"
-                          : isEstimated
-                            ? "Wandumfang aus Fläche geschätzt — bitte aus Plan prüfen"
-                            : "Wandumfang"
-                      }
+                      hint={perimeterHint.hint}
+                      tooltip={perimeterHint.tooltip}
                       isSaving={quickEditMut.isPending}
                       onSave={(next) =>
                         quickEditMut.mutate({

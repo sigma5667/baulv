@@ -60,15 +60,35 @@ from app.services.wall_calculator import (
 _CEILING_SOURCE_VALUES = {"schnitt", "grundriss", "manual", "default"}
 
 
+# Accepted values Vision is allowed to set for ``perimeter_source``.
+# ``labeled`` and ``computed`` are the v22.3 prompt-v2 values:
+#   ``labeled``   — Vision read the inline perimeter label printed
+#                   beside the area on the architect's plan
+#                   (highest AI confidence — direct CAD output).
+#   ``computed``  — Vision summed the dimension-chain along the
+#                   walls itself (medium confidence — Vision's own
+#                   measurement).
+# Everything else Vision returns in this field collapses to the
+# legacy ``vision`` tag so a partial prompt-v2 deployment doesn't
+# leave us with stray values like ``"unknown"`` or empty strings in
+# the column.
+_VISION_PERIMETER_SOURCE_VALUES = {"labeled", "computed"}
+
+
 def _resolve_perimeter(
     extracted_perimeter: float | int | None,
     extracted_area: float | int | None,
+    extracted_source: str | None = None,
 ) -> tuple[float | None, str | None]:
     """Pick a perimeter for a freshly extracted room + label its source.
 
     Three branches, in priority order:
 
-    1. Vision returned a positive perimeter — trust it, tag ``vision``.
+    1. Vision returned a positive perimeter — trust it. Tag with the
+       Vision-supplied ``perimeter_source`` if it's one of the
+       accepted v22.3 values (``labeled`` / ``computed``); otherwise
+       fall back to the legacy ``vision`` tag so we can tell pre-v22.3
+       extractions apart from post-v22.3 ones.
     2. Vision returned no perimeter but a positive area — fall back
        to ``estimate_perimeter_from_area``. Tag ``estimated``.
     3. Neither — leave both ``None``. The frontend renders the red
@@ -81,6 +101,8 @@ def _resolve_perimeter(
     endpoint, the recalc helper, migration 016) shares the formula.
     """
     if extracted_perimeter is not None and float(extracted_perimeter) > 0:
+        if extracted_source in _VISION_PERIMETER_SOURCE_VALUES:
+            return float(extracted_perimeter), extracted_source
         return float(extracted_perimeter), "vision"
     estimated = estimate_perimeter_from_area(extracted_area)
     if estimated is not None:
@@ -471,10 +493,14 @@ async def _store_extraction_result(
             # Vision either returned a perimeter (good case),
             # nothing-but-an-area (we estimate), or nothing at all
             # (real unknown — leave null and let the UI flag it).
-            # See ``_resolve_perimeter`` docstring.
+            # The third argument carries Vision's own claim about
+            # how it found the perimeter (``labeled`` / ``computed``,
+            # or anything else which collapses to ``vision``). See
+            # ``_resolve_perimeter`` docstring.
             persisted_perimeter, perimeter_source = _resolve_perimeter(
                 room_data.get("perimeter_m"),
                 room_data.get("area_m2"),
+                room_data.get("perimeter_source"),
             )
 
             room = Room(
