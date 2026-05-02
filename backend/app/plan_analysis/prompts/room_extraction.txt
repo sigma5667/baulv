@@ -141,6 +141,35 @@ FELDER PRO RAUM
   erfasst werden.
 
 ================================================================
+PIN-KOORDINATEN (Phase-1-Datengrundlage für Plan-Visualisierung)
+================================================================
+
+Damit die Software später Pins auf den Plan zeichnen kann, gib für
+jeden Raum Pixel-Koordinaten zurück:
+
+- position_x: x-Pixel (Abstand vom LINKEN Bildrand) zum visuellen
+              Mittelpunkt der Raum-Beschriftung im Bauplan.
+- position_y: y-Pixel (Abstand vom OBEREN Bildrand) zum visuellen
+              Mittelpunkt der Raum-Beschriftung.
+- bbox_width: Breite des Raum-Polygons in Pixeln (geschätzt).
+- bbox_height: Höhe des Raum-Polygons in Pixeln (geschätzt).
+
+Wichtig:
+
+* Bezugssystem ist das aktuelle Bild, das du gerade siehst — keine
+  PDF-Punkte, keine relativen 0..1-Werte.
+* Wenn du nicht sicher bist, gib null zurück. NICHT raten. Eine
+  ehrliche Lücke wird im Frontend einfach kein Pin — eine falsche
+  Koordinate würde den Pin auf eine Wand oder daneben legen.
+* page_number musst du NICHT angeben — das setzt die Pipeline
+  selbst aus der Seitennummer, die sie dir zuweist. Falls du einen
+  Wert lieferst, wird er ignoriert.
+* Die Pixel-Koordinaten beziehen sich auf das gerenderte PNG (300
+  DPI). Falls du die Bildhöhe oder -breite nicht zuverlässig
+  abschätzen kannst, gib für alle vier Koordinaten-Felder null
+  zurück. Halbe Werte sind nutzlos.
+
+================================================================
 ZUSÄTZLICH IDENTIFIZIEREN
 ================================================================
 
@@ -177,6 +206,10 @@ Objekt:
           "has_dachschraege": false,
           "is_staircase": false,
           "confidence": 0.9,
+          "position_x": 1450,
+          "position_y": 820,
+          "bbox_width": 540,
+          "bbox_height": 380,
           "openings": [
             {"opening_type": "fenster", "width_m": 0.89, "height_m": 1.50, "count": 1},
             {"opening_type": "tuer", "width_m": 0.90, "height_m": 2.00, "count": 1}

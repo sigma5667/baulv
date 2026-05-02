@@ -76,6 +76,20 @@ export interface Room {
   deductions_enabled: boolean;
   source: string;
   ai_confidence: number | null;
+  /** Pin coordinates (v23.1, Phase 1 of plan-visualisation).
+   *  Pixel-space inside a 300-DPI PNG render of ``page_number``.
+   *  All four are NULL together when Vision wasn't sure or when
+   *  the room came in via the manual editor. The Phase 2 pin
+   *  renderer should treat any NULL among these five as "no pin
+   *  for this room". */
+  position_x: number | null;
+  position_y: number | null;
+  /** 1-based PDF page index. Injected by the pipeline so it's
+   *  always trustworthy when ``position_x``/``position_y`` are
+   *  populated. */
+  page_number: number | null;
+  bbox_width: number | null;
+  bbox_height: number | null;
   openings: Opening[];
 }
 

@@ -143,6 +143,26 @@ class Room(Base):
     deductions_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
     source: Mapped[str] = mapped_column(String(50), default="manual")
     ai_confidence: Mapped[float | None] = mapped_column(Numeric(4, 2))
+    # ------------------------------------------------------------------
+    # Plan-pin coordinates (v23.1). Phase 1 of the plan-visualisation
+    # feature: Vision returns pixel coordinates of where each room
+    # label sits on the rendered 300-DPI PNG of the corresponding PDF
+    # page. NULL means "Vision wasn't sure" or "the room was added
+    # via the manual structure editor and has no plan placement". The
+    # frontend (Phase 2) will skip pin-rendering for any room whose
+    # coordinates are NULL.
+    #
+    # ``page_number`` is 1-based and injected by the pipeline (not
+    # claimed by Vision), so it's always trustworthy when populated.
+    # ``bbox_width`` / ``bbox_height`` are Vision's estimate of the
+    # room's apparent size on the plan — used later to scale pins
+    # proportionally to room visibility.
+    # ------------------------------------------------------------------
+    position_x: Mapped[int | None] = mapped_column(Integer)
+    position_y: Mapped[int | None] = mapped_column(Integer)
+    page_number: Mapped[int | None] = mapped_column(Integer)
+    bbox_width: Mapped[int | None] = mapped_column(Integer)
+    bbox_height: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
 

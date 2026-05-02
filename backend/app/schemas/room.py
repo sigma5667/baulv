@@ -106,6 +106,15 @@ class RoomResponse(BaseModel):
     deductions_enabled: bool = True
     source: str
     ai_confidence: float | None
+    # Plan-pin coordinates (v23.1). NULL when Vision wasn't sure or
+    # the room came in via the manual editor. The frontend renders
+    # a pin only for rooms with all four coordinate-related fields
+    # populated.
+    position_x: int | None = None
+    position_y: int | None = None
+    page_number: int | None = None
+    bbox_width: int | None = None
+    bbox_height: int | None = None
     openings: list[OpeningResponse] = []
 
     model_config = {"from_attributes": True}

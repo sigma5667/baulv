@@ -75,6 +75,33 @@ _CEILING_SOURCE_VALUES = {"schnitt", "grundriss", "manual", "default"}
 _VISION_PERIMETER_SOURCE_VALUES = {"labeled", "computed"}
 
 
+def _coerce_positive_int(value: object) -> int | None:
+    """Return ``value`` as a positive int, or None if it isn't.
+
+    Used to validate the four pin-coordinate fields Vision returns
+    in v23.1 (``position_x``, ``position_y``, ``bbox_width``,
+    ``bbox_height``). Vision sometimes hallucinates negative numbers
+    or non-numeric placeholders ("?", "n/a") — we treat anything
+    that isn't a strictly-positive integer as "not given" rather
+    than persisting nonsense that would render off-canvas in the
+    Phase 2 pin viewer.
+
+    ``0`` is also rejected because (0, 0) is the top-left corner of
+    the rendered image; it's the most common Vision fallback for
+    "I don't know" and pin-rendering against it would be a stack
+    of pins in the corner. Better to drop the value and skip the pin.
+    """
+    if value is None:
+        return None
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return None
+    if v <= 0:
+        return None
+    return v
+
+
 def _resolve_perimeter(
     extracted_perimeter: float | int | None,
     extracted_area: float | int | None,
@@ -203,13 +230,17 @@ async def analyze_plan(plan_id: UUID, db: AsyncSession) -> dict:
         # Step 2: Claude Vision extraction per page. Runs sequentially
         # because concurrent Claude Vision calls don't buy much for
         # typical plan sizes and would multiply quota spikes.
-        all_results: list[dict] = []
+        # We track ``(page_number, result)`` tuples so the persist
+        # phase can stamp each room with the page it was extracted
+        # from — Vision doesn't see the page index itself, the
+        # pipeline owns that fact.
+        all_results: list[tuple[int, dict]] = []
         page_errors: list[str] = []
         for i, image_bytes in enumerate(images, start=1):
             try:
                 result = await _extract_rooms_from_image(image_bytes, page_number=i)
                 if result is not None:
-                    all_results.append(result)
+                    all_results.append((i, result))
                 else:
                     page_errors.append(f"Seite {i}: KI-Antwort nicht verwertbar")
             except asyncio.TimeoutError:
@@ -240,8 +271,10 @@ async def analyze_plan(plan_id: UUID, db: AsyncSession) -> dict:
 
         # Step 3: Persist
         total_rooms = 0
-        for page_result in all_results:
-            rooms_created = await _store_extraction_result(page_result, plan, db)
+        for page_number, page_result in all_results:
+            rooms_created = await _store_extraction_result(
+                page_result, plan, db, page_number=page_number
+            )
             total_rooms += rooms_created
 
         # Decide the final status. If at least one page produced rooms,
@@ -426,8 +459,16 @@ async def _store_extraction_result(
     result: dict,
     plan: Plan,
     db: AsyncSession,
+    *,
+    page_number: int = 1,
 ) -> int:
-    """Persist one page's Claude Vision result. Returns rooms created."""
+    """Persist one page's Claude Vision result. Returns rooms created.
+
+    ``page_number`` is the 1-based PDF page index this result came
+    from. We inject it onto every Room so the Phase 2 pin viewer can
+    pick the correct background image — Vision never claims its own
+    page number; the pipeline owns that fact.
+    """
     project_id = plan.project_id
     rooms_created = 0
 
@@ -503,6 +544,19 @@ async def _store_extraction_result(
                 room_data.get("perimeter_source"),
             )
 
+            # Pin coordinates (v23.1). All four are validated as
+            # strictly-positive integers via ``_coerce_positive_int``;
+            # anything else collapses to None. Vision is allowed to
+            # supply any subset (including zero) — Phase 2 frontend
+            # renders pins only for rooms that have all four. We
+            # always inject the pipeline's own ``page_number`` so it
+            # stays trustworthy even if Vision skipped or hallucinated
+            # the field.
+            position_x = _coerce_positive_int(room_data.get("position_x"))
+            position_y = _coerce_positive_int(room_data.get("position_y"))
+            bbox_width = _coerce_positive_int(room_data.get("bbox_width"))
+            bbox_height = _coerce_positive_int(room_data.get("bbox_height"))
+
             room = Room(
                 unit_id=unit.id,
                 plan_id=plan.id,
@@ -520,6 +574,11 @@ async def _store_extraction_result(
                 is_staircase=bool(room_data.get("is_staircase", False)),
                 source="ai",
                 ai_confidence=room_data.get("confidence", 0.0),
+                position_x=position_x,
+                position_y=position_y,
+                page_number=page_number,
+                bbox_width=bbox_width,
+                bbox_height=bbox_height,
             )
             db.add(room)
             await db.flush()
