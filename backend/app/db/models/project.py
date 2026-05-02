@@ -74,7 +74,14 @@ class Room(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     unit_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("units.id", ondelete="CASCADE"))
-    plan_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("plans.id"))
+    # ``ondelete='SET NULL'`` (since v23 / migration 017): when a plan
+    # is deleted, rooms that originated from it survive but lose their
+    # link. The deletion endpoint exploits this — the
+    # ``delete_rooms=false`` branch needs no explicit unlinking SQL,
+    # the FK does it automatically.
+    plan_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("plans.id", ondelete="SET NULL")
+    )
     name: Mapped[str] = mapped_column(String(255))
     room_number: Mapped[str | None] = mapped_column(String(50))
     room_type: Mapped[str | None] = mapped_column(String(100))

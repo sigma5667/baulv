@@ -39,6 +39,12 @@ EVENT_ACCOUNT_DELETED = "user.account_deleted"
 EVENT_SESSION_REVOKED = "user.session_revoked"
 EVENT_SESSIONS_REVOKED_ALL = "user.sessions_revoked_all"
 EVENT_PRIVACY_UPDATED = "user.privacy_updated"
+# Plan deletion (v23). Single event; the ``meta`` JSON differentiates
+# "plan only" from "plan + rooms" via the ``delete_rooms`` flag plus
+# counts of rows that went with it (rooms / openings / berechnungs-
+# nachweise). One event keeps the audit-viewer filter simple — all
+# plan deletions sort together regardless of cascade choice.
+EVENT_PLAN_DELETED = "plan.deleted"
 
 
 def _client_ip(request: Request | None) -> str | None:

@@ -17,8 +17,16 @@ import {
   Ruler,
   Calculator,
   Building2,
+  Trash2,
 } from "lucide-react";
-import { fetchPlans, uploadPlan, analyzePlan } from "../api/plans";
+import {
+  fetchPlans,
+  uploadPlan,
+  analyzePlan,
+  deletePlan,
+  fetchPlanDeletionPreview,
+  type PlanDeletionResult,
+} from "../api/plans";
 import {
   fetchProjectRooms,
   updateRoom,
@@ -100,6 +108,16 @@ export function PlanAnalysisPage() {
     rooms_extracted: number;
     page_errors: string[];
   }>(null);
+
+  // Plan deletion state — when set, the confirmation dialog opens.
+  // Cleared on close or after a successful delete. The dialog
+  // component owns the preview-fetch and the actual delete mutation;
+  // we just gate its visibility from here.
+  const [deletingPlan, setDeletingPlan] = useState<Plan | null>(null);
+  const [deleteResult, setDeleteResult] = useState<
+    | (PlanDeletionResult & { filename: string })
+    | null
+  >(null);
 
   // Ref on the top-of-page alert region so we can scroll errors into
   // view the moment they appear. Users reported analyze failures
@@ -382,6 +400,7 @@ export function PlanAnalysisPage() {
                     return next;
                   })
                 }
+                onDelete={() => setDeletingPlan(plan)}
               />
             ))}
           </div>
@@ -441,6 +460,74 @@ export function PlanAnalysisPage() {
             bestätigte Raumhöhe.
           </p>
           <WallCalculationTable rooms={rooms} projectId={projectId!} />
+        </div>
+      )}
+
+      {/* Plan deletion — confirmation dialog and post-delete toast.
+          Dialog opens when ``deletingPlan`` is set (from the trash
+          button on a PlanRow). On success we clear the dialog,
+          surface a green banner with the precise counts, and
+          invalidate the plans + rooms queries so the UI redraws
+          with the row gone. */}
+      {deletingPlan && (
+        <PlanDeleteDialog
+          plan={deletingPlan}
+          onClose={() => setDeletingPlan(null)}
+          onDeleted={(result) => {
+            setDeleteResult({ ...result, filename: deletingPlan.filename });
+            setDeletingPlan(null);
+            queryClient.invalidateQueries({ queryKey: ["plans", projectId] });
+            queryClient.invalidateQueries({
+              queryKey: ["rooms", projectId],
+            });
+            queryClient.invalidateQueries({
+              queryKey: ["structure", projectId],
+            });
+          }}
+        />
+      )}
+
+      {deleteResult && (
+        <div
+          role="status"
+          className="fixed bottom-4 right-4 z-40 max-w-sm rounded-lg border border-green-300 bg-green-50 p-3 shadow-lg"
+        >
+          <div className="flex items-start gap-2">
+            <CheckCircle className="mt-0.5 h-4 w-4 shrink-0 text-green-700" />
+            <div className="flex-1 text-sm">
+              <p className="font-medium text-green-900">
+                Plan „{deleteResult.filename}" gelöscht.
+              </p>
+              {deleteResult.delete_rooms ? (
+                <p className="mt-0.5 text-xs text-green-800">
+                  {deleteResult.rooms_deleted} Raum/Räume,{" "}
+                  {deleteResult.openings_deleted} Öffnung(en),{" "}
+                  {deleteResult.proofs_deleted} Berechnungsnachweis(e)
+                  mitgelöscht.
+                </p>
+              ) : (
+                <p className="mt-0.5 text-xs text-green-800">
+                  Verknüpfte Räume bleiben erhalten (ohne Plan-
+                  Verbindung).
+                </p>
+              )}
+              {!deleteResult.file_unlinked && (
+                <p className="mt-0.5 text-xs text-amber-800">
+                  Hinweis: PDF-Datei auf dem Server konnte nicht
+                  entfernt werden — der Eintrag in der Datenbank ist
+                  dennoch weg.
+                </p>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => setDeleteResult(null)}
+              className="text-xs text-green-900 hover:underline"
+              aria-label="Hinweis schließen"
+            >
+              ×
+            </button>
+          </div>
         </div>
       )}
     </div>
@@ -631,6 +718,7 @@ function PlanRow({
   isAnalyzing,
   rowError,
   onDismissRowError,
+  onDelete,
 }: {
   plan: Plan;
   canAnalyze: boolean;
@@ -638,6 +726,7 @@ function PlanRow({
   isAnalyzing: boolean;
   rowError: string | null;
   onDismissRowError: () => void;
+  onDelete: () => void;
 }) {
   const statusIcon =
     {
@@ -699,38 +788,54 @@ function PlanRow({
           </div>
         </div>
 
-        {(plan.analysis_status === "pending" ||
-          plan.analysis_status === "failed") &&
-          (canAnalyze ? (
-            <button
-              onClick={onAnalyze}
-              disabled={isAnalyzing}
-              className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-            >
-              {isAnalyzing ? (
-                <>
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  Analysiere…
-                </>
-              ) : (
-                <>
-                  <Search className="h-3 w-3" />
-                  {plan.analysis_status === "failed"
-                    ? "Erneut analysieren"
-                    : "AI-Analyse starten"}
-                </>
-              )}
-            </button>
-          ) : (
-            <Link
-              to="/app/subscription"
-              className="flex items-center gap-1.5 rounded-md border border-amber-400 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100"
-              title="KI-Plananalyse ist im Pro-Plan enthalten."
-            >
-              <Lock className="h-3 w-3" />
-              Upgrade erforderlich
-            </Link>
-          ))}
+        <div className="flex items-center gap-2">
+          {(plan.analysis_status === "pending" ||
+            plan.analysis_status === "failed") &&
+            (canAnalyze ? (
+              <button
+                onClick={onAnalyze}
+                disabled={isAnalyzing}
+                className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              >
+                {isAnalyzing ? (
+                  <>
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Analysiere…
+                  </>
+                ) : (
+                  <>
+                    <Search className="h-3 w-3" />
+                    {plan.analysis_status === "failed"
+                      ? "Erneut analysieren"
+                      : "AI-Analyse starten"}
+                  </>
+                )}
+              </button>
+            ) : (
+              <Link
+                to="/app/subscription"
+                className="flex items-center gap-1.5 rounded-md border border-amber-400 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100"
+                title="KI-Plananalyse ist im Pro-Plan enthalten."
+              >
+                <Lock className="h-3 w-3" />
+                Upgrade erforderlich
+              </Link>
+            ))}
+
+          {/* Delete button — always available, even while analysis
+              is running (the user might want to abort a stalled
+              upload). The confirmation dialog and preview-fetch
+              live in PlanDeleteDialog. */}
+          <button
+            type="button"
+            onClick={onDelete}
+            className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+            aria-label={`Plan ${plan.filename} löschen`}
+            title="Plan löschen"
+          >
+            <Trash2 className="h-4 w-4" />
+          </button>
+        </div>
       </div>
 
       {/* Inline error directly under the row that caused it. Stays
@@ -752,6 +857,211 @@ function PlanRow({
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Plan deletion dialog
+//
+// Owns three things:
+//   1. The pre-delete impact preview (``GET /plans/{id}/deletion-preview``).
+//      Loaded as soon as the dialog opens so the user sees specific
+//      numbers ("8 Räume verknüpft, davon 3 manuell überarbeitet").
+//   2. The two action buttons. "Nur Plan löschen" → delete_rooms=false;
+//      "Plan und alle Räume löschen" → delete_rooms=true. The second
+//      is destructive-styled (red) so the user can't fat-finger it.
+//   3. The actual ``DELETE``-mutation. On success we propagate the
+//      result up via ``onDeleted`` so the parent can render the toast
+//      and invalidate queries; on error we render the message inline.
+//
+// Modal pattern: fixed overlay, click-to-close on the backdrop, ESC
+// keyboard close. We don't use a portal because the page only has one
+// dialog active at a time and the z-index is high enough to clear
+// every other absolutely-positioned widget.
+// ---------------------------------------------------------------------------
+
+function PlanDeleteDialog({
+  plan,
+  onClose,
+  onDeleted,
+}: {
+  plan: Plan;
+  onClose: () => void;
+  onDeleted: (result: PlanDeletionResult) => void;
+}) {
+  const previewQuery = useQuery({
+    queryKey: ["plan-deletion-preview", plan.id],
+    queryFn: () => fetchPlanDeletionPreview(plan.id),
+  });
+
+  const deleteMut = useMutation({
+    mutationFn: (deleteRooms: boolean) =>
+      deletePlan(plan.id, { deleteRooms }),
+    onSuccess: onDeleted,
+  });
+
+  const error = deleteMut.error ? normalizeError(deleteMut.error) : null;
+
+  // ESC key closes the dialog.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !deleteMut.isPending) {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose, deleteMut.isPending]);
+
+  const preview = previewQuery.data;
+  const hasLinkedRooms = (preview?.rooms_linked ?? 0) > 0;
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="plan-delete-title"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onClick={(e) => {
+        // Close on backdrop click only — not when the user clicks
+        // inside the dialog content.
+        if (e.target === e.currentTarget && !deleteMut.isPending) {
+          onClose();
+        }
+      }}
+    >
+      <div className="w-full max-w-md rounded-lg border bg-card p-5 shadow-xl">
+        <div className="mb-4 flex items-start gap-3">
+          <div className="rounded-full bg-destructive/10 p-2">
+            <Trash2 className="h-5 w-5 text-destructive" />
+          </div>
+          <div className="flex-1">
+            <h2 id="plan-delete-title" className="text-lg font-semibold">
+              Plan löschen?
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              <span className="font-medium text-foreground">
+                {plan.filename}
+              </span>{" "}
+              wird endgültig entfernt. Diese Aktion kann nicht
+              rückgängig gemacht werden.
+            </p>
+          </div>
+        </div>
+
+        {/* Impact preview — loading, then the actual numbers. */}
+        {previewQuery.isLoading && (
+          <p className="mb-4 flex items-center gap-2 text-xs text-muted-foreground">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            Auswirkung wird geprüft…
+          </p>
+        )}
+
+        {preview && hasLinkedRooms && (
+          <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
+            <p className="font-medium">
+              {preview.rooms_linked === 1
+                ? "1 Raum ist mit diesem Plan verknüpft"
+                : `${preview.rooms_linked} Räume sind mit diesem Plan verknüpft`}
+            </p>
+            <ul className="mt-1 list-inside list-disc space-y-0.5">
+              {preview.rooms_manual_among_linked > 0 && (
+                <li>
+                  davon{" "}
+                  <span className="font-medium">
+                    {preview.rooms_manual_among_linked} manuell
+                    überarbeitet
+                  </span>{" "}
+                  — diese Bearbeitungen gehen verloren
+                </li>
+              )}
+              {preview.openings_linked > 0 && (
+                <li>
+                  {preview.openings_linked} Öffnung(en) (Fenster /
+                  Türen)
+                </li>
+              )}
+              {preview.proofs_linked > 0 && (
+                <li>
+                  {preview.proofs_linked} Berechnungsnachweis(e) in
+                  LV-Positionen — die Mengen bleiben gecacht, aber
+                  die Nachvollziehbarkeit der Berechnung geht
+                  verloren
+                </li>
+              )}
+            </ul>
+          </div>
+        )}
+
+        {preview && !hasLinkedRooms && (
+          <p className="mb-4 rounded-md border border-muted bg-muted/30 p-3 text-xs text-muted-foreground">
+            Keine Räume sind mit diesem Plan verknüpft. Es wird nur
+            die PDF-Datei und der Plan-Eintrag entfernt.
+          </p>
+        )}
+
+        {error && (
+          <div
+            role="alert"
+            className="mb-4 rounded-md border border-destructive/30 bg-destructive/5 p-2.5 text-xs text-destructive"
+          >
+            Löschen fehlgeschlagen: {error.message}
+          </div>
+        )}
+
+        {/* Actions. Layout depends on whether there are linked rooms:
+            with rooms we offer two distinct destructive actions
+            (keep-rooms vs delete-everything); without we just need
+            one "Löschen" + a Cancel. */}
+        <div className="flex flex-col gap-2">
+          {hasLinkedRooms && (
+            <>
+              <button
+                type="button"
+                onClick={() => deleteMut.mutate(false)}
+                disabled={deleteMut.isPending}
+                className="rounded-md border border-input bg-background px-3 py-2 text-sm font-medium hover:bg-accent disabled:opacity-50"
+              >
+                Nur Plan löschen — Räume bleiben erhalten
+              </button>
+              <button
+                type="button"
+                onClick={() => deleteMut.mutate(true)}
+                disabled={deleteMut.isPending}
+                className="rounded-md bg-destructive px-3 py-2 text-sm font-medium text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
+              >
+                Plan UND alle damit extrahierten Räume löschen
+              </button>
+            </>
+          )}
+          {preview && !hasLinkedRooms && (
+            <button
+              type="button"
+              onClick={() => deleteMut.mutate(false)}
+              disabled={deleteMut.isPending}
+              className="rounded-md bg-destructive px-3 py-2 text-sm font-medium text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
+            >
+              {deleteMut.isPending ? (
+                <span className="inline-flex items-center gap-2">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Lösche…
+                </span>
+              ) : (
+                "Plan löschen"
+              )}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={deleteMut.isPending}
+            className="rounded-md px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-accent disabled:opacity-50"
+          >
+            Abbrechen
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
