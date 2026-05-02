@@ -368,14 +368,19 @@ async def run(pdf_path: Path, report_path: Path) -> int:
 
     _section(f"PDF rendern: {pdf_path.name}")
     images = _pdf_to_images(str(pdf_path))
-    _ok(f"{len(images)} Seite(n) als PNG @ 300 DPI gerendert.")
+    _ok(
+        f"{len(images)} Seite(n) gerendert "
+        f"(adaptive DPI/JPEG je nach Größe — siehe Backend-Logs)."
+    )
 
     _section("Vision-Calls absetzen")
     raw_results: list[dict] = []
-    for i, image_bytes in enumerate(images, start=1):
-        print(f"  → Seite {i}/{len(images)}…")
+    for i, (image_bytes, mime_type) in enumerate(images, start=1):
+        print(f"  → Seite {i}/{len(images)} ({mime_type}, {len(image_bytes):,} Bytes)…")
         try:
-            parsed = await _extract_rooms_from_image(image_bytes, i)
+            parsed = await _extract_rooms_from_image(
+                image_bytes, i, mime_type=mime_type
+            )
         except Exception as exc:  # noqa: BLE001
             _err(f"Vision-Call für Seite {i} gescheitert: {exc}")
             return 1

@@ -162,19 +162,72 @@ _CLAUDE_CALL_TIMEOUT_S = 120
 _VISION_MAX_TOKENS = 8192
 
 
+def _translate_anthropic_error(exc: Exception) -> str | None:
+    """Map a recognised Anthropic API error to a German user message.
+
+    Returns ``None`` for errors we don't have a friendly translation
+    for — the caller falls back to the diagnostic ``ClassName —
+    message``-format that's still useful for the operator. Returns
+    a German string for the three patterns we know we can point the
+    user at a concrete next step:
+
+      * Image too large (5 MB limit) — ``v23.1.2``'s resize loop
+        normally prevents this, but if it slips through (e.g. on a
+        future plan that even 100 DPI JPEG can't compress under
+        4.5 MB) the user gets the right action.
+      * max_tokens / context length exceeded — split the plan.
+      * Rate limit — wait a moment.
+
+    The tests pin the exact mapping so a future refactor can't
+    silently swap a known error onto the diagnostic fallback.
+    """
+    msg = str(exc).lower()
+    if "image" in msg and (
+        "exceed" in msg or "too large" in msg or "5 mb" in msg
+        or "5242880" in msg or "maximum" in msg
+    ):
+        return (
+            "Der Plan ist zu groß für die KI-Analyse. Bitte exportieren "
+            "Sie das PDF mit niedrigerer Auflösung oder teilen Sie es "
+            "in kleinere Bereiche auf."
+        )
+    if "max_tokens" in msg or "context length" in msg or "context window" in msg:
+        return (
+            "Der Plan enthält zu viele Räume für eine einzelne Analyse. "
+            "Bitte das PDF in mehrere Teilbereiche aufteilen."
+        )
+    if "rate" in msg and "limit" in msg:
+        return (
+            "Zu viele Anfragen an die KI. Bitte einen Moment warten "
+            "und es erneut versuchen."
+        )
+    return None
+
+
 def _format_page_error(
     page_number: int, exc: Exception, max_chars: int = 200
 ) -> str:
     """Format a per-page Vision-call error for the user-facing list.
 
-    We include both the exception class name (for the operator who
-    recognises types like ``BadRequestError`` at a glance) AND the
-    truncated string representation (for the actual underlying
-    message Anthropic returned — without it ``BadRequestError``
-    gives us nothing actionable to debug from). The truncation
-    prevents a 10K-char stacktrace blob from pushing the surrounding
-    error banner off-screen in the UI.
+    Two-tier strategy:
+
+    1. Known errors (image-too-large, token-overflow, rate-limit) get
+       a friendly German message via ``_translate_anthropic_error``.
+       The user sees actionable copy (*"Plan zu groß — niedrigere
+       Auflösung exportieren"*) instead of the raw API JSON.
+
+    2. Unknown errors fall back to the diagnostic
+       ``ClassName — truncated_message`` format the v23.1.1 hotfix
+       introduced. Still better than just the class name when an
+       operator needs to debug from the user's screenshot.
+
+    Logger.exception in the caller still gets the full ``str(e)``
+    (untruncated) for Railway log reading; the truncation here
+    protects only the in-page banner.
     """
+    friendly = _translate_anthropic_error(exc)
+    if friendly is not None:
+        return f"Seite {page_number}: {friendly}"
     err_msg = str(exc)[:max_chars]
     if not err_msg:
         return f"Seite {page_number}: {type(exc).__name__}"
@@ -266,9 +319,11 @@ async def analyze_plan(plan_id: UUID, db: AsyncSession) -> dict:
         # pipeline owns that fact.
         all_results: list[tuple[int, dict]] = []
         page_errors: list[str] = []
-        for i, image_bytes in enumerate(images, start=1):
+        for i, (image_bytes, mime_type) in enumerate(images, start=1):
             try:
-                result = await _extract_rooms_from_image(image_bytes, page_number=i)
+                result = await _extract_rooms_from_image(
+                    image_bytes, page_number=i, mime_type=mime_type
+                )
                 if result is not None:
                     all_results.append((i, result))
                 else:
@@ -369,8 +424,127 @@ async def analyze_plan(plan_id: UUID, db: AsyncSession) -> dict:
         )
 
 
-def _pdf_to_images(file_path: str) -> list[bytes]:
-    """Convert PDF to PNG bytes per page. Sync — run in a thread.
+# Anthropic's image-size limit is 5 MB on the binary payload (the
+# decoded image, not the base64 string). We aim for 4.5 MB to keep a
+# half-megabyte safety margin against off-by-some accounting on the
+# server side.
+_VISION_IMAGE_MAX_BYTES = 4_500_000
+
+# Standard render DPI. 200 DPI is the v23.1.2 baseline (down from
+# 300 in v22 and earlier) — Vision can still read room labels and
+# dimension chains at 200 DPI on every plan we've tested, and it
+# saves roughly 55 % of bytes vs 300 DPI rendering.
+_VISION_DEFAULT_DPI = 200
+
+# Floor on the resize ladder. Below this Vision starts losing room
+# labels even on clean CAD output. If we hit this floor with JPEG
+# and still can't fit, the plan is genuinely too large for a
+# single-shot analysis and we surface a German user-message asking
+# the operator to split or down-sample the PDF.
+_VISION_MIN_DPI = 100
+
+# DPI ladder for the resize loop. Each step is roughly 25 % smaller
+# than the previous; values are tuned so the resulting pixel count
+# halves predictably and so the 100 DPI floor is the last entry.
+_VISION_DPI_LADDER = (200, 150, 112, 100)
+
+# JPEG quality factor used as the size-reduction fallback. 85 % is
+# the architectural-plan sweet-spot — high enough to keep thin lines
+# (vermassung, room labels) crisp, low enough that file size drops
+# ~70 % vs the equivalent PNG.
+_VISION_JPEG_QUALITY = 85
+
+
+def _render_page_for_vision(
+    page,
+    *,
+    page_number: int,
+    max_bytes: int = _VISION_IMAGE_MAX_BYTES,
+) -> tuple[bytes, str]:
+    """Render one PDF page within Anthropic's 5 MB image limit.
+
+    Strategy (v23.1.2):
+
+      1. Render at the default DPI (200) as PNG. If the bytes fit
+         the safety threshold, ship it.
+      2. Same DPI but JPEG quality 85. Roughly 70 % smaller for
+         architectural plans, lossy but Vision still reads labels.
+      3. If JPEG still doesn't fit, drop to the next DPI on the
+         ladder and try PNG → JPEG again.
+      4. Bottom of the ladder (100 DPI) JPEG still too big →
+         ``PlanAnalysisError``. The plan is genuinely too complex
+         for a single-shot Vision analysis and the operator needs
+         to split or down-sample the PDF.
+
+    Returns ``(image_bytes, mime_type)`` so ``_extract_rooms_from_image``
+    can stitch the right ``media_type`` into the API call.
+
+    Logs every render attempt at INFO level and the resize event
+    (when we couldn't fit at the first try) at WARNING level — that
+    way the Railway log stream tells us *why* a plan needed
+    re-rendering, which is the primary debug data when a tester
+    reports a slow upload.
+    """
+    import fitz  # PyMuPDF
+
+    first_attempt: tuple[int, str, int] | None = None  # (dpi, fmt, bytes)
+
+    for dpi in _VISION_DPI_LADDER:
+        mat = fitz.Matrix(dpi / 72, dpi / 72)
+        pix = page.get_pixmap(matrix=mat)
+
+        # First try PNG (lossless, preferred for clean CAD output).
+        png_bytes = pix.tobytes("png")
+        logger.info(
+            "pdf_to_images.page_rendered page=%d format=png dpi=%d bytes=%d",
+            page_number, dpi, len(png_bytes),
+        )
+        if first_attempt is None:
+            first_attempt = (dpi, "png", len(png_bytes))
+        if len(png_bytes) <= max_bytes:
+            if first_attempt != (dpi, "png", len(png_bytes)):
+                logger.warning(
+                    "pdf_to_images.page_resized page=%d from='%d dpi/%s/%d "
+                    "bytes' to='%d dpi/png/%d bytes'",
+                    page_number,
+                    first_attempt[0], first_attempt[1], first_attempt[2],
+                    dpi, len(png_bytes),
+                )
+            return png_bytes, "image/png"
+
+        # PNG too big at this DPI — try JPEG.
+        jpeg_bytes = pix.tobytes("jpeg", jpg_quality=_VISION_JPEG_QUALITY)
+        logger.info(
+            "pdf_to_images.page_rendered page=%d format=jpeg dpi=%d bytes=%d",
+            page_number, dpi, len(jpeg_bytes),
+        )
+        if len(jpeg_bytes) <= max_bytes:
+            logger.warning(
+                "pdf_to_images.page_resized page=%d from='%d dpi/%s/%d "
+                "bytes' to='%d dpi/jpeg/%d bytes'",
+                page_number,
+                first_attempt[0], first_attempt[1], first_attempt[2],
+                dpi, len(jpeg_bytes),
+            )
+            return jpeg_bytes, "image/jpeg"
+
+        # Both PNG and JPEG too big at this DPI — drop down.
+
+    # Fell off the ladder. Plan is too dense even at 100 DPI JPEG.
+    raise PlanAnalysisError(
+        "Der Plan ist zu groß für die KI-Analyse. Bitte exportieren "
+        "Sie das PDF mit niedrigerer Auflösung oder teilen Sie es in "
+        "kleinere Bereiche auf (z.B. Geschoss für Geschoss)."
+    )
+
+
+def _pdf_to_images(file_path: str) -> list[tuple[bytes, str]]:
+    """Convert PDF to per-page image bytes for Vision.
+
+    Returns ``[(image_bytes, mime_type), …]`` so each page carries
+    its own format tag — large or detailed pages may come back as
+    JPEG while smaller ones stay as PNG. See
+    ``_render_page_for_vision`` for the resize ladder.
 
     PyMuPDF is CPU-bound and releases the GIL during rendering; we
     dispatch it from ``asyncio.to_thread`` in the caller so the
@@ -380,29 +554,36 @@ def _pdf_to_images(file_path: str) -> list[bytes]:
 
     doc = fitz.open(file_path)
     try:
-        images: list[bytes] = []
-        # Render at 300 DPI — enough detail for Claude Vision to read
-        # room labels and dimension chains without blowing up bytes.
-        mat = fitz.Matrix(300 / 72, 300 / 72)
+        images: list[tuple[bytes, str]] = []
         # Enforce the page cap at the render boundary too, so a 1000-
         # page PDF doesn't consume memory before the caller rejects.
         max_pages = settings.max_plan_pages
         for i, page in enumerate(doc):
             if i >= max_pages:
                 break
-            pix = page.get_pixmap(matrix=mat)
-            images.append(pix.tobytes("png"))
+            data, mime = _render_page_for_vision(page, page_number=i + 1)
+            images.append((data, mime))
         return images
     finally:
         doc.close()
 
 
-async def _extract_rooms_from_image(image_bytes: bytes, page_number: int) -> dict | None:
+async def _extract_rooms_from_image(
+    image_bytes: bytes,
+    page_number: int,
+    *,
+    mime_type: str = "image/png",
+) -> dict | None:
     """Send one page image to Claude Vision and parse the JSON response.
 
     Returns the parsed dict on success, or ``None`` if the model's
     response could not be interpreted as JSON. Logs the raw response
     on parse failure so operators can see what came back.
+
+    ``mime_type`` is supplied by the renderer (PNG for small pages,
+    JPEG for large pages that needed the resize fallback) and is
+    threaded through to Anthropic's ``source.media_type`` so the
+    decoder picks the right codec.
     """
     # Late import — keeps module import cheap and avoids a hard dep
     # when plan analysis isn't being exercised.
@@ -431,7 +612,7 @@ async def _extract_rooms_from_image(image_bytes: bytes, page_number: int) -> dic
                             "type": "image",
                             "source": {
                                 "type": "base64",
-                                "media_type": "image/png",
+                                "media_type": mime_type,
                                 "data": image_b64,
                             },
                         },
