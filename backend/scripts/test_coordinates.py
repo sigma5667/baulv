@@ -254,27 +254,35 @@ async def run(pdf_path: Path, report_path: Path) -> int:
         return 1
 
     _section(f"PDF rendern: {pdf_path.name}")
-    images = _pdf_to_images(str(pdf_path))
+    rendered_pages, render_errors = _pdf_to_images(str(pdf_path))
     _ok(
-        f"{len(images)} Seite(n) gerendert "
-        f"(adaptive DPI/JPEG je nach Größe — siehe Backend-Logs)."
+        f"{len(rendered_pages)} Seite(n) erfolgreich gerendert "
+        f"(Render-Fehler: {len(render_errors)})."
     )
+    for err in render_errors:
+        _warn(err)
 
     _section("Vision-Calls absetzen")
     pages_results: list[tuple[int, dict]] = []
-    for i, (image_bytes, mime_type) in enumerate(images, start=1):
-        print(f"  → Seite {i}/{len(images)} ({mime_type}, {len(image_bytes):,} Bytes)…")
+    for page_number, image_bytes, mime_type in rendered_pages:
+        print(
+            f"  → Seite {page_number} ({mime_type}, "
+            f"{len(image_bytes):,} Bytes)…"
+        )
         try:
             parsed = await _extract_rooms_from_image(
-                image_bytes, i, mime_type=mime_type
+                image_bytes, page_number, mime_type=mime_type
             )
         except Exception as exc:  # noqa: BLE001
-            _err(f"Vision-Call für Seite {i} gescheitert: {exc}")
+            _err(f"Vision-Call für Seite {page_number} gescheitert: {exc}")
             return 1
         if parsed is None:
-            _warn(f"Seite {i}: Vision-Antwort nicht parsebar — übersprungen.")
+            _warn(
+                f"Seite {page_number}: Vision-Antwort nicht parsebar — "
+                f"übersprungen."
+            )
             continue
-        pages_results.append((i, parsed))
+        pages_results.append((page_number, parsed))
 
     if not pages_results:
         _err("Keine Vision-Antwort konnte geparst werden.")

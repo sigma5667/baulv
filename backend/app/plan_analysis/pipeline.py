@@ -272,36 +272,86 @@ async def analyze_plan(plan_id: UUID, db: AsyncSession) -> dict:
     logger.info("Starting plan analysis: plan_id=%s file=%s", plan_id, plan.file_path)
 
     try:
-        # Step 1: Convert PDF pages to images
+        # Step 1: Convert PDF pages to images.
+        #
+        # Failure-mode catalogue:
+        #
+        #   * ``FileNotFoundError`` — disk-state mismatch (Railway
+        #     ephemeral storage, manual delete). Map to a clear
+        #     "re-upload" message.
+        #   * ``fitz.FileDataError`` — PDF body is structurally
+        #     unparseable. Modern PyMuPDF subclasses this from
+        #     RuntimeError, older from a base type. Map to "PDF
+        #     nicht öffenbar".
+        #   * ``RuntimeError`` — older PyMuPDF's open-time error
+        #     class. Same handling as ``FileDataError``. We
+        #     deliberately bound this to the open call only, so per-
+        #     page render failures (which v23.1.3 wraps inside
+        #     ``_pdf_to_images`` itself) don't accidentally surface
+        #     as "PDF nicht öffenbar" — that misclassification was
+        #     the v23.1.2 regression this hotfix targets.
+        #
+        # Per-page render failures come back via the ``render_errors``
+        # list (not as exceptions) so one unrenderable page doesn't
+        # abort the whole upload.
         try:
-            images = await asyncio.to_thread(_pdf_to_images, plan.file_path)
+            rendered_pages, render_errors = await asyncio.to_thread(
+                _pdf_to_images, plan.file_path
+            )
         except FileNotFoundError:
+            logger.exception(
+                "pdf_open.file_missing plan=%s file=%s",
+                plan_id, plan.file_path,
+            )
             raise PlanAnalysisError(
-                "Die hochgeladene PDF-Datei wurde auf dem Server nicht gefunden. "
-                "Bitte laden Sie den Plan erneut hoch."
+                "Die hochgeladene PDF-Datei wurde auf dem Server nicht "
+                "gefunden. Bitte laden Sie den Plan erneut hoch."
             )
         except RuntimeError as e:
-            # PyMuPDF raises RuntimeError on corrupt PDFs.
-            logger.exception("PyMuPDF failed to open %s: %s", plan.file_path, e)
+            # PyMuPDF raises RuntimeError exclusively for open-time
+            # corruption now that v23.1.3 wraps render-time failures
+            # inside ``_pdf_to_images``. Full stack to logs, friendly
+            # German message to user.
+            logger.exception(
+                "pdf_open.failed plan=%s file=%s err=%s: %s",
+                plan_id, plan.file_path, type(e).__name__, e,
+            )
             raise PlanAnalysisError(
-                "Die PDF-Datei konnte nicht gelesen werden. Bitte prüfen Sie, "
-                "ob die Datei nicht beschädigt ist."
+                "Die PDF-Datei konnte nicht gelesen werden. Bitte "
+                "prüfen Sie, ob die Datei nicht beschädigt ist."
             )
 
-        plan.page_count = len(images)
+        plan.page_count = len(rendered_pages)
         await db.flush()
 
-        if len(images) == 0:
+        if not rendered_pages and not render_errors:
+            # No pages and no errors → file was empty / had zero
+            # pages. Distinct from "every page failed to render".
             raise PlanAnalysisError("Die PDF enthält keine Seiten.")
 
-        if len(images) > settings.max_plan_pages:
+        if not rendered_pages:
+            # All pages failed to render. Surface the first three
+            # specific errors so the user sees what went wrong
+            # rather than a generic "no rooms extracted".
+            joined = "; ".join(render_errors[:3])
+            if len(render_errors) > 3:
+                joined += f" (und {len(render_errors) - 3} weitere)"
             raise PlanAnalysisError(
-                f"Die PDF hat {len(images)} Seiten — maximal "
+                "Keine Seite des PDFs konnte für die KI-Analyse "
+                f"vorbereitet werden. {joined}"
+            )
+
+        if len(rendered_pages) > settings.max_plan_pages:
+            raise PlanAnalysisError(
+                f"Die PDF hat {len(rendered_pages)} Seiten — maximal "
                 f"{settings.max_plan_pages} Seiten pro Plan erlaubt. Bitte "
                 f"teilen Sie die Datei auf."
             )
 
-        logger.info("Analyzing %d pages for plan %s", len(images), plan_id)
+        logger.info(
+            "Analyzing %d pages for plan %s (render-errors=%d)",
+            len(rendered_pages), plan_id, len(render_errors),
+        )
 
         # Late import for the rate-limit exception type. We've already
         # confirmed the API key is set, so paying for the anthropic
@@ -318,19 +368,31 @@ async def analyze_plan(plan_id: UUID, db: AsyncSession) -> dict:
         # from — Vision doesn't see the page index itself, the
         # pipeline owns that fact.
         all_results: list[tuple[int, dict]] = []
-        page_errors: list[str] = []
-        for i, (image_bytes, mime_type) in enumerate(images, start=1):
+        # Seed page_errors with any per-page render failures we
+        # already collected. This way the user sees one consistent
+        # list of "what went wrong on which page", regardless of
+        # whether the failure was at render-time or Vision-time.
+        page_errors: list[str] = list(render_errors)
+        for page_number, image_bytes, mime_type in rendered_pages:
             try:
                 result = await _extract_rooms_from_image(
-                    image_bytes, page_number=i, mime_type=mime_type
+                    image_bytes, page_number=page_number, mime_type=mime_type
                 )
                 if result is not None:
-                    all_results.append((i, result))
+                    all_results.append((page_number, result))
                 else:
-                    page_errors.append(f"Seite {i}: KI-Antwort nicht verwertbar")
+                    page_errors.append(
+                        f"Seite {page_number}: KI-Antwort nicht verwertbar"
+                    )
             except asyncio.TimeoutError:
-                logger.warning("Claude Vision timeout on page %d of plan %s", i, plan_id)
-                page_errors.append(f"Seite {i}: Zeitüberschreitung bei der KI-Analyse")
+                logger.warning(
+                    "Claude Vision timeout on page %d of plan %s",
+                    page_number, plan_id,
+                )
+                page_errors.append(
+                    f"Seite {page_number}: Zeitüberschreitung bei der "
+                    f"KI-Analyse"
+                )
             except anthropic.RateLimitError:
                 # Rate limits are account-level; hitting one on page N
                 # means page N+1 will hit it too. Abort with a specific
@@ -338,7 +400,7 @@ async def analyze_plan(plan_id: UUID, db: AsyncSession) -> dict:
                 # through the generic handler.
                 logger.warning(
                     "Anthropic rate limit on page %d of plan %s — aborting",
-                    i,
+                    page_number,
                     plan_id,
                 )
                 raise PlanAnalysisError(
@@ -355,12 +417,12 @@ async def analyze_plan(plan_id: UUID, db: AsyncSession) -> dict:
                 logger.exception(
                     "Claude Vision call failed for page %d of plan %s: "
                     "%s — %s",
-                    i,
+                    page_number,
                     plan_id,
                     type(e).__name__,
                     str(e)[:1000],
                 )
-                page_errors.append(_format_page_error(i, e))
+                page_errors.append(_format_page_error(page_number, e))
 
         # Step 3: Persist
         total_rooms = 0
@@ -398,14 +460,14 @@ async def analyze_plan(plan_id: UUID, db: AsyncSession) -> dict:
         logger.info(
             "Plan analysis completed: plan_id=%s pages=%d rooms=%d errors=%d",
             plan_id,
-            len(images),
+            len(rendered_pages),
             total_rooms,
             len(page_errors),
         )
 
         return {
             "plan_id": str(plan_id),
-            "pages_analyzed": len(images),
+            "pages_analyzed": len(rendered_pages),
             "rooms_extracted": total_rooms,
             "page_errors": page_errors,
         }
@@ -463,61 +525,116 @@ def _render_page_for_vision(
 ) -> tuple[bytes, str]:
     """Render one PDF page within Anthropic's 5 MB image limit.
 
-    Strategy (v23.1.2):
+    Strategy (v23.1.2 + v23.1.3 hardening):
 
-      1. Render at the default DPI (200) as PNG. If the bytes fit
-         the safety threshold, ship it.
-      2. Same DPI but JPEG quality 85. Roughly 70 % smaller for
-         architectural plans, lossy but Vision still reads labels.
-      3. If JPEG still doesn't fit, drop to the next DPI on the
-         ladder and try PNG → JPEG again.
-      4. Bottom of the ladder (100 DPI) JPEG still too big →
-         ``PlanAnalysisError``. The plan is genuinely too complex
-         for a single-shot Vision analysis and the operator needs
-         to split or down-sample the PDF.
+      1. Each DPI step renders the page into an RGB pixmap (no
+         alpha, no source-CMYK side effects), then tries PNG
+         first, JPEG-quality-85 second.
+      2. If both PNG and JPEG fit the threshold, the smaller wins —
+         but PNG is preferred for the lossless quality on clean CAD
+         output, so we ship PNG the moment it fits.
+      3. ``RuntimeError`` from any individual ``tobytes`` call is
+         logged but does not abort the render. We try the next
+         DPI/format combination instead. PyMuPDF can fail
+         ``tobytes("jpeg")`` for many reasons (RGBA-source despite
+         our alpha=False request, exotic colorspaces, memory
+         pressure on large pages); falling through to a smaller
+         render usually succeeds.
+      4. Bottom of the DPI ladder with no successful render → a
+         ``PlanAnalysisError`` whose message tells the user how to
+         recover (split the PDF or export at lower DPI).
 
-    Returns ``(image_bytes, mime_type)`` so ``_extract_rooms_from_image``
-    can stitch the right ``media_type`` into the API call.
+    Why ``alpha=False, colorspace=fitz.csRGB``
+    ------------------------------------------
+    JPEG cannot encode RGBA. PyMuPDF's ``get_pixmap()`` defaults to
+    ``alpha=False``, but PDFs with transparency layers (watermarks,
+    transparent overlays in modern CAD output) sometimes leak alpha
+    through anyway — the ``tobytes("jpeg")`` call then raises a
+    naked ``RuntimeError`` that the broader ``analyze_plan`` handler
+    used to misclassify as "PDF nicht öffenbar". The explicit
+    colorspace + alpha kwargs are belt-and-suspenders against that.
 
-    Logs every render attempt at INFO level and the resize event
-    (when we couldn't fit at the first try) at WARNING level — that
-    way the Railway log stream tells us *why* a plan needed
-    re-rendering, which is the primary debug data when a tester
-    reports a slow upload.
+    Returns ``(image_bytes, mime_type)``.
     """
     import fitz  # PyMuPDF
 
-    first_attempt: tuple[int, str, int] | None = None  # (dpi, fmt, bytes)
+    # Track the first attempted render so the resize-event log line
+    # can name what we *started* with vs what we ended up shipping.
+    first_attempt: tuple[int, str, int] | None = None
+    last_exception: Exception | None = None
 
     for dpi in _VISION_DPI_LADDER:
         mat = fitz.Matrix(dpi / 72, dpi / 72)
-        pix = page.get_pixmap(matrix=mat)
+
+        # Pixmap acquisition is its own failure surface. If
+        # ``get_pixmap`` raises (corrupt page object, memory
+        # pressure, exotic colorspace), the error is per-DPI — we
+        # log it and try the next ladder step rather than failing
+        # the whole page.
+        try:
+            pix = page.get_pixmap(
+                matrix=mat,
+                alpha=False,
+                colorspace=fitz.csRGB,
+            )
+        except Exception as exc:  # noqa: BLE001 — defensive
+            logger.exception(
+                "pdf_to_images.pixmap_failed page=%d dpi=%d: %s",
+                page_number, dpi, exc,
+            )
+            last_exception = exc
+            continue
 
         # First try PNG (lossless, preferred for clean CAD output).
-        png_bytes = pix.tobytes("png")
-        logger.info(
-            "pdf_to_images.page_rendered page=%d format=png dpi=%d bytes=%d",
-            page_number, dpi, len(png_bytes),
-        )
-        if first_attempt is None:
-            first_attempt = (dpi, "png", len(png_bytes))
-        if len(png_bytes) <= max_bytes:
-            if first_attempt != (dpi, "png", len(png_bytes)):
-                logger.warning(
-                    "pdf_to_images.page_resized page=%d from='%d dpi/%s/%d "
-                    "bytes' to='%d dpi/png/%d bytes'",
-                    page_number,
-                    first_attempt[0], first_attempt[1], first_attempt[2],
-                    dpi, len(png_bytes),
-                )
-            return png_bytes, "image/png"
+        png_bytes: bytes | None = None
+        try:
+            png_bytes = pix.tobytes("png")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "pdf_to_images.png_encode_failed page=%d dpi=%d: %s",
+                page_number, dpi, exc,
+            )
+            last_exception = exc
 
-        # PNG too big at this DPI — try JPEG.
-        jpeg_bytes = pix.tobytes("jpeg", jpg_quality=_VISION_JPEG_QUALITY)
+        if png_bytes is not None:
+            logger.info(
+                "pdf_to_images.page_rendered page=%d format=png dpi=%d "
+                "bytes=%d",
+                page_number, dpi, len(png_bytes),
+            )
+            if first_attempt is None:
+                first_attempt = (dpi, "png", len(png_bytes))
+            if len(png_bytes) <= max_bytes:
+                if first_attempt != (dpi, "png", len(png_bytes)):
+                    logger.warning(
+                        "pdf_to_images.page_resized page=%d from='%d "
+                        "dpi/%s/%d bytes' to='%d dpi/png/%d bytes'",
+                        page_number,
+                        first_attempt[0], first_attempt[1],
+                        first_attempt[2],
+                        dpi, len(png_bytes),
+                    )
+                return png_bytes, "image/png"
+
+        # PNG too big at this DPI (or its encode failed) — try JPEG.
+        try:
+            jpeg_bytes = pix.tobytes("jpeg", jpg_quality=_VISION_JPEG_QUALITY)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "pdf_to_images.jpeg_encode_failed page=%d dpi=%d: %s",
+                page_number, dpi, exc,
+            )
+            last_exception = exc
+            # No image at this DPI in either format — drop down.
+            continue
+
         logger.info(
-            "pdf_to_images.page_rendered page=%d format=jpeg dpi=%d bytes=%d",
+            "pdf_to_images.page_rendered page=%d format=jpeg dpi=%d "
+            "bytes=%d",
             page_number, dpi, len(jpeg_bytes),
         )
+        if first_attempt is None:
+            first_attempt = (dpi, "jpeg", len(jpeg_bytes))
         if len(jpeg_bytes) <= max_bytes:
             logger.warning(
                 "pdf_to_images.page_resized page=%d from='%d dpi/%s/%d "
@@ -528,9 +645,24 @@ def _render_page_for_vision(
             )
             return jpeg_bytes, "image/jpeg"
 
-        # Both PNG and JPEG too big at this DPI — drop down.
+        # Both PNG and JPEG over the cap at this DPI — drop down.
 
-    # Fell off the ladder. Plan is too dense even at 100 DPI JPEG.
+    # Fell off the ladder. Two distinct sub-cases:
+    if last_exception is not None and first_attempt is None:
+        # Never produced a single byte of image. Render itself is
+        # broken on this page (corrupt content stream, exotic
+        # colorspace, memory). Surface the type of error explicitly
+        # so the operator's UI message is honest.
+        raise PlanAnalysisError(
+            f"Seite {page_number} konnte nicht in ein Bild "
+            f"konvertiert werden ("
+            f"{type(last_exception).__name__}: "
+            f"{str(last_exception)[:120]}). Bitte das PDF prüfen "
+            f"oder neu exportieren."
+        )
+
+    # Renders succeeded but always above the size cap. Genuine
+    # "Plan zu komplex" case.
     raise PlanAnalysisError(
         "Der Plan ist zu groß für die KI-Analyse. Bitte exportieren "
         "Sie das PDF mit niedrigerer Auflösung oder teilen Sie es in "
@@ -538,32 +670,78 @@ def _render_page_for_vision(
     )
 
 
-def _pdf_to_images(file_path: str) -> list[tuple[bytes, str]]:
+def _pdf_to_images(
+    file_path: str,
+) -> tuple[list[tuple[int, bytes, str]], list[str]]:
     """Convert PDF to per-page image bytes for Vision.
 
-    Returns ``[(image_bytes, mime_type), …]`` so each page carries
-    its own format tag — large or detailed pages may come back as
-    JPEG while smaller ones stay as PNG. See
-    ``_render_page_for_vision`` for the resize ladder.
+    Returns ``(rendered_pages, render_errors)``:
+
+    * ``rendered_pages`` is ``[(page_number, image_bytes, mime_type), …]``
+      with one entry per *successfully* rendered page. Page numbers
+      are 1-based and may be non-contiguous if individual pages
+      failed (e.g. ``[(1, b"...", "image/png"), (3, b"...", "image/jpeg")]``
+      when page 2 was unrenderable).
+    * ``render_errors`` is a list of user-facing German strings, one
+      per failed page (``"Seite 2: Plan zu groß für KI-Analyse..."``).
+      The caller folds these into the project-wide ``page_errors``
+      list so the user sees a precise per-page rundown.
+
+    Open-errors (corrupt PDF, missing file) propagate as their
+    native exception type — the caller maps them to "PDF nicht
+    öffenbar". Per-page render-errors do NOT propagate; we want one
+    bad page to skip itself rather than abort the whole upload.
 
     PyMuPDF is CPU-bound and releases the GIL during rendering; we
     dispatch it from ``asyncio.to_thread`` in the caller so the
-    event loop stays responsive during rendering.
+    event loop stays responsive.
     """
     import fitz  # PyMuPDF
 
+    # The open call is its own failure surface. We deliberately do
+    # NOT swallow exceptions here — the caller's "PDF nicht öffenbar"
+    # handler owns that path. If we caught and re-raised something
+    # else, that handler couldn't tell open-error from render-error.
     doc = fitz.open(file_path)
     try:
-        images: list[tuple[bytes, str]] = []
-        # Enforce the page cap at the render boundary too, so a 1000-
-        # page PDF doesn't consume memory before the caller rejects.
+        rendered: list[tuple[int, bytes, str]] = []
+        errors: list[str] = []
         max_pages = settings.max_plan_pages
         for i, page in enumerate(doc):
             if i >= max_pages:
                 break
-            data, mime = _render_page_for_vision(page, page_number=i + 1)
-            images.append((data, mime))
-        return images
+            page_number = i + 1
+            try:
+                data, mime = _render_page_for_vision(
+                    page, page_number=page_number
+                )
+            except PlanAnalysisError as exc:
+                # Per-page render failure with a user-facing message
+                # already attached. Collect for the per-page error
+                # list, do not abort the full upload.
+                errors.append(f"Seite {page_number}: {exc.detail}")
+                continue
+            except Exception as exc:  # noqa: BLE001
+                # Truly unexpected — should not happen, render
+                # function already wraps known failure modes. Log
+                # the full stack and surface as a per-page error so
+                # the user sees something concrete.
+                logger.exception(
+                    "pdf_to_images.unexpected_render_failure "
+                    "page=%d file=%s: %s",
+                    page_number, file_path, exc,
+                )
+                errors.append(
+                    f"Seite {page_number} konnte nicht gerendert werden "
+                    f"({type(exc).__name__})."
+                )
+                continue
+            rendered.append((page_number, data, mime))
+        logger.info(
+            "pdf_to_images.completed file=%s rendered=%d failed=%d",
+            file_path, len(rendered), len(errors),
+        )
+        return rendered, errors
     finally:
         doc.close()
 
