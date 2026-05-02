@@ -141,11 +141,26 @@ FELDER PRO RAUM
   erfasst werden.
 
 ================================================================
-PIN-KOORDINATEN (Phase-1-Datengrundlage für Plan-Visualisierung)
+PIN-KOORDINATEN (optional — nur wenn du dir sicher bist)
 ================================================================
 
-Damit die Software später Pins auf den Plan zeichnen kann, gib für
-jeden Raum Pixel-Koordinaten zurück:
+Wenn du die Position einer Raum-Beschriftung im Bild zuverlässig
+lokalisieren kannst, ergänze für den Raum vier optionale Felder.
+Das nutzt die Software später, um Pins auf den Plan zu zeichnen.
+
+WICHTIG: Diese Felder sind freiwillig. Wenn auch nur eine der
+folgenden Bedingungen zutrifft, lass die vier Felder einfach weg
+oder setze sie auf null — geschätzte Koordinaten verursachen
+falsch positionierte Pins, was schlimmer ist als gar kein Pin:
+
+* Du erkennst die Beschriftung im Bild nicht eindeutig.
+* Du kannst zwischen mehreren ähnlich aussehenden Räumen nicht
+  zuverlässig unterscheiden.
+* Du bist dir bei den Pixel-Werten unsicher.
+* Der Plan ist sehr groß und du kannst die Größe nicht zuverlässig
+  abschätzen.
+
+Wenn du dir sicher bist, sind das die Felder:
 
 - position_x: x-Pixel (Abstand vom LINKEN Bildrand) zum visuellen
               Mittelpunkt der Raum-Beschriftung im Bauplan.
@@ -154,20 +169,15 @@ jeden Raum Pixel-Koordinaten zurück:
 - bbox_width: Breite des Raum-Polygons in Pixeln (geschätzt).
 - bbox_height: Höhe des Raum-Polygons in Pixeln (geschätzt).
 
-Wichtig:
+Bezugssystem: das aktuelle Bild, das du gerade siehst — keine
+PDF-Punkte, keine relativen 0..1-Werte. ``page_number`` musst du
+NICHT angeben — das setzt die Pipeline selbst, eine eigene Antwort
+darauf wird ignoriert.
 
-* Bezugssystem ist das aktuelle Bild, das du gerade siehst — keine
-  PDF-Punkte, keine relativen 0..1-Werte.
-* Wenn du nicht sicher bist, gib null zurück. NICHT raten. Eine
-  ehrliche Lücke wird im Frontend einfach kein Pin — eine falsche
-  Koordinate würde den Pin auf eine Wand oder daneben legen.
-* page_number musst du NICHT angeben — das setzt die Pipeline
-  selbst aus der Seitennummer, die sie dir zuweist. Falls du einen
-  Wert lieferst, wird er ignoriert.
-* Die Pixel-Koordinaten beziehen sich auf das gerenderte PNG (300
-  DPI). Falls du die Bildhöhe oder -breite nicht zuverlässig
-  abschätzen kannst, gib für alle vier Koordinaten-Felder null
-  zurück. Halbe Werte sind nutzlos.
+Lieber eine ehrliche Lücke als geschätzte Werte. Im Zweifel: alle
+vier Felder weglassen. Die Raum-Extraktion ist auch ohne
+Koordinaten vollständig brauchbar — nur die Plan-Pin-Visualisierung
+fällt für diesen Raum aus.
 
 ================================================================
 ZUSÄTZLICH IDENTIFIZIEREN
@@ -210,6 +220,7 @@ Objekt:
           "position_y": 820,
           "bbox_width": 540,
           "bbox_height": 380,
+          "_kommentar_pin": "Die vier Pin-Felder oben sind optional. Bei Unsicherheit weglassen oder null setzen — siehe Sektion PIN-KOORDINATEN.",
           "openings": [
             {"opening_type": "fenster", "width_m": 0.89, "height_m": 1.50, "count": 1},
             {"opening_type": "tuer", "width_m": 0.90, "height_m": 2.00, "count": 1}

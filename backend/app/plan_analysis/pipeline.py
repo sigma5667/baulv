@@ -151,6 +151,36 @@ ROOM_EXTRACTION_PROMPT = (
 _CLAUDE_CALL_TIMEOUT_S = 120
 
 
+# Output-token cap for one Vision response. Bumped from 4096 to
+# 8192 in v23.1.1 after a 130-room plan started returning
+# ``BadRequestError`` from the Anthropic API: with the v23.1
+# pin-coordinate fields each room gained ~30 output tokens, and a
+# multi-page plan with 20+ rooms per page edged close enough to
+# 4096 that the request started getting rejected with a
+# "max_tokens insufficient for expected output" 400. 8192 leaves
+# generous headroom; we only pay for what's actually generated.
+_VISION_MAX_TOKENS = 8192
+
+
+def _format_page_error(
+    page_number: int, exc: Exception, max_chars: int = 200
+) -> str:
+    """Format a per-page Vision-call error for the user-facing list.
+
+    We include both the exception class name (for the operator who
+    recognises types like ``BadRequestError`` at a glance) AND the
+    truncated string representation (for the actual underlying
+    message Anthropic returned — without it ``BadRequestError``
+    gives us nothing actionable to debug from). The truncation
+    prevents a 10K-char stacktrace blob from pushing the surrounding
+    error banner off-screen in the UI.
+    """
+    err_msg = str(exc)[:max_chars]
+    if not err_msg:
+        return f"Seite {page_number}: {type(exc).__name__}"
+    return f"Seite {page_number}: {type(exc).__name__} — {err_msg}"
+
+
 class PlanAnalysisError(Exception):
     """Analysis failure with a German, user-safe message.
 
@@ -261,13 +291,21 @@ async def analyze_plan(plan_id: UUID, db: AsyncSession) -> dict:
                     "Moment und versuchen Sie es erneut."
                 )
             except Exception as e:  # noqa: BLE001
+                # ``str(e)`` carries the Anthropic message body
+                # (e.g. "max_tokens insufficient for expected
+                # output", "image dimension exceeds 7990 px") which
+                # is the only useful diagnostic data when the type
+                # name alone is too generic. Logged at full length;
+                # surfaced to the user truncated via _format_page_error.
                 logger.exception(
-                    "Claude Vision call failed for page %d of plan %s: %s",
+                    "Claude Vision call failed for page %d of plan %s: "
+                    "%s — %s",
                     i,
                     plan_id,
-                    e,
+                    type(e).__name__,
+                    str(e)[:1000],
                 )
-                page_errors.append(f"Seite {i}: {type(e).__name__}")
+                page_errors.append(_format_page_error(i, e))
 
         # Step 3: Persist
         total_rooms = 0
@@ -384,7 +422,7 @@ async def _extract_rooms_from_image(image_bytes: bytes, page_number: int) -> dic
     message = await asyncio.wait_for(
         client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=4096,
+            max_tokens=_VISION_MAX_TOKENS,
             messages=[
                 {
                     "role": "user",
