@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "../../hooks/useAuth";
 import { BetaUnlockBanner } from "../BetaUnlockBanner";
+import { ConsentRefreshGate } from "../auth/ConsentRefreshModal";
 import { Footer } from "./Footer";
 
 const navItems = [
@@ -40,6 +41,13 @@ export function AppShell({ children }: { children: ReactNode }) {
           row so it spans the full viewport width instead of just the
           content area. */}
       <BetaUnlockBanner />
+      {/* DSGVO Art. 7 — refresh modal fires automatically when the
+          authenticated user's accepted legal-document versions are
+          stale. ``ConsentRefreshGate`` returns null when the user
+          is fine, so it's safe to drop in unconditionally. Lives
+          here (above the sidebar/main split) so it overlays the
+          full viewport. */}
+      <ConsentRefreshGate />
       <div className="flex min-h-0 flex-1">
       {/* Sidebar */}
       <aside

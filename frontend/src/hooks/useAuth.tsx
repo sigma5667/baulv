@@ -7,7 +7,13 @@ import {
   type ReactNode,
 } from "react";
 import type { User, FeatureMatrix } from "../types/user";
-import { fetchMe, fetchFeatures, loginUser, registerUser } from "../api/auth";
+import {
+  fetchMe,
+  fetchFeatures,
+  loginUser,
+  registerUser,
+  refreshConsent as apiRefreshConsent,
+} from "../api/auth";
 
 const TOKEN_KEY = "baulv_token";
 
@@ -22,6 +28,18 @@ interface AuthContextType {
     password: string;
     full_name: string;
     company_name?: string;
+    accepted_privacy_version: string;
+    accepted_terms_version: string;
+    marketing_optin: boolean;
+  }) => Promise<void>;
+  /** Re-record consent after the user accepts updated legal docs.
+   * Updates the user state in-place on success so the
+   * ConsentRefreshModal closes itself via the
+   * ``needsConsentRefresh(user)`` predicate dropping to false. */
+  refreshConsent: (data: {
+    accepted_privacy_version: string;
+    accepted_terms_version: string;
+    marketing_optin: boolean;
   }) => Promise<void>;
   logout: () => void;
   refreshUser: () => Promise<void>;
@@ -73,11 +91,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       password: string;
       full_name: string;
       company_name?: string;
+      accepted_privacy_version: string;
+      accepted_terms_version: string;
+      marketing_optin: boolean;
     }) => {
       const res = await registerUser(data);
       setAuth(res.access_token, res.user);
     },
     [setAuth]
+  );
+
+  const refreshConsent = useCallback(
+    async (data: {
+      accepted_privacy_version: string;
+      accepted_terms_version: string;
+      marketing_optin: boolean;
+    }) => {
+      const updated = await apiRefreshConsent(data);
+      setUser(updated);
+    },
+    []
   );
 
   const hasFeature = useCallback(
@@ -98,7 +131,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, features, token, isLoading, login, register, logout, refreshUser, hasFeature }}
+      value={{
+        user,
+        features,
+        token,
+        isLoading,
+        login,
+        register,
+        refreshConsent,
+        logout,
+        refreshUser,
+        hasFeature,
+      }}
     >
       {children}
     </AuthContext.Provider>

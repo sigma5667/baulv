@@ -1,8 +1,25 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Building2, UserPlus, Eye, EyeOff } from "lucide-react";
+import { Building2, UserPlus, Eye, EyeOff, Loader2 } from "lucide-react";
 import { useAuth } from "../hooks/useAuth";
+import { fetchLegalVersions, type LegalVersions } from "../api/auth";
 
+/**
+ * Sign-up page with DSGVO Art. 7-compliant consent capture (v23.2).
+ *
+ * Three checkboxes, two of them mandatory:
+ *
+ *   1. Privacy policy acceptance — required.
+ *   2. Terms of service acceptance — required.
+ *   3. Marketing-email opt-in — optional, default OFF (Art. 7's
+ *      "clear affirmative action" — defaults must be unchecked).
+ *
+ * The page fetches the canonical legal-document versions from
+ * ``GET /auth/legal/versions`` on mount and ships them back in the
+ * register payload. The backend re-checks them against
+ * ``app/legal_versions.py`` and rejects with 409 on mismatch — so a
+ * stale tab can't sneak a user in under outdated text.
+ */
 export function RegisterPage() {
   const { register } = useAuth();
   const navigate = useNavigate();
@@ -13,10 +30,25 @@ export function RegisterPage() {
     full_name: "",
     company_name: "",
   });
-  const [agbAccepted, setAgbAccepted] = useState(false);
+  const [privacyAccepted, setPrivacyAccepted] = useState(false);
+  const [termsAccepted, setTermsAccepted] = useState(false);
+  const [marketingOptin, setMarketingOptin] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [legal, setLegal] = useState<LegalVersions | null>(null);
+
+  useEffect(() => {
+    // Anonymous endpoint — no auth required. We don't block render
+    // on this; if it fails, the form still works (fallback labels
+    // omit the version + date suffix).
+    fetchLegalVersions()
+      .then(setLegal)
+      .catch(() => {
+        // Silently fall back — backend may be temporarily down. The
+        // checkboxes still render generic labels.
+      });
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -30,9 +62,15 @@ export function RegisterPage() {
       setError("Die Passwörter stimmen nicht überein.");
       return;
     }
-    if (!agbAccepted) {
+    if (!privacyAccepted || !termsAccepted) {
       setError(
-        "Bitte akzeptieren Sie die AGB und bestätigen Sie, dass Sie die Datenschutzerklärung gelesen haben."
+        "Bitte akzeptieren Sie sowohl die Datenschutzerklärung als auch die AGB.",
+      );
+      return;
+    }
+    if (!legal) {
+      setError(
+        "Die aktuellen Rechtsdokument-Versionen konnten nicht geladen werden. Bitte Seite neu laden.",
       );
       return;
     }
@@ -44,6 +82,9 @@ export function RegisterPage() {
         password: form.password,
         full_name: form.full_name,
         company_name: form.company_name || undefined,
+        accepted_privacy_version: legal.privacy_version,
+        accepted_terms_version: legal.terms_version,
+        marketing_optin: marketingOptin,
       });
       navigate("/app");
     } catch (err: any) {
@@ -56,6 +97,15 @@ export function RegisterPage() {
   const update = (field: string) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setForm({ ...form, [field]: e.target.value });
 
+  // Format "Version 1.0 vom 27.04.2026" for the checkbox sublabels.
+  // Falls back to just the link text if legal versions haven't loaded.
+  const privacySuffix = legal
+    ? ` (Version ${legal.privacy_version} vom ${formatDateDe(legal.privacy_date)})`
+    : "";
+  const termsSuffix = legal
+    ? ` (Version ${legal.terms_version} vom ${formatDateDe(legal.terms_date)})`
+    : "";
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-blue-50 to-slate-100 py-8">
       <div className="w-full max-w-md rounded-xl border bg-white p-8 shadow-lg">
@@ -64,7 +114,9 @@ export function RegisterPage() {
             <Building2 className="h-8 w-8" />
             <span className="text-2xl font-bold">BauLV</span>
           </Link>
-          <p className="text-sm text-muted-foreground">Erstellen Sie Ihr kostenloses Konto</p>
+          <p className="text-sm text-muted-foreground">
+            Erstellen Sie Ihr kostenloses Konto
+          </p>
         </div>
 
         {error && (
@@ -75,7 +127,9 @@ export function RegisterPage() {
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="mb-1 block text-sm font-medium">Vollständiger Name *</label>
+            <label className="mb-1 block text-sm font-medium">
+              Vollständiger Name *
+            </label>
             <input
               type="text"
               required
@@ -107,7 +161,9 @@ export function RegisterPage() {
             />
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium">Passwort * (min. 8 Zeichen)</label>
+            <label className="mb-1 block text-sm font-medium">
+              Passwort * (min. 8 Zeichen)
+            </label>
             <div className="relative">
               <input
                 type={showPassword ? "text" : "password"}
@@ -122,12 +178,18 @@ export function RegisterPage() {
                 onClick={() => setShowPassword(!showPassword)}
                 className="absolute right-3 top-2.5 text-muted-foreground hover:text-foreground"
               >
-                {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                {showPassword ? (
+                  <EyeOff className="h-4 w-4" />
+                ) : (
+                  <Eye className="h-4 w-4" />
+                )}
               </button>
             </div>
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium">Passwort bestätigen *</label>
+            <label className="mb-1 block text-sm font-medium">
+              Passwort bestätigen *
+            </label>
             <input
               type="password"
               required
@@ -138,44 +200,83 @@ export function RegisterPage() {
             />
           </div>
 
-          {/* AGB / Datenschutz acceptance — required by DSGVO and Austrian law */}
-          <label className="flex cursor-pointer items-start gap-2 text-sm">
-            <input
-              type="checkbox"
-              required
-              checked={agbAccepted}
-              onChange={(e) => setAgbAccepted(e.target.checked)}
-              className="mt-0.5 h-4 w-4 shrink-0 rounded border-muted-foreground/40 text-primary focus:ring-primary"
-            />
-            <span className="text-muted-foreground">
-              Ich akzeptiere die{" "}
-              <Link
-                to="/agb"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="font-medium text-primary hover:underline"
-              >
-                AGB
-              </Link>{" "}
-              und habe die{" "}
-              <Link
-                to="/datenschutz"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="font-medium text-primary hover:underline"
-              >
-                Datenschutzerklärung
-              </Link>{" "}
-              gelesen.
-            </span>
-          </label>
+          {/* Three consent checkboxes (v23.2 — DSGVO Art. 7).
+              The two mandatory ones are wired to the submit-disable
+              logic via privacyAccepted && termsAccepted. The
+              marketing one is optional and defaults to false per
+              Art. 7's "clear affirmative action" requirement
+              (defaults must be unchecked). */}
+          <div className="space-y-3 rounded-md border border-muted bg-muted/20 p-3">
+            <label className="flex cursor-pointer items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                required
+                checked={privacyAccepted}
+                onChange={(e) => setPrivacyAccepted(e.target.checked)}
+                className="mt-0.5 h-4 w-4 shrink-0 rounded border-muted-foreground/40 text-primary focus:ring-primary"
+              />
+              <span className="text-muted-foreground">
+                Ich habe die{" "}
+                <Link
+                  to="/datenschutz"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-medium text-primary hover:underline"
+                >
+                  Datenschutzerklärung
+                </Link>
+                {privacySuffix} gelesen und akzeptiert. <span className="text-destructive">*</span>
+              </span>
+            </label>
+
+            <label className="flex cursor-pointer items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                required
+                checked={termsAccepted}
+                onChange={(e) => setTermsAccepted(e.target.checked)}
+                className="mt-0.5 h-4 w-4 shrink-0 rounded border-muted-foreground/40 text-primary focus:ring-primary"
+              />
+              <span className="text-muted-foreground">
+                Ich habe die{" "}
+                <Link
+                  to="/agb"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-medium text-primary hover:underline"
+                >
+                  AGB
+                </Link>
+                {termsSuffix} gelesen und akzeptiert. <span className="text-destructive">*</span>
+              </span>
+            </label>
+
+            <label className="flex cursor-pointer items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={marketingOptin}
+                onChange={(e) => setMarketingOptin(e.target.checked)}
+                className="mt-0.5 h-4 w-4 shrink-0 rounded border-muted-foreground/40 text-primary focus:ring-primary"
+              />
+              <span className="text-muted-foreground">
+                Ich möchte gelegentlich Newsletter über neue Features
+                erhalten. <span className="text-xs">(optional)</span>
+              </span>
+            </label>
+          </div>
 
           <button
             type="submit"
-            disabled={loading || !agbAccepted}
+            disabled={
+              loading || !privacyAccepted || !termsAccepted || legal === null
+            }
             className="flex w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <UserPlus className="h-4 w-4" />
+            {loading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <UserPlus className="h-4 w-4" />
+            )}
             {loading ? "Registrieren..." : "Konto erstellen"}
           </button>
         </form>
@@ -189,4 +290,13 @@ export function RegisterPage() {
       </div>
     </div>
   );
+}
+
+/** ISO date string (YYYY-MM-DD) → German short form (DD.MM.YYYY).
+ * Falls back to the original string on parse failure rather than
+ * crashing the form render. */
+function formatDateDe(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!m) return iso;
+  return `${m[3]}.${m[2]}.${m[1]}`;
 }

@@ -21,6 +21,8 @@ from app.db.session import get_db
 from app.schemas.user import (
     AccountDeletionRequest,
     AuditLogEntryResponse,
+    ConsentRefreshRequest,
+    LegalVersionsResponse,
     PasswordChangeRequest,
     PasswordResetRequest,
     PrivacySettingsUpdate,
@@ -43,7 +45,18 @@ from app.services.audit import (
     EVENT_SESSIONS_REVOKED_ALL,
     log_event,
 )
+from app.services.consent import (
+    record_consent_refresh,
+    record_marketing_optin_change,
+    record_registration_consent,
+)
 from app.services.dsgvo import delete_user_account, export_user_data
+from app.legal_versions import (
+    PRIVACY_POLICY_DATE,
+    PRIVACY_POLICY_VERSION,
+    TERMS_DATE,
+    TERMS_VERSION,
+)
 from app.config import settings
 from app.subscriptions import BETA_PROJECT_LIMIT_SENTINEL, get_feature_matrix
 
@@ -54,6 +67,33 @@ router = APIRouter()
 # account. Kept as a module constant so frontend and backend can stay in
 # sync via a single grep.
 DELETE_CONFIRMATION_PHRASE = "LÖSCHEN"
+
+
+def _user_response(user: User) -> UserResponse:
+    """Build a ``UserResponse`` including the canonical legal-version
+    pins from ``app.legal_versions``.
+
+    ``UserResponse`` carries four version fields (``accepted_*`` from
+    the user row, ``required_*`` from the server constants) so the
+    SPA can compute ``needs_consent_refresh`` without an extra
+    ``GET /api/legal/versions`` round-trip on every page load.
+    Centralising the construction here keeps every endpoint in
+    lock-step — adding a new field later is one diff, not five.
+    """
+    return UserResponse(
+        id=user.id,
+        email=user.email,
+        full_name=user.full_name,
+        company_name=user.company_name,
+        subscription_plan=user.subscription_plan,
+        stripe_customer_id=user.stripe_customer_id,
+        marketing_email_opt_in=user.marketing_email_opt_in,
+        accepted_privacy_version=user.current_privacy_version,
+        accepted_terms_version=user.current_terms_version,
+        required_privacy_version=PRIVACY_POLICY_VERSION,
+        required_terms_version=TERMS_VERSION,
+        created_at=user.created_at,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -67,9 +107,54 @@ async def register(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    existing = await db.execute(select(User).where(User.email == data.email.lower().strip()))
+    """Create a new user account with DSGVO Art. 7 consent capture.
+
+    The request body must carry the version strings of the privacy
+    policy and terms-of-service the user just saw. We refuse with
+    409 if those don't match what the server currently serves —
+    a stale tab can't sneak a user in under an outdated policy.
+
+    Two atomic side-effects fire on success: the User row gets
+    ``current_privacy_version`` / ``current_terms_version`` /
+    ``marketing_email_opt_in`` set, AND a row in
+    ``consent_snapshots`` records the moment + IP + UA forensically.
+    Both writes share the surrounding transaction, so an audit
+    failure rolls back the registration too — consent evidence is
+    not best-effort.
+    """
+    # Version-mismatch guard. The frontend reads the canonical
+    # versions from ``GET /api/legal/versions`` (or
+    # ``/api/auth/me``'s ``required_*`` fields) and ships them back
+    # here on submit. If the user kept a tab open across a privacy
+    # bump, those strings won't match — better a clean 409 ("please
+    # reload and re-accept") than registering them under stale
+    # text.
+    if data.accepted_privacy_version != PRIVACY_POLICY_VERSION:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Die Datenschutzerklärung wurde aktualisiert. "
+                "Bitte laden Sie die Seite neu und akzeptieren Sie "
+                "die aktuelle Version."
+            ),
+        )
+    if data.accepted_terms_version != TERMS_VERSION:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Die AGB wurden aktualisiert. Bitte laden Sie die "
+                "Seite neu und akzeptieren Sie die aktuelle Version."
+            ),
+        )
+
+    existing = await db.execute(
+        select(User).where(User.email == data.email.lower().strip())
+    )
     if existing.scalars().first():
-        raise HTTPException(status_code=409, detail="Diese E-Mail-Adresse ist bereits registriert.")
+        raise HTTPException(
+            status_code=409,
+            detail="Diese E-Mail-Adresse ist bereits registriert.",
+        )
 
     user = User(
         email=data.email.lower().strip(),
@@ -77,14 +162,31 @@ async def register(
         full_name=data.full_name,
         company_name=data.company_name,
         subscription_plan="basis",
+        marketing_email_opt_in=data.marketing_optin,
+        current_privacy_version=PRIVACY_POLICY_VERSION,
+        current_terms_version=TERMS_VERSION,
     )
     db.add(user)
     await db.flush()
     await db.refresh(user)
 
+    # DSGVO Art. 7 evidence row. Bound to the same transaction as
+    # the user write — if either fails, both roll back.
+    await record_registration_consent(
+        db,
+        user_id=user.id,
+        privacy_version=PRIVACY_POLICY_VERSION,
+        terms_version=TERMS_VERSION,
+        marketing_optin=data.marketing_optin,
+        request=request,
+    )
+
     token = await issue_session(db, user, request)
-    await log_event(db, event_type=EVENT_REGISTER, user_id=user.id, request=request)
-    return TokenResponse(access_token=token, user=UserResponse.model_validate(user))
+    await log_event(
+        db, event_type=EVENT_REGISTER, user_id=user.id, request=request,
+        meta={"marketing_optin": data.marketing_optin},
+    )
+    return TokenResponse(access_token=token, user=_user_response(user))
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -110,12 +212,12 @@ async def login(
 
     token = await issue_session(db, user, request)
     await log_event(db, event_type=EVENT_LOGIN, user_id=user.id, request=request)
-    return TokenResponse(access_token=token, user=UserResponse.model_validate(user))
+    return TokenResponse(access_token=token, user=_user_response(user))
 
 
 @router.get("/me", response_model=UserResponse)
 async def get_me(user: User = Depends(get_current_user)):
-    return UserResponse.model_validate(user)
+    return _user_response(user)
 
 
 @router.put("/me", response_model=UserResponse)
@@ -130,7 +232,114 @@ async def update_me(
         user.company_name = data.company_name
     await db.flush()
     await db.refresh(user)
-    return UserResponse.model_validate(user)
+    return _user_response(user)
+
+
+@router.get("/legal/versions", response_model=LegalVersionsResponse)
+async def get_legal_versions():
+    """Public endpoint surfacing the canonical legal-document
+    versions the server currently serves.
+
+    Used by the SPA's registration page so the consent checkboxes
+    can label themselves with the right version + date
+    ("Datenschutzerklärung Version 1.0 vom 27.04.2026") and the
+    payload can ship the matching version strings back on submit.
+
+    Open to anonymous callers — pre-registration the user has no
+    auth token, but they need this data to render the form.
+    """
+    return LegalVersionsResponse(
+        privacy_version=PRIVACY_POLICY_VERSION,
+        privacy_date=PRIVACY_POLICY_DATE,
+        terms_version=TERMS_VERSION,
+        terms_date=TERMS_DATE,
+    )
+
+
+@router.post("/me/consent/refresh", response_model=UserResponse)
+async def refresh_consent(
+    data: ConsentRefreshRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-record consent after a privacy or terms update.
+
+    Fired by the SPA's ``ConsentRefreshModal`` when an authenticated
+    user re-accepts the updated documents. Like ``register``, both
+    version strings must match the canonical server pins; mismatch
+    is a 409 ("reload, the policy changed again").
+
+    Three side-effects under one transaction:
+
+      1. ``users.current_privacy_version`` /
+         ``current_terms_version`` get updated to the new pins.
+      2. ``users.marketing_email_opt_in`` is set to whatever the
+         modal's checkbox is on submit. We track this even on a
+         consent-refresh because the user might use the moment to
+         change their mind about marketing — the modal exposes the
+         same checkbox the registration form did.
+      3. A ``consent_snapshots`` row records the moment, with
+         ``event_type`` chosen from whichever document actually
+         changed (``privacy_update`` or ``terms_update``).
+
+    If the user accepted exactly the version they already had on
+    file (no document changed since their last accept), we still
+    write a snapshot — useful as forensic evidence ("Maria
+    confirmed her consent on date X") even when the content
+    didn't move.
+    """
+    if data.accepted_privacy_version != PRIVACY_POLICY_VERSION:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Die Datenschutzerklärung wurde inzwischen erneut "
+                "aktualisiert. Bitte laden Sie die Seite neu."
+            ),
+        )
+    if data.accepted_terms_version != TERMS_VERSION:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Die AGB wurden inzwischen erneut aktualisiert. "
+                "Bitte laden Sie die Seite neu."
+            ),
+        )
+
+    privacy_changed = user.current_privacy_version != PRIVACY_POLICY_VERSION
+    terms_changed = user.current_terms_version != TERMS_VERSION
+
+    user.current_privacy_version = PRIVACY_POLICY_VERSION
+    user.current_terms_version = TERMS_VERSION
+    user.marketing_email_opt_in = data.marketing_optin
+    await db.flush()
+
+    await record_consent_refresh(
+        db,
+        user_id=user.id,
+        privacy_version=PRIVACY_POLICY_VERSION,
+        terms_version=TERMS_VERSION,
+        marketing_optin=data.marketing_optin,
+        privacy_changed=privacy_changed,
+        terms_changed=terms_changed,
+        request=request,
+    )
+    # Existing audit-log channel still records the privacy update
+    # event, with a richer meta payload than v23.1.
+    await log_event(
+        db,
+        event_type=EVENT_PRIVACY_UPDATED,
+        user_id=user.id,
+        request=request,
+        meta={
+            "privacy_changed": privacy_changed,
+            "terms_changed": terms_changed,
+            "marketing_optin": data.marketing_optin,
+        },
+    )
+
+    await db.refresh(user)
+    return _user_response(user)
 
 
 @router.get("/me/features")
@@ -323,9 +532,11 @@ async def update_privacy_settings(
     document that at signup in the Datenschutz page.
     """
     changes: dict[str, object] = {}
+    marketing_changed = False
     if data.marketing_email_opt_in is not None:
         if user.marketing_email_opt_in != data.marketing_email_opt_in:
             changes["marketing_email_opt_in"] = data.marketing_email_opt_in
+            marketing_changed = True
         user.marketing_email_opt_in = data.marketing_email_opt_in
 
     await db.flush()
@@ -340,7 +551,19 @@ async def update_privacy_settings(
             meta=changes,
         )
 
-    return UserResponse.model_validate(user)
+    # DSGVO Art. 7 evidence — write a consent snapshot whenever the
+    # marketing flag actually flips. We don't write one for no-op
+    # PUTs (idempotent calls from the frontend) so the table doesn't
+    # accumulate noise.
+    if marketing_changed:
+        await record_marketing_optin_change(
+            db,
+            user_id=user.id,
+            new_value=user.marketing_email_opt_in,
+            request=request,
+        )
+
+    return _user_response(user)
 
 
 # ---------------------------------------------------------------------------

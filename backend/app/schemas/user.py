@@ -6,10 +6,28 @@ from pydantic import BaseModel, EmailStr
 
 
 class UserRegister(BaseModel):
+    """Sign-up payload. v23.2 added the three consent fields below
+    so we can satisfy DSGVO Art. 7's "demonstrate consent"
+    requirement at registration time. The two version strings are
+    sent by the frontend (the SPA fetches them from
+    ``/api/legal/versions`` or reads them from ``/auth/me``) so we
+    can verify the client saw the same text we currently serve —
+    a stale tab can't sneak a user in under a previous policy.
+    """
+
     email: str
     password: str
     full_name: str
     company_name: str | None = None
+    # Mandatory consent fields. The frontend supplies the version
+    # strings it displayed; the backend rejects with 409 if they
+    # don't match the canonical ``app/legal_versions.py`` values.
+    accepted_privacy_version: str
+    accepted_terms_version: str
+    # Marketing opt-in stays optional, default false per Art. 7
+    # ("clear affirmative action"). The user has to actively tick
+    # the third checkbox in the SPA.
+    marketing_optin: bool = False
 
 
 class UserLogin(BaseModel):
@@ -30,6 +48,15 @@ class UserResponse(BaseModel):
     subscription_plan: str
     stripe_customer_id: str | None
     marketing_email_opt_in: bool
+    # v23.2 — DSGVO Art. 7 evidence trail. ``accepted_*`` is what the
+    # user has signed off on (NULL for grandfathered pre-v23.2
+    # accounts); ``required_*`` is what the server currently serves.
+    # The SPA computes ``needs_consent_refresh`` from the four and
+    # surfaces the modal when accepted is non-null and != required.
+    accepted_privacy_version: str | None = None
+    accepted_terms_version: str | None = None
+    required_privacy_version: str
+    required_terms_version: str
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -92,6 +119,32 @@ class PrivacySettingsUpdate(BaseModel):
     """
 
     marketing_email_opt_in: bool | None = None
+
+
+class ConsentRefreshRequest(BaseModel):
+    """Payload for ``POST /api/auth/me/consent/refresh``.
+
+    Fired by the SPA's ``ConsentRefreshModal`` when a user re-
+    accepts updated legal documents. Both version strings must
+    match what the server currently serves; the marketing flag
+    can change as part of the same refresh (the modal exposes
+    the same checkbox the registration form does).
+    """
+
+    accepted_privacy_version: str
+    accepted_terms_version: str
+    marketing_optin: bool
+
+
+class LegalVersionsResponse(BaseModel):
+    """Public ``GET /api/legal/versions`` payload — what the
+    frontend renders next to the consent checkboxes
+    ("Datenschutzerklärung Version 1.0 vom 27.04.2026")."""
+
+    privacy_version: str
+    privacy_date: str
+    terms_version: str
+    terms_date: str
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,41 @@ export interface User {
   subscription_plan: "basis" | "pro" | "enterprise";
   stripe_customer_id: string | null;
   marketing_email_opt_in: boolean;
+  /** Version strings the user has CURRENTLY accepted. NULL for
+   * grandfathered pre-v23.2 accounts — those see no refresh
+   * modal until a separate retroactive-consent campaign runs.
+   * The DSGVO Art. 7 evidence trail itself lives in the backend
+   * ``consent_snapshots`` table; these two fields are just the
+   * "latest known state" for fast comparison against
+   * ``required_*`` below. */
+  accepted_privacy_version: string | null;
+  accepted_terms_version: string | null;
+  /** Versions the server is currently serving — what the user
+   * needs to accept to be "up to date". Refresh modal fires when
+   * ``accepted_*`` is non-null AND ``accepted_* !== required_*``.
+   * Always populated; comes from ``app/legal_versions.py``. */
+  required_privacy_version: string;
+  required_terms_version: string;
   created_at: string;
+}
+
+/** Convenience predicate — does this user need to re-accept the
+ * legal documents? NULL accepted versions mean grandfathered
+ * (pre-v23.2 user, separate retroactive campaign), NOT stale. */
+export function needsConsentRefresh(user: User): boolean {
+  if (
+    user.accepted_privacy_version !== null &&
+    user.accepted_privacy_version !== user.required_privacy_version
+  ) {
+    return true;
+  }
+  if (
+    user.accepted_terms_version !== null &&
+    user.accepted_terms_version !== user.required_terms_version
+  ) {
+    return true;
+  }
+  return false;
 }
 
 export interface UserSessionSummary {

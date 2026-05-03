@@ -21,5 +21,16 @@ class User(Base):
     # DSGVO-compliant opt-in for marketing email. Defaults to False so
     # accounts start with no consent — required under Art. 7 DSGVO.
     marketing_email_opt_in: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Versions of the legal documents this user has CURRENTLY
+    # accepted. Distinct from the canonical "what version is live
+    # right now" pinned in ``app/legal_versions.py`` — when those
+    # diverge, the SPA prompts the user via ``ConsentRefreshModal``
+    # to re-accept on next login. NULL means "grandfathered in" —
+    # users who registered before consent_snapshots existed (v23.2)
+    # keep these columns null until a separate retroactive-consent
+    # campaign runs (DS-1 follow-up). The full history of every
+    # acceptance lives in the ``consent_snapshots`` table.
+    current_privacy_version: Mapped[str | None] = mapped_column(String(20))
+    current_terms_version: Mapped[str | None] = mapped_column(String(20))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)

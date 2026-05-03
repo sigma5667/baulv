@@ -12,8 +12,44 @@ export async function registerUser(data: {
   password: string;
   full_name: string;
   company_name?: string;
+  // v23.2 — DSGVO Art. 7. Frontend reads the version strings from
+  // GET /api/legal/versions before showing the form, then ships
+  // them back here on submit. The backend rejects with 409 if they
+  // don't match the current canonical pins (stale-tab guard).
+  accepted_privacy_version: string;
+  accepted_terms_version: string;
+  marketing_optin: boolean;
 }): Promise<TokenResponse> {
   const res = await api.post("/auth/register", data);
+  return res.data;
+}
+
+/** Public legal-version pins. Used by the registration form to
+ * label the consent checkboxes ("Datenschutzerklärung Version 1.0
+ * vom 27.04.2026") and to ship the matching strings back on
+ * submit. The /me response carries the same data, so logged-in
+ * pages don't need this round-trip. */
+export interface LegalVersions {
+  privacy_version: string;
+  privacy_date: string;
+  terms_version: string;
+  terms_date: string;
+}
+
+export async function fetchLegalVersions(): Promise<LegalVersions> {
+  const res = await api.get("/auth/legal/versions");
+  return res.data;
+}
+
+/** Re-record consent after a privacy/terms update. Used by the
+ * ConsentRefreshModal that the SPA shows when /me indicates the
+ * user's accepted versions are stale. */
+export async function refreshConsent(data: {
+  accepted_privacy_version: string;
+  accepted_terms_version: string;
+  marketing_optin: boolean;
+}): Promise<User> {
+  const res = await api.post("/auth/me/consent/refresh", data);
   return res.data;
 }
 
