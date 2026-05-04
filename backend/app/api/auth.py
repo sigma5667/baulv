@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -14,6 +14,7 @@ from app.auth import (
     verify_password,
 )
 from app.db.models.audit import AuditLogEntry
+from app.db.models.password_reset_token import PasswordResetToken
 from app.db.models.project import Project
 from app.db.models.session import UserSession
 from app.db.models.user import User
@@ -24,6 +25,7 @@ from app.schemas.user import (
     ConsentRefreshRequest,
     LegalVersionsResponse,
     PasswordChangeRequest,
+    PasswordResetConfirm,
     PasswordResetRequest,
     PrivacySettingsUpdate,
     SessionResponse,
@@ -39,11 +41,19 @@ from app.services.audit import (
     EVENT_LOGIN,
     EVENT_LOGIN_FAILED,
     EVENT_PASSWORD_CHANGED,
+    EVENT_PASSWORD_RESET_COMPLETED,
+    EVENT_PASSWORD_RESET_REQUESTED,
     EVENT_PRIVACY_UPDATED,
     EVENT_REGISTER,
     EVENT_SESSION_REVOKED,
     EVENT_SESSIONS_REVOKED_ALL,
     log_event,
+)
+from app.services.email import send_password_reset_email
+from app.services.password_reset import (
+    mark_token_used,
+    mint_reset_token,
+    verify_reset_token,
 )
 from app.services.consent import (
     record_consent_refresh,
@@ -370,10 +380,216 @@ async def get_my_usage(
     }
 
 
+# ---------------------------------------------------------------------------
+# Password reset (DS-3 / v23.4)
+# ---------------------------------------------------------------------------
+
+# Per-email request budget. The token rows we already write per
+# request are the rate-limit state — we count rows for the user_id
+# in the last hour and refuse to mint a new one beyond this cap.
+# Three is a kindness ceiling (a user can re-request twice if the
+# first email got eaten by a spam filter) without giving an attacker
+# a useful spam vector against a known email.
+PASSWORD_RESET_REQUESTS_PER_HOUR = 3
+PASSWORD_RESET_RATE_WINDOW = timedelta(hours=1)
+
+
+# Constant DSGVO-compliant 200-OK message. Identical wording for
+# success / unknown email / rate-limited cases — the response must
+# not betray account existence to a probing attacker. (The audit
+# log differentiates them; the user-facing surface does not.)
+_PASSWORD_RESET_GENERIC_MSG = (
+    "Falls ein Konto mit dieser E-Mail existiert, wurde eine E-Mail "
+    "mit Anweisungen zum Zurücksetzen des Passworts gesendet."
+)
+
+
 @router.post("/password-reset")
-async def request_password_reset(data: PasswordResetRequest):
-    # Placeholder — in production, send an email with a reset link
-    return {"message": "Falls ein Konto mit dieser E-Mail existiert, wurde eine E-Mail mit Anweisungen zum Zurücksetzen des Passworts gesendet."}
+async def request_password_reset(
+    data: PasswordResetRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Initiate the password-reset flow.
+
+    Always returns 200 OK with the same German "if an account
+    exists…" message — regardless of whether the email matches a
+    real user, whether the user is rate-limited, or whether the
+    Resend send actually succeeded. This is deliberate: a probing
+    attacker must not be able to enumerate accounts via timing or
+    response-shape differences.
+
+    Behind the constant response, four branches:
+
+    1. Email matches no user → audit row with ``user_id=None`` and
+       ``meta.email`` for forensic context. No token, no email.
+    2. Email matches a user but they've already requested 3 resets
+       in the last hour → audit row with ``meta.rate_limited=True``,
+       no new token, no email.
+    3. Match + within budget → mint a single-use token (1h TTL),
+       write the audit row, fire the Resend email. We swallow
+       Resend failures: the audit row records the *attempt*, the
+       operator notices via the WARN log line in
+       ``app.services.email`` if the API actually 4xx'd.
+    4. Unexpected exception → log + propagate 500 so we don't
+       silently lose a user-facing error. Rare; the endpoint is
+       deliberately defensive.
+    """
+    # Case-insensitive email lookup. ``user.email`` is stored
+    # lowercased at registration, but a paranoid client typing
+    # ``Tobi@Baulv.At`` should still hit the row.
+    normalised_email = data.email.lower().strip()
+    if not normalised_email:
+        # Empty input. Still 200-OK to avoid leaking via shape, but
+        # short-circuit before any DB work.
+        return {"message": _PASSWORD_RESET_GENERIC_MSG}
+
+    result = await db.execute(
+        select(User).where(User.email == normalised_email)
+    )
+    user = result.scalars().first()
+
+    if user is None:
+        # No account. Audit the *attempt* anyway — repeated probes
+        # show up in the operator's audit-grep as a flat sequence
+        # of ``user_id=None`` reset_requested events.
+        await log_event(
+            db,
+            event_type=EVENT_PASSWORD_RESET_REQUESTED,
+            user_id=None,
+            request=request,
+            meta={"email": normalised_email, "result": "no_account"},
+        )
+        return {"message": _PASSWORD_RESET_GENERIC_MSG}
+
+    # Rate-limit: count tokens minted for this user in the last hour.
+    # Cheap — the index on ``user_id`` makes it a small range scan.
+    window_start = datetime.now(timezone.utc) - PASSWORD_RESET_RATE_WINDOW
+    count_result = await db.execute(
+        select(func.count(PasswordResetToken.id)).where(
+            PasswordResetToken.user_id == user.id,
+            PasswordResetToken.created_at >= window_start,
+        )
+    )
+    recent_count = count_result.scalar() or 0
+    if recent_count >= PASSWORD_RESET_REQUESTS_PER_HOUR:
+        await log_event(
+            db,
+            event_type=EVENT_PASSWORD_RESET_REQUESTED,
+            user_id=user.id,
+            request=request,
+            meta={
+                "email": normalised_email,
+                "result": "rate_limited",
+                "recent_count": recent_count,
+            },
+        )
+        return {"message": _PASSWORD_RESET_GENERIC_MSG}
+
+    # Mint + email. ``mint_reset_token`` invalidates any previous
+    # outstanding tokens for this user, so the most-recent email
+    # always wins.
+    plaintext = await mint_reset_token(db, user=user)
+    await log_event(
+        db,
+        event_type=EVENT_PASSWORD_RESET_REQUESTED,
+        user_id=user.id,
+        request=request,
+        meta={"email": normalised_email, "result": "sent"},
+    )
+    # Email send is fire-and-forget from the user's perspective —
+    # the response is the same whether or not Resend's API call
+    # succeeded. The service logs success/failure on its own.
+    send_password_reset_email(
+        to_email=normalised_email,
+        reset_token=plaintext,
+        user_name=user.full_name or None,
+    )
+    return {"message": _PASSWORD_RESET_GENERIC_MSG}
+
+
+@router.post("/password-reset/confirm", status_code=200)
+async def confirm_password_reset(
+    data: PasswordResetConfirm,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Redeem a reset token and set a new password.
+
+    Three failure modes collapse into the same generic 400:
+    unknown / used / expired token. We do *not* differentiate —
+    a precise error ("token expired") would let an attacker
+    distinguish "valid but stale" from "never existed", which is
+    a probing oracle.
+
+    On success:
+
+    1. The token row's ``used_at`` flips to ``now()`` (single-use
+       guarantee — a second redeem on the same token 400s).
+    2. The user's password hash gets rewritten via bcrypt.
+    3. Every other session for this user is revoked. Mirrors the
+       behaviour of ``POST /me/password`` — a successful reset is
+       Treat as "I lost control of my account" and we kick all
+       devices off. The user has to log in fresh after redeeming.
+    4. An audit row records the completed reset with the user's id.
+    """
+    # Minimum length applies the same way as the change-password
+    # path. We deliberately don't share the constant with
+    # ``change_password`` because that endpoint may grow stricter
+    # rules independently in future.
+    if len(data.new_password) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Neues Passwort muss mindestens 8 Zeichen lang sein.",
+        )
+
+    verified = await verify_reset_token(db, presented_token=data.token)
+    if verified is None:
+        # Generic message — see docstring for why we don't
+        # differentiate the failure modes.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Der Link ist ungültig oder abgelaufen. Bitte fordern "
+                "Sie eine neue E-Mail an."
+            ),
+        )
+
+    token_row, user = verified
+
+    # Mark the token used inside the same transaction as the
+    # password write. If the bcrypt step throws (extremely rare —
+    # OOM territory), the token stays valid because the rollback
+    # un-marks it.
+    await mark_token_used(db, token_id=token_row.id)
+    user.password_hash = hash_password(data.new_password)
+
+    # Revoke every live session for this user. No "current session"
+    # to preserve here — the reset flow is unauthenticated; the user
+    # has to log in fresh after success.
+    now = datetime.now(timezone.utc)
+    await db.execute(
+        sql_update(UserSession)
+        .where(
+            UserSession.user_id == user.id,
+            UserSession.revoked_at.is_(None),
+        )
+        .values(revoked_at=now)
+    )
+    await db.flush()
+
+    await log_event(
+        db,
+        event_type=EVENT_PASSWORD_RESET_COMPLETED,
+        user_id=user.id,
+        request=request,
+    )
+    return {
+        "message": (
+            "Passwort wurde erfolgreich zurückgesetzt. Sie können sich "
+            "jetzt mit Ihrem neuen Passwort anmelden."
+        )
+    }
 
 
 # ---------------------------------------------------------------------------

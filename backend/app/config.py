@@ -86,6 +86,31 @@ class Settings(BaseSettings):
             if e.strip()
         }
 
+    # Resend transactional email (DS-3 password reset, future
+    # privacy-update notifications). When ``resend_api_key`` is
+    # **unset**, ``app.services.email`` logs a warning and returns
+    # without sending — dev runs without a Resend account stay
+    # functional, the password-reset endpoint still returns 200 OK
+    # (so we don't leak whether an account exists), only the email
+    # itself never goes out. Production *must* set this; the
+    # DEPLOY.md checklist enforces it.
+    resend_api_key: str = ""
+    # The verified sender. ``send.baulv.at`` is the DKIM-signed
+    # subdomain so the SPF/DKIM/DMARC alignment passes. Bouncing
+    # this back to the apex (``baulv.at``) would break DMARC unless
+    # we also re-verify there.
+    resend_from_email: str = "noreply@send.baulv.at"
+    # Friendly From-Name shown in the recipient's inbox. Kept short
+    # so it doesn't get truncated on mobile clients.
+    resend_from_name: str = "BauLV"
+    # Public-facing base URL the password-reset link is built on.
+    # In dev that's the Vite server (``http://localhost:5173``); in
+    # production Railway sets this to the canonical ``https://baulv.at``
+    # (or whichever domain is currently primary). The link template is
+    # ``{app_base_url}/passwort-zuruecksetzen?token={token}`` — must
+    # be HTTPS in production or the token is exposed in transit.
+    app_base_url: str = "http://localhost:5173"
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
     def model_post_init(self, __context) -> None:

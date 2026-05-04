@@ -1,11 +1,18 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Building2, LogIn, Eye, EyeOff } from "lucide-react";
 import { useAuth } from "../hooks/useAuth";
 
 export function LoginPage() {
   const { login } = useAuth();
   const navigate = useNavigate();
+  // DS-3 (v23.4): the password-reset confirm flow bounces here with
+  // ``?passwort-zurueckgesetzt=1`` so we render a green banner
+  // ("Passwort wurde zurückgesetzt, bitte erneut anmelden"). The
+  // banner clears as soon as the user types in the email field; it
+  // doesn't block the form.
+  const [searchParams] = useSearchParams();
+  const justResetPassword = searchParams.has("passwort-zurueckgesetzt");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -36,6 +43,13 @@ export function LoginPage() {
           </Link>
           <p className="text-sm text-muted-foreground">Melden Sie sich in Ihrem Konto an</p>
         </div>
+
+        {justResetPassword && !error && (
+          <div className="mb-4 rounded-md bg-green-50 px-4 py-3 text-sm text-green-800 ring-1 ring-green-200">
+            Passwort wurde erfolgreich zurückgesetzt. Bitte melden Sie
+            sich jetzt mit Ihrem neuen Passwort an.
+          </div>
+        )}
 
         {error && (
           <div className="mb-4 rounded-md bg-destructive/10 px-4 py-3 text-sm text-destructive">
@@ -77,7 +91,10 @@ export function LoginPage() {
           </div>
 
           <div className="flex items-center justify-between text-sm">
-            <Link to="/password-reset" className="text-primary hover:underline">
+            <Link
+              to="/passwort-vergessen"
+              className="text-primary hover:underline"
+            >
               Passwort vergessen?
             </Link>
           </div>

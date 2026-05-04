@@ -9,6 +9,8 @@ import { LandingPage } from "./pages/LandingPage";
 import { LoginPage } from "./pages/LoginPage";
 import { RegisterPage } from "./pages/RegisterPage";
 import { PasswordResetPage } from "./pages/PasswordResetPage";
+import { PasswortVergessenPage } from "./pages/PasswortVergessenPage";
+import { PasswortZuruecksetzenPage } from "./pages/PasswortZuruecksetzenPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { ProjectDetailPage } from "./pages/ProjectDetailPage";
 import { StructurePage } from "./pages/StructurePage";
@@ -71,7 +73,16 @@ export default function App() {
       />
       <Route path="/login" element={user && !isLoading ? <Navigate to="/app" replace /> : <LoginPage />} />
       <Route path="/register" element={user && !isLoading ? <Navigate to="/app" replace /> : <RegisterPage />} />
+      {/* Old English route — kept for backward compatibility with
+          any external link or bookmark from before v23.4. New flow
+          is at /passwort-vergessen + /passwort-zuruecksetzen. */}
       <Route path="/password-reset" element={<PasswordResetPage />} />
+      {/* DS-3 (v23.4) — functional password-reset flow. */}
+      <Route path="/passwort-vergessen" element={<PasswortVergessenPage />} />
+      <Route
+        path="/passwort-zuruecksetzen"
+        element={<PasswortZuruecksetzenPage />}
+      />
 
       {/* Legal pages — always publicly reachable, regardless of auth state. */}
       <Route path="/impressum" element={<ImpressumPage />} />

@@ -156,6 +156,79 @@ Daher: beide Strings synchron, im selben Commit.
 | Beide Tags identisch aber dennoch keine Änderung | Browser hängt im SW-Update-Cycle | DevTools → Application → Service Workers → "Unregister" → reload |
 | Inkognito zeigt neue Version, normaler Browser nicht | Kill-Switch hat einmal sauber gefeuert, aber der User hat eine zweite Tab offen | Alle BauLV-Tabs schließen + neu öffnen |
 
+## Resend-Setup (Passwort-Reset, ab v23.4)
+
+Der DSGVO-konforme Passwort-Reset-Flow (DS-3) verschickt die
+Reset-Mail über [Resend](https://resend.com). Ohne korrekt gesetzte
+Env-Variablen geht **keine** Mail raus — der Endpoint
+``POST /api/auth/password-reset`` antwortet weiterhin mit dem
+generischen 200 OK (DSGVO-Account-Existenz-Schutz), aber der User
+bekommt nichts. In den Backend-Logs taucht dann
+``email.no_api_key`` auf.
+
+### Erst-Setup pro Environment
+
+1. **Domain verifizieren** in der Resend-Konsole. Wir nutzen die
+   DKIM-signierte Subdomain ``send.baulv.at`` — Apex (``baulv.at``)
+   würde DMARC-Alignment brechen, solange wir dort keine separate
+   Verifikation eintragen.
+
+2. **API-Key erzeugen** in Resend → Settings → API Keys. Scope auf
+   "Sending access" reicht; "Full access" nicht nötig und vergrößert
+   nur die Blast-Radius bei Leak.
+
+3. **Env-Variablen** in Railway (oder ``backend/.env`` lokal) setzen:
+
+   | Variable | Beispiel-Wert | Erklärung |
+   |----------|---------------|-----------|
+   | ``RESEND_API_KEY`` | ``re_xxxxxxxxxxxxxxxxxxxx`` | Pflicht. Ohne = kein Mail-Versand. |
+   | ``RESEND_FROM_EMAIL`` | ``noreply@send.baulv.at`` | Default falls ungesetzt. Muss eine in Resend verifizierte Adresse sein. |
+   | ``RESEND_FROM_NAME`` | ``BauLV`` | Default falls ungesetzt. Sichtbar im Posteingang. |
+   | ``APP_BASE_URL`` | ``https://baulv.at`` | Public-facing-URL für den Link in der Mail. **Muss in Production HTTPS sein**, sonst geht der Token im Klartext über die Leitung. |
+
+4. **Smoke-Test** nach dem Deploy:
+
+   ```
+   curl -X POST https://baulv.at/api/auth/password-reset \
+     -H 'Content-Type: application/json' \
+     -d '{"email":"deine-test-adresse@example.com"}'
+   ```
+
+   Antwort muss 200 mit dem deutschen "Falls ein Konto…"-Text
+   sein. In der Resend-Konsole muss unter "Logs" ein Eintrag mit
+   ``status=delivered`` (oder zumindest ``sent``) erscheinen. In
+   den Backend-Logs:
+
+   ```
+   email.password_reset.sent recipient=...
+   ```
+
+   ``email.password_reset.failed`` ist der Hinweis dass die
+   Resend-API was zurückgewiesen hat — Detail kommt im
+   ``error=...`` Feld direkt davor.
+
+### Lokale Dev-Umgebung ohne Resend
+
+Wer ohne Mail-Versand entwickeln will, lässt ``RESEND_API_KEY`` leer.
+Der Endpoint funktioniert dann komplett, schreibt den Reset-Token
+in die DB, und logged eine WARN-Zeile:
+
+```
+email.no_api_key: RESEND_API_KEY unset; would have sent ...
+```
+
+Den Reset-Link kann man im Dev-Modus via SQL aus der
+``password_reset_tokens``-Tabelle ziehen — den
+SHA-256-Hash kann man **nicht** zurückrechnen, also nur direkt
+nach ``mint_reset_token`` aus dem Backend-Log oder über
+``RESEND_API_KEY`` setzen + Mail an die Test-Adresse schicken.
+
+### Token-Sicherheit (Reminder)
+
+Tokens **niemals** loggen. Auch nicht auf DEBUG. Auch nicht in
+einem "wird ja nur lokal gebraucht"-Statement. Wenn du einen Reset
+zum Debuggen brauchst, öffne die Mail im Resend-Dashboard.
+
 ## Geplant: Auto-Bump-Tooling (Stage später)
 
 Manueller Bump ist fehleranfällig — ein Pre-Build-Skript, das den Tag

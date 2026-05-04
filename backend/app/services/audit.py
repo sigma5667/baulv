@@ -39,6 +39,14 @@ EVENT_ACCOUNT_DELETED = "user.account_deleted"
 EVENT_SESSION_REVOKED = "user.session_revoked"
 EVENT_SESSIONS_REVOKED_ALL = "user.sessions_revoked_all"
 EVENT_PRIVACY_UPDATED = "user.privacy_updated"
+# Password-reset flow (DS-3, v23.4). Two distinct events because the
+# *requested* leg fires for non-existent emails too (we always 200 OK
+# to avoid leaking account existence) — the audit row in that case
+# carries ``user_id=None`` and the email lives in ``meta`` only.
+# *Completed* fires only on successful token redemption with a real
+# user_id, which is the GDPR Art. 32 evidence we actually need.
+EVENT_PASSWORD_RESET_REQUESTED = "user.password_reset_requested"
+EVENT_PASSWORD_RESET_COMPLETED = "user.password_reset_completed"
 # Plan deletion (v23). Single event; the ``meta`` JSON differentiates
 # "plan only" from "plan + rooms" via the ``delete_rooms`` flag plus
 # counts of rows that went with it (rooms / openings / berechnungs-

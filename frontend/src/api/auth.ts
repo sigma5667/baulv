@@ -91,6 +91,27 @@ export async function requestPasswordReset(email: string): Promise<void> {
   await api.post("/auth/password-reset", { email });
 }
 
+/**
+ * DS-3 (v23.4) — redeem a password-reset token and set a new password.
+ *
+ * Server returns 200 OK with a German success message on the happy
+ * path. Any failure mode (unknown token / expired / already used /
+ * password too short) collapses into a generic 400 with a German
+ * "Link ungültig oder abgelaufen" body — see auth.py confirm_password_reset
+ * for why we don't differentiate.
+ *
+ * The page calling this should *not* try to read the user back from
+ * the response — there is no auto-login after reset. The user
+ * navigates back to /login and signs in fresh, which is also what
+ * "every other session was revoked" means in practice.
+ */
+export async function confirmPasswordReset(data: {
+  token: string;
+  new_password: string;
+}): Promise<void> {
+  await api.post("/auth/password-reset/confirm", data);
+}
+
 // ---------------------------------------------------------------------------
 // DSGVO compliance
 // ---------------------------------------------------------------------------

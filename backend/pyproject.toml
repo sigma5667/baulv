@@ -37,6 +37,13 @@ dependencies = [
     # so the import succeeds when the env var IS set. ``redis>=5`` is
     # the first version with native asyncio support out of the box.
     "redis>=5.0.0",
+    # Resend SDK for transactional email (DS-3 password reset, DS-NN
+    # future flows like privacy-update notifications). Imported
+    # lazily inside ``app.services.email`` only when an email
+    # actually needs sending — so dev runs without RESEND_API_KEY
+    # don't crash on import, they just log a warning when sending
+    # is attempted.
+    "resend>=2.0.0",
 ]
 
 [project.optional-dependencies]
