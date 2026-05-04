@@ -42,6 +42,7 @@ import {
   TEMPLATE_CATEGORY_LABELS,
   type TemplateCategory,
 } from "../types/template";
+import { useToast } from "../components/Toast";
 
 const TRADES = [
   { value: "malerarbeiten", label: "Malerarbeiten" },
@@ -335,15 +336,25 @@ export function LVEditorPage() {
           <ArrowLeft className="h-4 w-4" />
           Zum Projekt
         </Link>
-        <div className="flex items-center justify-between">
-          <h1 className="text-xl font-bold">Leistungsverzeichnis</h1>
-          <div className="flex items-center gap-2">
+        {/* v23.6 — toolbar uses ``flex-wrap`` so it never produces a
+            horizontal scrollbar even on narrow main-content widths
+            (sidebar + content padding eats ~350px of viewport).
+            Each button label collapses to icon-only below the
+            ``2xl`` breakpoint (1536px) — the title attribute keeps
+            the action discoverable for keyboard / screen-reader
+            users at every size. ``min-w-0`` on the heading lets the
+            row contract naturally if a translation makes the
+            heading word longer in future. */}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h1 className="min-w-0 text-xl font-bold">Leistungsverzeichnis</h1>
+          <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={() => setShowCreate(true)}
+              title="Neues LV anlegen"
               className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm hover:bg-accent"
             >
               <Plus className="h-3.5 w-3.5" />
-              Neues LV
+              <span className="hidden 2xl:inline">Neues LV</span>
             </button>
             {activeLvId && (
               <>
@@ -352,6 +363,7 @@ export function LVEditorPage() {
                   onClick={handleCalculate}
                   disabled={calcMutation.isPending}
                   aria-busy={calcMutation.isPending}
+                  title="Mengen aus den Räumen berechnen"
                   className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {calcMutation.isPending ? (
@@ -359,11 +371,14 @@ export function LVEditorPage() {
                   ) : (
                     <Calculator className="h-3.5 w-3.5" />
                   )}
-                  {calcMutation.isPending ? "Berechne…" : "Berechnen"}
+                  <span className="hidden 2xl:inline">
+                    {calcMutation.isPending ? "Berechne…" : "Berechnen"}
+                  </span>
                 </button>
                 <button
                   onClick={() => textMutation.mutate()}
                   disabled={textMutation.isPending}
+                  title="AI-Texte für alle Positionen generieren"
                   className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm hover:bg-accent disabled:opacity-50"
                 >
                   {textMutation.isPending ? (
@@ -371,7 +386,7 @@ export function LVEditorPage() {
                   ) : (
                     <Sparkles className="h-3.5 w-3.5" />
                   )}
-                  AI-Texte
+                  <span className="hidden 2xl:inline">AI-Texte</span>
                 </button>
                 <button
                   onClick={() => wallSyncMutation.mutate()}
@@ -384,7 +399,7 @@ export function LVEditorPage() {
                   ) : (
                     <Ruler className="h-3.5 w-3.5" />
                   )}
-                  Wandflächen
+                  <span className="hidden 2xl:inline">Wandflächen</span>
                 </button>
                 <button
                   onClick={() => handleExport("xlsx")}
@@ -398,7 +413,9 @@ export function LVEditorPage() {
                   ) : (
                     <Download className="h-3.5 w-3.5" />
                   )}
-                  {exportingFormat === "xlsx" ? "Exportiere…" : "Excel Export"}
+                  <span className="hidden 2xl:inline">
+                    {exportingFormat === "xlsx" ? "Exportiere…" : "Excel Export"}
+                  </span>
                 </button>
                 <button
                   onClick={() => handleExport("pdf")}
@@ -412,7 +429,9 @@ export function LVEditorPage() {
                   ) : (
                     <FileText className="h-3.5 w-3.5" />
                   )}
-                  {exportingFormat === "pdf" ? "Exportiere…" : "PDF Export"}
+                  <span className="hidden 2xl:inline">
+                    {exportingFormat === "pdf" ? "Exportiere…" : "PDF Export"}
+                  </span>
                 </button>
                 <button
                   onClick={() => setShowSaveTemplate(true)}
@@ -423,7 +442,7 @@ export function LVEditorPage() {
                   title="Dieses LV als wiederverwendbare Vorlage speichern (Preise und Mengen werden nicht übernommen)"
                 >
                   <BookmarkPlus className="h-3.5 w-3.5" />
-                  Als Vorlage speichern
+                  <span className="hidden 2xl:inline">Als Vorlage speichern</span>
                 </button>
               </>
             )}
@@ -968,6 +987,7 @@ function PositionRow({
   lvId: string;
 }) {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
   // Draft text in the inputs while editing. Stored as string so the
@@ -980,8 +1000,6 @@ function PositionRow({
     formatGermanNumber(position.einheitspreis, 2),
   );
   const [editError, setEditError] = useState<string | null>(null);
-  // Brief green check after a successful save. Cleared on next edit.
-  const [savedAt, setSavedAt] = useState<number | null>(null);
 
   // Re-sync drafts to the canonical position values when an external
   // mutation refreshes the row (e.g. after "Berechnen" or "AI-Texte"
@@ -994,35 +1012,49 @@ function PositionRow({
     }
   }, [position.menge, position.einheitspreis, editing]);
 
+  // ``mutationKind`` differentiates how onSuccess routes its toast:
+  // an edit-save fires "Position gespeichert", a lock-toggle fires
+  // "Position gesperrt"/"entsperrt". Without this we'd have to peek
+  // at the variables passed to the mutation, which is brittle if the
+  // payload shape changes.
   const updateMutation = useMutation({
-    mutationFn: (updates: {
-      menge?: number;
-      einheitspreis?: number;
-      is_locked?: boolean;
-    }) => updatePosition(position.id, updates),
-    onSuccess: () => {
+    mutationFn: async (args: {
+      kind: "edit" | "lock";
+      updates: {
+        menge?: number;
+        einheitspreis?: number;
+        is_locked?: boolean;
+      };
+    }) => {
+      await updatePosition(position.id, args.updates);
+      return args;
+    },
+    onSuccess: ({ kind, updates }) => {
       // Refetch the LV so the row's menge / gesamtpreis come from
       // the server (no client-side drift, no stale display).
       queryClient.invalidateQueries({ queryKey: ["lv", lvId] });
       setEditing(false);
       setEditError(null);
-      setSavedAt(Date.now());
+      // v23.6 — global toast feedback per Issue 2.
+      if (kind === "edit") {
+        toast.success("Position gespeichert");
+      } else if (kind === "lock") {
+        if (updates.is_locked) {
+          toast.info("Position gesperrt");
+        } else {
+          toast.info("Position entsperrt");
+        }
+      }
     },
     onError: (err) => {
       // Surface the backend's German message verbatim — it already
       // says "Position ist gesperrt — bitte zuerst…" in the lock
       // case, which is exactly what we want to show.
-      setEditError(getErrorMessage(err));
+      const msg = getErrorMessage(err);
+      setEditError(msg);
+      toast.error(msg);
     },
   });
-
-  // Auto-clear the green-check after 2s. Effect runs only when
-  // ``savedAt`` flips to a new timestamp.
-  useEffect(() => {
-    if (savedAt === null) return;
-    const t = setTimeout(() => setSavedAt(null), 2000);
-    return () => clearTimeout(t);
-  }, [savedAt]);
 
   const startEdit = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -1070,13 +1102,16 @@ function PositionRow({
       setEditError(null);
       return;
     }
-    updateMutation.mutate(updates);
+    updateMutation.mutate({ kind: "edit", updates });
   };
 
   const toggleLock = (e: React.MouseEvent) => {
     e.stopPropagation();
     setEditError(null);
-    updateMutation.mutate({ is_locked: !position.is_locked });
+    updateMutation.mutate({
+      kind: "lock",
+      updates: { is_locked: !position.is_locked },
+    });
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -1106,6 +1141,21 @@ function PositionRow({
     position.menge !== null && position.einheitspreis !== null
       ? position.menge * position.einheitspreis
       : null;
+
+  // v23.6 — uniform widths: menge / EP / GP cells stay the same
+  // size in view-mode and edit-mode. Pre-v23.6 the inputs were
+  // wider than the spans (w-24/w-28 vs w-20/w-20) which let the
+  // row's total width creep up when entering edit mode and pushed
+  // the AppShell layout sideways (Issue 1). Locking the widths
+  // here keeps the row width invariant under mode toggles.
+  const MENGE_COL = "w-24";
+  const EP_COL = "w-28";
+  const GP_COL = "w-24";
+  // Action cluster fixed-width too, so toggling Edit ↔
+  // Save+Cancel (different button counts) doesn't shift the row.
+  // Sized to fit the worst case (Lock + Save + Cancel = 3 buttons
+  // at p-1 each, plus gap-1 between them) with a few px slack.
+  const ACTION_COL = "w-24";
 
   return (
     <div
@@ -1137,9 +1187,22 @@ function PositionRow({
         <span className="w-16 shrink-0 font-mono text-sm text-muted-foreground">
           {position.positions_nummer}
         </span>
-        <span className="flex-1 text-sm">{position.kurztext}</span>
+        {/* v23.6 — ``min-w-0`` + ``truncate`` so a long kurztext
+            can't push other columns off-screen (Issue 1: this was
+            the prime culprit for the "eichnis" Layout-Sprung).
+            ``flex-1`` still lets the column take all remaining
+            space; the new constraints only kick in when content
+            would otherwise exceed available width. */}
+        <span
+          className="min-w-0 flex-1 truncate text-sm"
+          title={position.kurztext}
+        >
+          {position.kurztext}
+        </span>
 
-        {/* Menge — input in edit mode, span otherwise */}
+        {/* Menge — input in edit mode, span otherwise. Both pinned
+            to the SAME column width so toggling editing doesn't
+            shift the row. */}
         {editing ? (
           <input
             type="text"
@@ -1150,11 +1213,13 @@ function PositionRow({
             onKeyDown={handleKeyDown}
             onClick={(e) => e.stopPropagation()}
             disabled={updateMutation.isPending}
-            className="w-24 shrink-0 rounded border px-2 py-1 text-right font-mono text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+            className={`${MENGE_COL} shrink-0 rounded border px-2 py-1 text-right font-mono text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary`}
             autoFocus
           />
         ) : (
-          <span className="w-20 shrink-0 text-right font-mono text-sm">
+          <span
+            className={`${MENGE_COL} shrink-0 text-right font-mono text-sm`}
+          >
             {formatGermanNumber(position.menge, 3)}
           </span>
         )}
@@ -1163,9 +1228,11 @@ function PositionRow({
           {position.einheit}
         </span>
 
-        {/* Einheitspreis — input in edit mode */}
+        {/* Einheitspreis — input in edit mode. Same column width
+            in both modes (the € prefix lives inside the cell so
+            the cell width itself stays constant). */}
         {editing ? (
-          <div className="flex w-28 shrink-0 items-center gap-1">
+          <div className={`${EP_COL} flex shrink-0 items-center gap-1`}>
             <span className="text-sm text-muted-foreground">€</span>
             <input
               type="text"
@@ -1180,7 +1247,9 @@ function PositionRow({
             />
           </div>
         ) : (
-          <span className="w-20 shrink-0 text-right font-mono text-sm text-muted-foreground">
+          <span
+            className={`${EP_COL} shrink-0 text-right font-mono text-sm text-muted-foreground`}
+          >
             {position.einheitspreis !== null
               ? `€ ${formatGermanNumber(position.einheitspreis, 2)}`
               : "—"}
@@ -1189,7 +1258,7 @@ function PositionRow({
 
         {/* Gesamtpreis — read-only, derived. Live-preview while editing. */}
         <span
-          className={`w-24 shrink-0 text-right font-mono text-sm font-medium ${
+          className={`${GP_COL} shrink-0 text-right font-mono text-sm font-medium ${
             editing ? "text-primary" : ""
           }`}
         >
@@ -1202,10 +1271,20 @@ function PositionRow({
             : "—"}
         </span>
 
-        {/* Action cluster — Lock toggle + Edit / Save / Cancel */}
-        <div className="flex shrink-0 items-center gap-1">
-          {/* Lock toggle. Always visible so the user can lock or
-              unlock without entering edit mode. */}
+        {/* Action cluster — Lock toggle + Edit / Save / Cancel.
+            Fixed width so the row doesn't reflow when the cluster
+            switches from "Edit-only" to "Save + Cancel" (Issue 1).
+            ``justify-end`` keeps the buttons right-aligned inside
+            the reserved space. */}
+        <div
+          className={`${ACTION_COL} flex shrink-0 items-center justify-end gap-1`}
+        >
+          {/* Lock toggle. v23.6 (Issue 4): always visible at 60 %
+              opacity so touch devices (iPad, Android tablet) can
+              find it without a hover state; full opacity on hover
+              for the desktop discoverability cue. Locked rows
+              show the icon at full strength + amber tint so the
+              state is unambiguous at a glance. */}
           <button
             type="button"
             onClick={toggleLock}
@@ -1220,10 +1299,10 @@ function PositionRow({
                 ? "Position ist gesperrt — Klick zum Entsperren"
                 : "Position sperren (schützt vor Massen-Updates)"
             }
-            className={`rounded p-1 hover:bg-muted ${
+            className={`rounded p-1 transition-opacity hover:bg-muted ${
               position.is_locked
-                ? "text-amber-600"
-                : "text-muted-foreground opacity-0 group-hover:opacity-100"
+                ? "text-amber-600 opacity-100"
+                : "text-muted-foreground opacity-60 group-hover:opacity-100"
             } disabled:opacity-50`}
           >
             {position.is_locked ? (
@@ -1261,6 +1340,13 @@ function PositionRow({
               </button>
             </>
           ) : (
+            // v23.6 (Issues 3 + 4): edit pencil is always visible
+            // at 60 % opacity (touch-friendly) and goes to 100 %
+            // on hover. When the row is locked, opacity drops to
+            // 30 %, cursor changes to ``not-allowed`` and the
+            // ``disabled`` attribute makes the click a no-op —
+            // the user can't fall into a "click does nothing"
+            // dead zone, the visual feedback is unambiguous.
             <button
               type="button"
               onClick={startEdit}
@@ -1268,32 +1354,22 @@ function PositionRow({
               aria-label="Position bearbeiten"
               title={
                 position.is_locked
-                  ? "Position gesperrt — bitte erst entsperren"
+                  ? "Position ist gesperrt — bitte zuerst entsperren"
                   : "Menge & Einheitspreis bearbeiten"
               }
-              className="rounded p-1 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:bg-muted disabled:cursor-not-allowed disabled:opacity-30"
+              className="rounded p-1 text-muted-foreground opacity-60 transition-opacity hover:bg-muted group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-30 disabled:group-hover:opacity-30"
             >
               <Pencil className="h-4 w-4" />
             </button>
           )}
-
-          {/* Brief green check after save. Doesn't take a slot when
-              absent, so the layout doesn't jump. */}
-          {savedAt !== null && !editing && (
-            <span
-              className="ml-1 text-green-600"
-              role="status"
-              aria-live="polite"
-              title="Gespeichert"
-            >
-              <Check className="h-4 w-4" />
-            </span>
-          )}
         </div>
       </div>
 
-      {/* Per-row edit error. Only shown while the row is in edit
-          mode (or just after a save attempt failed). */}
+      {/* Per-row edit error. Stays visible until cleared (start
+          edit / cancel / successful save). Toast already fired the
+          same message globally — the inline copy is here so the
+          user sees it next to the offending row even after the
+          toast auto-dismissed. */}
       {editError && (
         <div className="bg-red-50 px-12 py-2 text-xs text-red-700">
           <AlertTriangle className="mr-1 inline h-3 w-3" />

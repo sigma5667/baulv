@@ -13,11 +13,13 @@ import { fetchPlans } from "../api/plans";
 import { fetchProjectRooms } from "../api/rooms";
 import { fetchProjectLVs } from "../api/lv";
 import { DeleteConfirmModal } from "../components/DeleteConfirmModal";
+import { useToast } from "../components/Toast";
 
 export function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [showDeleteModal, setShowDeleteModal] = useState(false);
 
   const { data: project, isLoading } = useQuery({
@@ -26,21 +28,25 @@ export function ProjectDetailPage() {
     enabled: !!id,
   });
 
-  // v23.5 — DSGVO Art. 17 cascade delete from the detail page. After
-  // success the user has no business being on this page anymore (the
-  // project is gone), so we navigate back to the dashboard with a
-  // ``?deleted=...`` flag that the dashboard reads to render a
-  // confirmation toast on the next render. The query cache for this
-  // project is also dropped so a back-button into it 404s cleanly.
+  // v23.5 → v23.6 — DSGVO Art. 17 cascade delete. After success the
+  // user has no business being on this page anymore (the project is
+  // gone), so we fire the success toast (it lives in the global
+  // ``ToastProvider`` so it survives the navigation) and bounce
+  // back to ``/app``. Pre-v23.6 we used a ``?geloeschtes-projekt=``
+  // URL parameter to pass the success message across routes — the
+  // toast context makes that hack unnecessary.
   const deleteMutation = useMutation({
     mutationFn: () => deleteProject(id!),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["projects"] });
       queryClient.removeQueries({ queryKey: ["project", id] });
-      navigate(
-        `/app?geloeschtes-projekt=${encodeURIComponent(project?.name ?? "")}`,
-        { replace: true },
+      toast.success(
+        `Projekt „${project?.name ?? ""}" wurde gelöscht.`,
       );
+      navigate("/app", { replace: true });
+    },
+    onError: () => {
+      toast.error("Löschen fehlgeschlagen. Bitte versuchen Sie es erneut.");
     },
   });
 

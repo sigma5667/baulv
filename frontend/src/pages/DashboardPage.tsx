@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Plus,
@@ -11,12 +11,11 @@ import {
   FileText,
   MoreVertical,
   Trash2,
-  Check,
-  X,
 } from "lucide-react";
 import { fetchProjects, createProject, deleteProject } from "../api/projects";
 import type { Project, ProjectCreate } from "../types/project";
 import { DeleteConfirmModal } from "../components/DeleteConfirmModal";
+import { useToast } from "../components/Toast";
 
 const STATUS_LABELS: Record<string, { label: string; color: string }> = {
   draft: { label: "Entwurf", color: "bg-gray-100 text-gray-700" },
@@ -27,15 +26,13 @@ const STATUS_LABELS: Record<string, { label: string; color: string }> = {
 export function DashboardPage() {
   const [showForm, setShowForm] = useState(false);
   const queryClient = useQueryClient();
+  const toast = useToast();
 
   // Project being targeted by the delete confirmation modal. ``null``
   // means no modal open. Lifted to the page level so the modal sits
   // outside the card grid (z-index above hover effects, single
   // instance regardless of which card opened it).
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
-  // Brief toast after a successful action (currently delete; could be
-  // extended to create later). Auto-clears after 3s.
-  const [toast, setToast] = useState<string | null>(null);
 
   const { data: projects = [], isLoading } = useQuery({
     queryKey: ["projects"],
@@ -50,11 +47,12 @@ export function DashboardPage() {
     },
   });
 
-  // v23.5 — DSGVO Art. 17: full-cascade hard delete (project +
-  // every plan + every LV + the entire building tree). Backend
-  // already returns 204 with the cascade configured at the
-  // SQLAlchemy relationship layer; we just refetch the list and
-  // drop a confirmation toast.
+  // v23.5 → v23.6 — DSGVO Art. 17 cascade delete + global toast
+  // feedback. Pre-v23.6 the success message lived in inline page
+  // state with its own auto-clear timer; the global ``useToast``
+  // contract replaces that with a single source of truth that also
+  // survives navigation (so ProjectDetailPage's delete-then-nav
+  // flow lands here with the toast already on screen).
   const deleteMutation = useMutation({
     mutationFn: (projectId: string) => deleteProject(projectId),
     onSuccess: (_data, projectId) => {
@@ -63,37 +61,18 @@ export function DashboardPage() {
       // the deleted project lands on a clean 404 from the API
       // instead of rendering ghost data from the cache.
       queryClient.removeQueries({ queryKey: ["project", projectId] });
-      setToast(
+      toast.success(
         `Projekt „${deleteTarget?.name ?? ""}" wurde gelöscht.`,
       );
       setDeleteTarget(null);
     },
-    // onError leaves the modal open so the user sees the inline
-    // error message and can decide whether to retry or cancel.
+    onError: () => {
+      // Modal stays open so the inline error block shows and the
+      // user can retry. Also fire a toast so a click on the close
+      // (X) doesn't lose the failure signal.
+      toast.error("Löschen fehlgeschlagen. Bitte versuchen Sie es erneut.");
+    },
   });
-
-  // Auto-clear the toast.
-  useEffect(() => {
-    if (toast === null) return;
-    const t = setTimeout(() => setToast(null), 3000);
-    return () => clearTimeout(t);
-  }, [toast]);
-
-  // ProjectDetailPage navigates here with ``?geloeschtes-projekt=<name>``
-  // after a successful delete from there. Read it once on mount, fire
-  // the toast, and immediately strip the param from the URL so a
-  // refresh doesn't re-show the toast.
-  const [searchParams, setSearchParams] = useSearchParams();
-  useEffect(() => {
-    const deleted = searchParams.get("geloeschtes-projekt");
-    if (deleted) {
-      setToast(`Projekt „${deleted}" wurde gelöscht.`);
-      const next = new URLSearchParams(searchParams);
-      next.delete("geloeschtes-projekt");
-      setSearchParams(next, { replace: true });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const statusCounts = {
     draft: projects.filter((p) => p.status === "draft").length,
@@ -242,26 +221,12 @@ export function DashboardPage() {
         />
       )}
 
-      {/* v23.5 — success toast for delete (and future post-mutation
-          confirmations). Bottom-right, dismissible. */}
-      {toast && (
-        <div
-          role="status"
-          aria-live="polite"
-          className="fixed bottom-6 right-6 z-50 flex items-center gap-2 rounded-md border border-green-200 bg-green-50 px-4 py-2.5 text-sm text-green-800 shadow-lg"
-        >
-          <Check className="h-4 w-4" />
-          <span>{toast}</span>
-          <button
-            type="button"
-            onClick={() => setToast(null)}
-            aria-label="Schließen"
-            className="ml-1 text-green-700/70 hover:text-green-900"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-      )}
+      {/* v23.6 — toast moved to global ``ToastProvider``; the
+          dashboard just calls ``toast.success(...)`` from the
+          mutation's onSuccess. ProjectDetailPage's delete flow
+          fires its own toast right before navigating here, so the
+          message survives the route change without the previous
+          ``?geloeschtes-projekt=...`` URL hack. */}
     </div>
   );
 }

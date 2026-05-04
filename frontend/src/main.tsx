@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 import { AuthProvider } from "./hooks/useAuth";
+import { ToastProvider } from "./components/Toast";
 import App from "./App";
 import "./index.css";
 import { installGlobalErrorHandlers } from "./lib/diagnostics";
@@ -26,7 +27,13 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <AuthProvider>
-          <App />
+          {/* v23.6 — global toast viewport. Sits below router so any
+              page can fire toasts via ``useToast()``; survives route
+              changes (project-delete on detail page → navigate to
+              dashboard → toast still visible). */}
+          <ToastProvider>
+            <App />
+          </ToastProvider>
         </AuthProvider>
       </BrowserRouter>
     </QueryClientProvider>
@@ -66,7 +73,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
 // the kill-switch purge and the SW cache eviction fire on the same
 // deploy, so users never end up with a fresh HTML pointing at a SW
 // that's still serving the previous bundle's assets from cache.
-const APP_BUILD_TAG = "baulv-v23.5-2026-05-04-position-edit-projekt-loeschen";
+const APP_BUILD_TAG = "baulv-v23.6-2026-05-04-ux-polishing";
 
 async function purgeStaleCaches() {
   if ("caches" in window) {
