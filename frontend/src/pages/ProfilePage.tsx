@@ -690,6 +690,10 @@ function AuditLogCard() {
         letzten 50 Einträge werden angezeigt — vollständiges Protokoll
         ist Teil Ihres Datenexports.
       </p>
+      <p className="mb-4 text-xs text-muted-foreground italic">
+        Audit-Einträge werden nach 24 Monaten automatisch gelöscht
+        (DSGVO-konform, Art. 5 Abs. 1 lit. e).
+      </p>
 
       {expanded && (
         <>

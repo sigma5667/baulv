@@ -10,6 +10,7 @@ from app.api.chat import router as chat_router
 from app.api.support_chat import router as support_chat_router
 from app.api.auth import router as auth_router
 from app.api.api_keys import router as api_keys_router
+from app.api.admin import router as admin_router
 from app.api.stripe_api import router as stripe_router
 
 api_router = APIRouter()
@@ -32,3 +33,7 @@ api_router.include_router(templates_router, prefix="/templates", tags=["LV-Vorla
 api_router.include_router(chat_router, prefix="/chat", tags=["Chat"])
 # Public, unauthenticated: landing-page support widget.
 api_router.include_router(support_chat_router, tags=["Support Chat"])
+# Admin-only — gated by the ``ADMIN_EMAILS`` allow-list (see
+# app/api/admin.py). Empty allow-list means every endpoint here
+# returns 403, so production stays locked unless explicitly opened.
+api_router.include_router(admin_router)

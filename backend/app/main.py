@@ -1,6 +1,8 @@
+import asyncio
 import os
 import subprocess
 import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from contextlib import asynccontextmanager
@@ -14,6 +16,7 @@ from app.config import settings
 from app.api.router import api_router
 from app.mcp import build_mcp_app
 from app.rate_limit import select_backend_at_boot as _select_rate_limit_backend
+from app.services.audit_cleanup import run_all_cleanups
 
 # Configure root logger once at import time so our ``app.*`` loggers
 # actually emit to stdout under gunicorn/uvicorn on Railway. Without
@@ -113,7 +116,70 @@ async def lifespan(app: FastAPI):
     # "which backend am I on" log line lands at startup time, not on
     # the first MCP request.
     _select_rate_limit_backend()
-    yield
+
+    # DSGVO Art. 5(1)(e) — daily background cleanup of stale audit
+    # logs. Fires once per day at 03:00 UTC; failures log + retry
+    # next day rather than crashing the loop. See
+    # ``app/services/audit_cleanup.py``.
+    cleanup_task = asyncio.create_task(_audit_cleanup_loop())
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            # Expected on shutdown — clean exit.
+            pass
+
+
+async def _audit_cleanup_loop() -> None:
+    """Run ``run_all_cleanups`` once a day at 03:00 UTC.
+
+    Implementation choices:
+
+    * Sleep until 03:00 UTC, run cleanup, sleep ~24 h to the next.
+      Container restarts that fall across the scheduled hour mean
+      we'll skip one day — acceptable for a 24-month retention
+      window where one missed run shifts the deletion-cliff by 24h.
+    * Catch every exception inside the loop body and keep going.
+      The cleanup is *support* infrastructure; an internal failure
+      must never crash the API process. We log via
+      ``logger.exception`` so the stack trace lands in Railway.
+    * On ``CancelledError`` (lifespan shutdown), propagate so the
+      task exits cleanly. Any other exception bumps a retry sleep
+      of one hour before the next attempt.
+    """
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            next_run = now.replace(
+                hour=3, minute=0, second=0, microsecond=0
+            )
+            if next_run <= now:
+                next_run += timedelta(days=1)
+            seconds_until = (next_run - now).total_seconds()
+            logger.info(
+                "dsgvo.cleanup.scheduled next_run_utc=%s seconds_until=%d",
+                next_run.isoformat(), int(seconds_until),
+            )
+            await asyncio.sleep(seconds_until)
+
+            await run_all_cleanups()
+        except asyncio.CancelledError:
+            # Lifespan shutdown — exit immediately, surface to caller.
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "dsgvo.cleanup.iteration_failed: %s — retrying in 1 h",
+                exc,
+            )
+            # Don't tight-loop on a persistent failure (e.g. DB down);
+            # back off an hour, then re-evaluate against the schedule.
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                raise
 
 
 def create_app() -> FastAPI:

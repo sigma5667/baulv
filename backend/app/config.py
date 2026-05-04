@@ -65,6 +65,27 @@ class Settings(BaseSettings):
     # boot. See ``app.rate_limit`` for details.
     redis_url: str | None = None
 
+    # Comma-separated allow-list of email addresses that may invoke
+    # ``/api/admin/*`` endpoints (e.g. the v23.3 manual cleanup
+    # trigger). When empty (the default), every admin endpoint
+    # returns 403 — production stays locked unless an operator
+    # explicitly sets ``ADMIN_EMAILS=tobi@baulv.at`` (or several
+    # comma-separated). The check is plain string-equality against
+    # ``user.email`` after normal JWT auth, so the audit trail keeps
+    # the regular login event for accountability.
+    admin_emails: str = ""
+
+    @property
+    def admin_email_list(self) -> set[str]:
+        """Normalised allow-list — lower-cased, whitespace-trimmed,
+        empties dropped. Memoised by the implicit settings-singleton
+        lifecycle (Settings is built once at boot)."""
+        return {
+            e.strip().lower()
+            for e in self.admin_emails.split(",")
+            if e.strip()
+        }
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
     def model_post_init(self, __context) -> None:
