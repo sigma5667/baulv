@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -18,6 +18,9 @@ import {
   Ruler,
   LibraryBig,
   BookmarkPlus,
+  Pencil,
+  Lock,
+  Unlock,
 } from "lucide-react";
 import {
   fetchProjectLVs,
@@ -27,6 +30,7 @@ import {
   generateTexts,
   exportLV,
   syncWallAreas,
+  updatePosition,
 } from "../api/lv";
 import {
   fetchTemplates,
@@ -541,7 +545,11 @@ export function LVEditorPage() {
                 {activeLV.gruppen
                   .sort((a, b) => a.sort_order - b.sort_order)
                   .map((gruppe) => (
-                    <LeistungsgruppeView key={gruppe.id} gruppe={gruppe} />
+                    <LeistungsgruppeView
+                      key={gruppe.id}
+                      gruppe={gruppe}
+                      lvId={activeLV.id}
+                    />
                   ))}
               </div>
             )}
@@ -890,7 +898,13 @@ function SaveAsTemplateModal({
 }
 
 
-function LeistungsgruppeView({ gruppe }: { gruppe: Leistungsgruppe }) {
+function LeistungsgruppeView({
+  gruppe,
+  lvId,
+}: {
+  gruppe: Leistungsgruppe;
+  lvId: string;
+}) {
   return (
     <div className="rounded-lg border">
       <div className="bg-muted/30 px-4 py-2.5">
@@ -902,23 +916,218 @@ function LeistungsgruppeView({ gruppe }: { gruppe: Leistungsgruppe }) {
         {gruppe.positionen
           .sort((a, b) => a.sort_order - b.sort_order)
           .map((position) => (
-            <PositionRow key={position.id} position={position} />
+            <PositionRow key={position.id} position={position} lvId={lvId} />
           ))}
       </div>
     </div>
   );
 }
 
-function PositionRow({ position }: { position: Position }) {
+// ---------------------------------------------------------------------------
+// German number formatting helpers (v23.5 inline-edit)
+// ---------------------------------------------------------------------------
+//
+// AT-locale convention: comma is the decimal separator, dot is the
+// thousands separator. We accept either separator on parse to be
+// forgiving (a user typing "12.500,00" or "12500,00" or even
+// "12500.00" all mean the same number). On display we always emit
+// the comma form so the UI is uniformly German.
+
+function formatGermanNumber(
+  value: number | null | undefined,
+  fractionDigits: number,
+): string {
+  if (value === null || value === undefined) return "";
+  return value.toFixed(fractionDigits).replace(".", ",");
+}
+
+function parseGermanNumber(input: string): number | null {
+  // Drop thousands-separators (we treat dots as such when a comma is
+  // present, otherwise as the decimal point). Also strip whitespace
+  // and anything currency-shaped a user might paste in.
+  const cleaned = input.trim().replace(/\s+/g, "").replace(/€/g, "");
+  if (cleaned === "") return null;
+  let normalised: string;
+  if (cleaned.includes(",")) {
+    // German shape: dots are thousands sep, comma is decimal.
+    normalised = cleaned.replace(/\./g, "").replace(",", ".");
+  } else {
+    // No comma — accept the dot as a decimal point.
+    normalised = cleaned;
+  }
+  const n = Number(normalised);
+  if (!Number.isFinite(n)) return null;
+  return n;
+}
+
+function PositionRow({
+  position,
+  lvId,
+}: {
+  position: Position;
+  lvId: string;
+}) {
+  const queryClient = useQueryClient();
   const [expanded, setExpanded] = useState(false);
+  const [editing, setEditing] = useState(false);
+  // Draft text in the inputs while editing. Stored as string so the
+  // user can type a partial number ("1," "1,2") without it being
+  // re-rendered as the parsed float on every keystroke.
+  const [draftMenge, setDraftMenge] = useState(
+    formatGermanNumber(position.menge, 3),
+  );
+  const [draftEP, setDraftEP] = useState(
+    formatGermanNumber(position.einheitspreis, 2),
+  );
+  const [editError, setEditError] = useState<string | null>(null);
+  // Brief green check after a successful save. Cleared on next edit.
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  // Re-sync drafts to the canonical position values when an external
+  // mutation refreshes the row (e.g. after "Berechnen" or "AI-Texte"
+  // ran). We only resync while NOT editing, so an in-flight user
+  // edit isn't clobbered if the LV refetches at an awkward moment.
+  useEffect(() => {
+    if (!editing) {
+      setDraftMenge(formatGermanNumber(position.menge, 3));
+      setDraftEP(formatGermanNumber(position.einheitspreis, 2));
+    }
+  }, [position.menge, position.einheitspreis, editing]);
+
+  const updateMutation = useMutation({
+    mutationFn: (updates: {
+      menge?: number;
+      einheitspreis?: number;
+      is_locked?: boolean;
+    }) => updatePosition(position.id, updates),
+    onSuccess: () => {
+      // Refetch the LV so the row's menge / gesamtpreis come from
+      // the server (no client-side drift, no stale display).
+      queryClient.invalidateQueries({ queryKey: ["lv", lvId] });
+      setEditing(false);
+      setEditError(null);
+      setSavedAt(Date.now());
+    },
+    onError: (err) => {
+      // Surface the backend's German message verbatim — it already
+      // says "Position ist gesperrt — bitte zuerst…" in the lock
+      // case, which is exactly what we want to show.
+      setEditError(getErrorMessage(err));
+    },
+  });
+
+  // Auto-clear the green-check after 2s. Effect runs only when
+  // ``savedAt`` flips to a new timestamp.
+  useEffect(() => {
+    if (savedAt === null) return;
+    const t = setTimeout(() => setSavedAt(null), 2000);
+    return () => clearTimeout(t);
+  }, [savedAt]);
+
+  const startEdit = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (position.is_locked) return;
+    setDraftMenge(formatGermanNumber(position.menge, 3));
+    setDraftEP(formatGermanNumber(position.einheitspreis, 2));
+    setEditError(null);
+    setEditing(true);
+  };
+
+  const cancelEdit = (e?: React.SyntheticEvent) => {
+    e?.stopPropagation?.();
+    setEditing(false);
+    setEditError(null);
+    setDraftMenge(formatGermanNumber(position.menge, 3));
+    setDraftEP(formatGermanNumber(position.einheitspreis, 2));
+  };
+
+  const saveEdit = (e?: React.SyntheticEvent) => {
+    e?.preventDefault?.();
+    e?.stopPropagation?.();
+    const menge = parseGermanNumber(draftMenge);
+    const ep = parseGermanNumber(draftEP);
+    if (menge === null) {
+      setEditError("Menge ist keine gültige Zahl.");
+      return;
+    }
+    if (ep === null) {
+      setEditError("Einheitspreis ist keine gültige Zahl.");
+      return;
+    }
+    if (menge < 0 || ep < 0) {
+      setEditError("Menge und Einheitspreis dürfen nicht negativ sein.");
+      return;
+    }
+    // Only send fields that actually changed — keeps the audit
+    // trail (eventually) less noisy and avoids spurious
+    // ``text_source = "manual"`` flips for unrelated edits.
+    const updates: { menge?: number; einheitspreis?: number } = {};
+    if (menge !== position.menge) updates.menge = menge;
+    if (ep !== position.einheitspreis) updates.einheitspreis = ep;
+    if (Object.keys(updates).length === 0) {
+      // Nothing to save — just exit edit mode without a request.
+      setEditing(false);
+      setEditError(null);
+      return;
+    }
+    updateMutation.mutate(updates);
+  };
+
+  const toggleLock = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditError(null);
+    updateMutation.mutate({ is_locked: !position.is_locked });
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      saveEdit();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      cancelEdit();
+    }
+  };
+
+  // Live GP preview while editing. We re-parse on every render so
+  // the displayed value tracks whatever the user is mid-typing.
+  const draftMengeNum = parseGermanNumber(draftMenge);
+  const draftEPNum = parseGermanNumber(draftEP);
+  const previewGP =
+    draftMengeNum !== null && draftEPNum !== null
+      ? draftMengeNum * draftEPNum
+      : null;
+
+  // Persisted GP (from server). The model exposes ``gesamtpreis`` as
+  // ``menge * einheitspreis`` server-side; client-side fallback is
+  // identical so the row renders consistently whichever the API
+  // happens to send.
+  const persistedGP =
+    position.menge !== null && position.einheitspreis !== null
+      ? position.menge * position.einheitspreis
+      : null;
 
   return (
-    <div>
+    <div
+      className={`group ${
+        position.is_locked ? "bg-amber-50/30" : ""
+      }`}
+    >
       <div
-        className="flex cursor-pointer items-center gap-3 px-4 py-3 hover:bg-muted/20"
-        onClick={() => setExpanded(!expanded)}
+        className={`flex items-center gap-3 px-4 py-3 ${
+          editing ? "bg-blue-50/40" : "cursor-pointer hover:bg-muted/20"
+        }`}
+        onClick={editing ? undefined : () => setExpanded(!expanded)}
       >
-        <button className="shrink-0">
+        <button
+          type="button"
+          className="shrink-0"
+          onClick={(e) => {
+            e.stopPropagation();
+            setExpanded(!expanded);
+          }}
+          aria-label={expanded ? "Details verbergen" : "Details anzeigen"}
+        >
           {expanded ? (
             <ChevronDown className="h-4 w-4 text-muted-foreground" />
           ) : (
@@ -929,19 +1138,168 @@ function PositionRow({ position }: { position: Position }) {
           {position.positions_nummer}
         </span>
         <span className="flex-1 text-sm">{position.kurztext}</span>
-        <span className="w-20 shrink-0 text-right font-mono text-sm">
-          {position.menge?.toFixed(3)}
-        </span>
+
+        {/* Menge — input in edit mode, span otherwise */}
+        {editing ? (
+          <input
+            type="text"
+            inputMode="decimal"
+            aria-label="Menge"
+            value={draftMenge}
+            onChange={(e) => setDraftMenge(e.target.value)}
+            onKeyDown={handleKeyDown}
+            onClick={(e) => e.stopPropagation()}
+            disabled={updateMutation.isPending}
+            className="w-24 shrink-0 rounded border px-2 py-1 text-right font-mono text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+            autoFocus
+          />
+        ) : (
+          <span className="w-20 shrink-0 text-right font-mono text-sm">
+            {formatGermanNumber(position.menge, 3)}
+          </span>
+        )}
+
         <span className="w-10 shrink-0 text-center text-xs text-muted-foreground">
           {position.einheit}
         </span>
-        <span className="w-20 shrink-0 text-right font-mono text-sm text-muted-foreground">
-          {position.einheitspreis ? `€ ${position.einheitspreis.toFixed(2)}` : "—"}
+
+        {/* Einheitspreis — input in edit mode */}
+        {editing ? (
+          <div className="flex w-28 shrink-0 items-center gap-1">
+            <span className="text-sm text-muted-foreground">€</span>
+            <input
+              type="text"
+              inputMode="decimal"
+              aria-label="Einheitspreis"
+              value={draftEP}
+              onChange={(e) => setDraftEP(e.target.value)}
+              onKeyDown={handleKeyDown}
+              onClick={(e) => e.stopPropagation()}
+              disabled={updateMutation.isPending}
+              className="w-full rounded border px-2 py-1 text-right font-mono text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+          </div>
+        ) : (
+          <span className="w-20 shrink-0 text-right font-mono text-sm text-muted-foreground">
+            {position.einheitspreis !== null
+              ? `€ ${formatGermanNumber(position.einheitspreis, 2)}`
+              : "—"}
+          </span>
+        )}
+
+        {/* Gesamtpreis — read-only, derived. Live-preview while editing. */}
+        <span
+          className={`w-24 shrink-0 text-right font-mono text-sm font-medium ${
+            editing ? "text-primary" : ""
+          }`}
+        >
+          {editing
+            ? previewGP !== null
+              ? `€ ${formatGermanNumber(previewGP, 2)}`
+              : "—"
+            : persistedGP !== null
+            ? `€ ${formatGermanNumber(persistedGP, 2)}`
+            : "—"}
         </span>
-        <span className="w-24 shrink-0 text-right font-mono text-sm font-medium">
-          {position.gesamtpreis ? `€ ${position.gesamtpreis.toFixed(2)}` : "—"}
-        </span>
+
+        {/* Action cluster — Lock toggle + Edit / Save / Cancel */}
+        <div className="flex shrink-0 items-center gap-1">
+          {/* Lock toggle. Always visible so the user can lock or
+              unlock without entering edit mode. */}
+          <button
+            type="button"
+            onClick={toggleLock}
+            disabled={updateMutation.isPending}
+            aria-label={
+              position.is_locked
+                ? "Position entsperren"
+                : "Position sperren"
+            }
+            title={
+              position.is_locked
+                ? "Position ist gesperrt — Klick zum Entsperren"
+                : "Position sperren (schützt vor Massen-Updates)"
+            }
+            className={`rounded p-1 hover:bg-muted ${
+              position.is_locked
+                ? "text-amber-600"
+                : "text-muted-foreground opacity-0 group-hover:opacity-100"
+            } disabled:opacity-50`}
+          >
+            {position.is_locked ? (
+              <Lock className="h-4 w-4" />
+            ) : (
+              <Unlock className="h-4 w-4" />
+            )}
+          </button>
+
+          {editing ? (
+            <>
+              <button
+                type="button"
+                onClick={saveEdit}
+                disabled={updateMutation.isPending}
+                aria-label="Änderungen speichern"
+                title="Speichern (Enter)"
+                className="rounded p-1 text-primary hover:bg-primary/10 disabled:opacity-50"
+              >
+                {updateMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Check className="h-4 w-4" />
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={cancelEdit}
+                disabled={updateMutation.isPending}
+                aria-label="Bearbeitung abbrechen"
+                title="Abbrechen (Escape)"
+                className="rounded p-1 text-muted-foreground hover:bg-muted disabled:opacity-50"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={startEdit}
+              disabled={position.is_locked || updateMutation.isPending}
+              aria-label="Position bearbeiten"
+              title={
+                position.is_locked
+                  ? "Position gesperrt — bitte erst entsperren"
+                  : "Menge & Einheitspreis bearbeiten"
+              }
+              className="rounded p-1 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:bg-muted disabled:cursor-not-allowed disabled:opacity-30"
+            >
+              <Pencil className="h-4 w-4" />
+            </button>
+          )}
+
+          {/* Brief green check after save. Doesn't take a slot when
+              absent, so the layout doesn't jump. */}
+          {savedAt !== null && !editing && (
+            <span
+              className="ml-1 text-green-600"
+              role="status"
+              aria-live="polite"
+              title="Gespeichert"
+            >
+              <Check className="h-4 w-4" />
+            </span>
+          )}
+        </div>
       </div>
+
+      {/* Per-row edit error. Only shown while the row is in edit
+          mode (or just after a save attempt failed). */}
+      {editError && (
+        <div className="bg-red-50 px-12 py-2 text-xs text-red-700">
+          <AlertTriangle className="mr-1 inline h-3 w-3" />
+          {editError}
+        </div>
+      )}
 
       {/* Langtext */}
       {expanded && position.langtext && (
@@ -978,7 +1336,7 @@ function PositionRow({ position }: { position: Position }) {
                   Summe:
                 </td>
                 <td className="py-1 text-right font-mono">
-                  {position.menge?.toFixed(3)} {position.einheit}
+                  {formatGermanNumber(position.menge, 3)} {position.einheit}
                 </td>
               </tr>
             </tfoot>

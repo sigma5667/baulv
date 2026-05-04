@@ -1,18 +1,47 @@
-import { useParams, Link } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { FileText, Map, Calculator, ArrowLeft } from "lucide-react";
-import { fetchProject } from "../api/projects";
+import { useState } from "react";
+import { useParams, Link, useNavigate } from "react-router-dom";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  FileText,
+  Map,
+  Calculator,
+  ArrowLeft,
+  Trash2,
+} from "lucide-react";
+import { fetchProject, deleteProject } from "../api/projects";
 import { fetchPlans } from "../api/plans";
 import { fetchProjectRooms } from "../api/rooms";
 import { fetchProjectLVs } from "../api/lv";
+import { DeleteConfirmModal } from "../components/DeleteConfirmModal";
 
 export function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
 
   const { data: project, isLoading } = useQuery({
     queryKey: ["project", id],
     queryFn: () => fetchProject(id!),
     enabled: !!id,
+  });
+
+  // v23.5 — DSGVO Art. 17 cascade delete from the detail page. After
+  // success the user has no business being on this page anymore (the
+  // project is gone), so we navigate back to the dashboard with a
+  // ``?deleted=...`` flag that the dashboard reads to render a
+  // confirmation toast on the next render. The query cache for this
+  // project is also dropped so a back-button into it 404s cleanly.
+  const deleteMutation = useMutation({
+    mutationFn: () => deleteProject(id!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      queryClient.removeQueries({ queryKey: ["project", id] });
+      navigate(
+        `/app?geloeschtes-projekt=${encodeURIComponent(project?.name ?? "")}`,
+        { replace: true },
+      );
+    },
   });
 
   const { data: plans = [] } = useQuery({
@@ -53,14 +82,55 @@ export function ProjectDetailPage() {
       </Link>
 
       {/* Project header */}
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold">{project.name}</h1>
-        <div className="mt-1 flex flex-wrap gap-4 text-sm text-muted-foreground">
-          {project.address && <span>{project.address}</span>}
-          {project.client_name && <span>Bauwerber: {project.client_name}</span>}
-          {project.project_number && <span>Nr. {project.project_number}</span>}
+      <div className="mb-8 flex items-start justify-between gap-4">
+        <div className="flex-1">
+          <h1 className="text-2xl font-bold">{project.name}</h1>
+          <div className="mt-1 flex flex-wrap gap-4 text-sm text-muted-foreground">
+            {project.address && <span>{project.address}</span>}
+            {project.client_name && (
+              <span>Bauwerber: {project.client_name}</span>
+            )}
+            {project.project_number && <span>Nr. {project.project_number}</span>}
+          </div>
         </div>
+        {/* v23.5 — destructive action in the header. Visually
+            differentiated (red, outlined → solid on hover) so a
+            casual click is unlikely; the modal then enforces the
+            type-the-name confirmation. */}
+        <button
+          type="button"
+          onClick={() => setShowDeleteModal(true)}
+          className="flex shrink-0 items-center gap-1.5 rounded-md border border-red-200 px-3 py-1.5 text-sm font-medium text-red-600 hover:border-red-600 hover:bg-red-600 hover:text-white"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+          Projekt löschen
+        </button>
       </div>
+
+      {showDeleteModal && (
+        <DeleteConfirmModal
+          entityLabel="Projekt"
+          entityName={project.name}
+          cascadeItems={[
+            "Alle Leistungsverzeichnisse (LVs)",
+            "Alle hochgeladenen Pläne",
+            "Die gesamte Gebäudestruktur (Räume, Stockwerke, Einheiten)",
+          ]}
+          onCancel={() => {
+            if (!deleteMutation.isPending) {
+              setShowDeleteModal(false);
+              deleteMutation.reset();
+            }
+          }}
+          onConfirm={() => deleteMutation.mutate()}
+          isLoading={deleteMutation.isPending}
+          errorMessage={
+            deleteMutation.isError
+              ? "Löschen fehlgeschlagen. Bitte versuchen Sie es erneut."
+              : null
+          }
+        />
+      )}
 
       {/* Action cards */}
       <div className="grid gap-4 md:grid-cols-3">

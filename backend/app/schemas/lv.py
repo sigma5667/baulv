@@ -17,8 +17,20 @@ class LVUpdate(BaseModel):
 
 
 class PositionUpdate(BaseModel):
+    """Partial update payload for a single position.
+
+    All fields optional → caller PATCH-style sends only what changed.
+    ``menge`` is exposed for the v23.5 inline-edit flow so reviewers
+    can override calculated quantities without re-running the engine
+    (e.g. when the AI math is right but the room input was wrong and
+    re-running would be slower than typing the corrected value).
+    Locked positions reject every field — that gate lives at the
+    endpoint layer so all writes go through one check, not five.
+    """
+
     kurztext: str | None = None
     langtext: str | None = None
+    menge: float | None = None
     einheitspreis: float | None = None
     is_locked: bool | None = None
 

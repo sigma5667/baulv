@@ -637,6 +637,26 @@ async def update_position(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """Partially update a single position (v23.5 inline-edit surface).
+
+    Lock semantics
+    --------------
+
+    A position with ``is_locked=True`` rejects every field *except*
+    ``is_locked`` itself. That guarantees:
+
+    * ``calculate_lv`` and ``sync_wall_areas`` can mass-update without
+      blowing away a reviewer's manual override (those flows already
+      check the lock — this endpoint enforces the same rule for the
+      direct-edit path).
+    * The user can always *unlock* via this endpoint, since toggling
+      the lock flag itself is the one thing locked rows allow.
+
+    The check rejects the *whole request* with a 409 rather than
+    silently dropping the protected fields — surfacing a confusing
+    "we kept some of your changes" state to the user is worse than
+    a clear "the position is locked, unlock first" error.
+    """
     stmt = (
         select(Position)
         .where(Position.id == position_id)
@@ -653,7 +673,21 @@ async def update_position(
         raise HTTPException(404, "Leistungsgruppe nicht gefunden")
     await verify_lv_owner(gruppe.lv_id, user, db)
 
-    for key, value in data.model_dump(exclude_unset=True).items():
+    incoming = data.model_dump(exclude_unset=True)
+
+    # Lock gate. Allow the lock flag itself through (so the user can
+    # unlock); reject every other field with 409. We check the
+    # *current* lock state — if the request both unlocks AND edits in
+    # the same payload, that's still rejected, because the row is
+    # locked at the moment of the write. Two-step: unlock, then edit.
+    if position.is_locked and (set(incoming.keys()) - {"is_locked"}):
+        raise HTTPException(
+            409,
+            "Position ist gesperrt — bitte zuerst die Sperre aufheben, "
+            "bevor Menge oder Einheitspreis geändert werden.",
+        )
+
+    for key, value in incoming.items():
         setattr(position, key, value)
     if data.kurztext or data.langtext:
         position.text_source = "manual"

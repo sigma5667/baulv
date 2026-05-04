@@ -55,9 +55,29 @@ export const syncWallAreas = async (lvId: string): Promise<WallAreaSyncResult> =
   return data;
 };
 
+/**
+ * Partial-update a single LV position.
+ *
+ * v23.5 added ``menge`` to the accepted fields so the inline-edit
+ * surface in ``LVEditorPage`` can override calculated quantities.
+ * The backend gates locked positions: a row with ``is_locked=true``
+ * rejects every field except the lock flag itself with a 409 — the
+ * caller is expected to surface that as "Position gesperrt — bitte
+ * erst entsperren" rather than silently dropping the change.
+ *
+ * Returns the updated position so callers can update React Query
+ * cache directly (avoid the round-trip refetch when an explicit
+ * write succeeded).
+ */
 export const updatePosition = async (
   positionId: string,
-  updates: { kurztext?: string; langtext?: string; einheitspreis?: number; is_locked?: boolean }
+  updates: {
+    kurztext?: string;
+    langtext?: string;
+    menge?: number;
+    einheitspreis?: number;
+    is_locked?: boolean;
+  }
 ): Promise<void> => {
   await api.put(`/lv/positionen/${positionId}`, updates);
 };
