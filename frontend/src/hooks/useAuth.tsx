@@ -104,6 +104,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       accepted_privacy_version: string;
       accepted_terms_version: string;
       marketing_optin: boolean;
+      analytics_consent?: boolean;
+      industry_segment?: IndustrySegment | null;
     }) => {
       const res = await registerUser(data);
       setAuth(res.access_token, res.user);
@@ -116,6 +118,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       accepted_privacy_version: string;
       accepted_terms_version: string;
       marketing_optin: boolean;
+      analytics_consent: boolean;
+      industry_segment?: IndustrySegment | null;
     }) => {
       const updated = await apiRefreshConsent(data);
       setUser(updated);
