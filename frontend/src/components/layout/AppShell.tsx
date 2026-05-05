@@ -11,6 +11,8 @@ import {
   MessageSquare,
   LibraryBig,
   KeyRound,
+  ShieldCheck,
+  BarChart3,
 } from "lucide-react";
 import { useAuth } from "../../hooks/useAuth";
 import { BetaUnlockBanner } from "../BetaUnlockBanner";
@@ -118,6 +120,37 @@ export function AppShell({ children }: { children: ReactNode }) {
             <KeyRound className="h-4 w-4 shrink-0" />
             {sidebarOpen && <span>API-Keys</span>}
           </Link>
+          {/* v23.8 — privacy settings entry. Always visible: every
+              user has DSGVO rights regardless of analytics opt-in. */}
+          <Link
+            to="/app/settings/datenschutz"
+            className={`flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+              location.pathname === "/app/settings/datenschutz"
+                ? "bg-primary/10 text-primary"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground"
+            }`}
+          >
+            <ShieldCheck className="h-4 w-4 shrink-0" />
+            {sidebarOpen && <span>Datenschutz</span>}
+          </Link>
+          {/* v23.8 — admin-only analytics dashboard. Conditionally
+              rendered based on the persistent ``user.is_admin`` flag.
+              Backend also gates the underlying endpoint with a 403
+              so a fudged frontend can't bypass; this just keeps the
+              nav clean for non-admins. */}
+          {user?.is_admin && (
+            <Link
+              to="/app/admin/analytics"
+              className={`flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                location.pathname === "/app/admin/analytics"
+                  ? "bg-primary/10 text-primary"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground"
+              }`}
+            >
+              <BarChart3 className="h-4 w-4 shrink-0" />
+              {sidebarOpen && <span>Admin-Analytics</span>}
+            </Link>
+          )}
           <Link
             to="/app/subscription"
             className={`flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors ${

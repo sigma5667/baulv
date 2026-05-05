@@ -10,6 +10,8 @@ from app.db.models.user import User
 from app.schemas.project import ProjectCreate, ProjectUpdate, ProjectResponse
 from app.auth import get_current_user
 from app.subscriptions import check_project_limit
+from app.services import analytics as analytics_service
+from app.db.models.analytics import EVENT_PROJECT_CREATED
 
 router = APIRouter()
 
@@ -50,6 +52,21 @@ async def create_project(
     project = Project(user_id=user.id, **data.model_dump())
     db.add(project)
     await db.flush()
+
+    # v23.8 — analytics signal for project_created. Gated by the
+    # service layer on ``user.analytics_consent``; a no-op when
+    # the user opted out. The region is derived from the project
+    # address at the Bundesland level (the helper returns ``None``
+    # for unparseable addresses, which the schema accepts).
+    region = analytics_service.derive_region_code(project.address)
+    await analytics_service.record_event(
+        db,
+        event_type=EVENT_PROJECT_CREATED,
+        user=user,
+        event_data={"has_plans": False},
+        region_code=region,
+    )
+
     return project
 
 

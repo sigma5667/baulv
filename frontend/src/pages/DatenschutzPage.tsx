@@ -265,9 +265,95 @@ export function DatenschutzPage() {
             </p>
           </div>
 
+          {/* v23.8 — section added in privacy-policy v1.1 alongside
+              the optional analytics opt-in. Reads directly to the
+              user's right to withdraw, the pseudonymisation
+              guarantees and the data-export endpoint. */}
+          <div>
+            <h2 className="mb-2 text-lg font-semibold">
+              Anonymisierte Nutzungsdaten (optional, v1.1)
+            </h2>
+            <p>
+              Mit Ihrer ausdrücklichen Einwilligung gemäß Art. 6 Abs. 1
+              lit. a DSGVO speichern wir anonymisierte Nutzungs-
+              Ereignisse (z.B. „Projekt erstellt", „Vorlage benutzt",
+              „Position bearbeitet") zur Produkt-Verbesserung und für
+              aggregierte Branchen-Statistiken. Diese Datenerhebung
+              ist <strong>optional</strong> und jederzeit über Ihre{" "}
+              <Link
+                to="/app/settings/datenschutz"
+                className="font-medium text-primary hover:underline"
+              >
+                Datenschutz-Einstellungen
+              </Link>{" "}
+              widerrufbar.
+            </p>
+
+            <h3 className="mt-3 font-medium">Was wir speichern</h3>
+            <ul className="mt-1 list-inside list-disc space-y-1">
+              <li>Ereignis-Typ (z.B. „project_created")</li>
+              <li>Anzahl-Werte (z.B. „12 Positionen erstellt")</li>
+              <li>Preisbereiche (gerundete Buckets, z.B. „8-15 €/m²")</li>
+              <li>System-Vorlagen-IDs (keine eigenen Vorlagen-Namen)</li>
+              <li>Zeitstempel</li>
+              <li>Region auf Bundesland-Ebene (z.B. „AT-5" für Salzburg)</li>
+              <li>Selbst gewählte Branche</li>
+            </ul>
+
+            <h3 className="mt-3 font-medium">Was wir NIEMALS speichern</h3>
+            <ul className="mt-1 list-inside list-disc space-y-1">
+              <li>Ihre user_id im Klartext</li>
+              <li>E-Mail-Adressen, Namen, Telefonnummern</li>
+              <li>Konkrete Adressen oder Projektnamen</li>
+              <li>Datei-Anhänge oder deren Namen</li>
+              <li>Klartext-Preise oder identifizierbare Mengen</li>
+            </ul>
+
+            <h3 className="mt-3 font-medium">Pseudonymisierung</h3>
+            <p>
+              Ihr User-Identifier wird mit einem nur uns bekannten
+              Server-Salt zu einem nicht reversiblen SHA-256-Hash
+              umgewandelt, bevor ein Datensatz geschrieben wird. Damit
+              gilt diese Verarbeitung als Pseudonymisierung im Sinne
+              von Art. 4 Nr. 5 DSGVO. Ohne den Salt sind die
+              gespeicherten Datensätze keinem Konto mehr zuordenbar
+              und stellen statistische, keine personenbezogenen Daten
+              dar.
+            </p>
+
+            <h3 className="mt-3 font-medium">Speicherdauer</h3>
+            <p>
+              Die anonymisierten Datensätze bleiben zeitlich
+              unbegrenzt erhalten — sie sind nach der
+              Pseudonymisierung keine personenbezogenen Daten mehr.
+              Die Tabelle wird bei einer DSGVO Art. 17 Löschung Ihres
+              Kontos nicht mit-bereinigt; eine erneute Zuordnung zu
+              Ihnen ist nach Konto-Löschung ohnehin technisch nicht
+              mehr möglich.
+            </p>
+
+            <h3 className="mt-3 font-medium">Auskunftsrecht</h3>
+            <p>
+              Unter{" "}
+              <Link
+                to="/app/settings/datenschutz"
+                className="font-medium text-primary hover:underline"
+              >
+                Datenschutz-Einstellungen
+              </Link>{" "}
+              können Sie jederzeit alle pseudonymisierten Datensätze
+              einsehen, die zu Ihrem Profil-Hash gespeichert sind
+              (DSGVO Art. 20 — Recht auf Datenübertragbarkeit).
+            </p>
+          </div>
+
           <div>
             <h2 className="mb-2 text-lg font-semibold">Stand</h2>
-            <p>Diese Datenschutzerklärung ist gültig ab April 2026.</p>
+            <p>
+              Version 1.1 — gültig ab 5. Mai 2026. Geändert gegenüber
+              v1.0 (April 2026): Sektion „Anonymisierte Nutzungsdaten"
+              ergänzt.
+            </p>
           </div>
         </section>
       </main>

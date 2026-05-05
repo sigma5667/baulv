@@ -2,7 +2,12 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertCircle, Loader2 } from "lucide-react";
 import { useAuth } from "../../hooks/useAuth";
-import { needsConsentRefresh, type User } from "../../types/user";
+import {
+  INDUSTRY_LABELS,
+  needsConsentRefresh,
+  type IndustrySegment,
+  type User,
+} from "../../types/user";
 
 /**
  * Modal that fires when an authenticated user's accepted legal-document
@@ -34,6 +39,15 @@ export function ConsentRefreshModal({ user }: { user: User }) {
   const [marketingOptin, setMarketingOptin] = useState(
     user.marketing_email_opt_in,
   );
+  // v23.8 — pre-fill from the user's current state so a user
+  // who already opted in (e.g. on registration) doesn't have to
+  // re-tick the box on every privacy-policy bump.
+  const [analyticsConsent, setAnalyticsConsent] = useState(
+    user.analytics_consent,
+  );
+  const [industrySegment, setIndustrySegment] = useState<
+    IndustrySegment | ""
+  >(user.industry_segment ?? "");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -61,6 +75,12 @@ export function ConsentRefreshModal({ user }: { user: User }) {
         accepted_privacy_version: user.required_privacy_version,
         accepted_terms_version: user.required_terms_version,
         marketing_optin: marketingOptin,
+        // v23.8 — analytics state can change as part of the
+        // refresh. Industry stays NULL when the user didn't
+        // pick one OR analytics is off.
+        analytics_consent: analyticsConsent,
+        industry_segment:
+          analyticsConsent && industrySegment ? industrySegment : null,
       });
       // On success the auth context updates the user in-place and
       // ``needsConsentRefresh`` flips to false, so the modal
@@ -173,6 +193,58 @@ export function ConsentRefreshModal({ user }: { user: User }) {
                 erhalten. <span className="text-xs">(optional)</span>
               </span>
             </label>
+
+            {/* v23.8 — anonymised-analytics opt-in. Pre-filled from
+                the user's existing state so re-acceptance doesn't
+                lose the previous choice. */}
+            <label className="flex cursor-pointer items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={analyticsConsent}
+                onChange={(e) => {
+                  setAnalyticsConsent(e.target.checked);
+                  if (!e.target.checked) setIndustrySegment("");
+                }}
+                className="mt-0.5 h-4 w-4 shrink-0 rounded border-muted-foreground/40 text-primary focus:ring-primary"
+              />
+              <span className="text-muted-foreground">
+                Anonymisierte Nutzungsdaten zur Produkt-Verbesserung.{" "}
+                <span className="text-xs">
+                  (optional, jederzeit widerrufbar)
+                </span>
+              </span>
+            </label>
+            {analyticsConsent && (
+              <div className="ml-6">
+                <label className="block text-xs text-muted-foreground">
+                  Branche{" "}
+                  <span className="text-muted-foreground/60">
+                    (optional)
+                  </span>
+                </label>
+                <select
+                  value={industrySegment}
+                  onChange={(e) =>
+                    setIndustrySegment(
+                      e.target.value as IndustrySegment | "",
+                    )
+                  }
+                  className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                >
+                  <option value="">— bitte wählen —</option>
+                  {(
+                    Object.entries(INDUSTRY_LABELS) as [
+                      IndustrySegment,
+                      string,
+                    ][]
+                  ).map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
 
           <button

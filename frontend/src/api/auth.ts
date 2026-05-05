@@ -5,6 +5,9 @@ import type {
   FeatureMatrix,
   UserSessionSummary,
   AuditLogEntry,
+  AdminAnalyticsDashboard,
+  IndustrySegment,
+  UserAnalyticsEvent,
 } from "../types/user";
 
 export async function registerUser(data: {
@@ -19,6 +22,11 @@ export async function registerUser(data: {
   accepted_privacy_version: string;
   accepted_terms_version: string;
   marketing_optin: boolean;
+  // v23.8 — optional analytics fields. Default off; the backend
+  // requires the user to actively tick the checkbox before any
+  // analytics events get recorded for them.
+  analytics_consent?: boolean;
+  industry_segment?: IndustrySegment | null;
 }): Promise<TokenResponse> {
   const res = await api.post("/auth/register", data);
   return res.data;
@@ -48,8 +56,56 @@ export async function refreshConsent(data: {
   accepted_privacy_version: string;
   accepted_terms_version: string;
   marketing_optin: boolean;
+  // v23.8 — analytics state can flip during the refresh too.
+  analytics_consent: boolean;
+  industry_segment?: IndustrySegment | null;
 }): Promise<User> {
   const res = await api.post("/auth/me/consent/refresh", data);
+  return res.data;
+}
+
+// ---------------------------------------------------------------------------
+// v23.8 — Analytics consent + per-user data export + admin dashboard
+// ---------------------------------------------------------------------------
+
+/** Current analytics state of the authenticated user. */
+export interface AnalyticsConsent {
+  analytics_consent: boolean;
+  industry_segment: IndustrySegment | null;
+}
+
+export async function fetchAnalyticsConsent(): Promise<AnalyticsConsent> {
+  const res = await api.get("/auth/me/analytics-consent");
+  return res.data;
+}
+
+/** Toggle the analytics flag and/or update the industry segment.
+ * Both fields optional — the backend treats an omitted field as
+ * "no change" rather than "set to null". To explicitly clear the
+ * industry, pass ``null`` (pydantic differentiates omitted from
+ * null on the wire). */
+export async function updateAnalyticsConsent(data: {
+  analytics_consent?: boolean;
+  industry_segment?: IndustrySegment | null;
+}): Promise<AnalyticsConsent> {
+  const res = await api.put("/auth/me/analytics-consent", data);
+  return res.data;
+}
+
+/** DSGVO Art. 20 — pull the user's pseudonymised events back. */
+export async function fetchMyAnalyticsEvents(
+  limit = 200,
+): Promise<UserAnalyticsEvent[]> {
+  const res = await api.get("/auth/me/analytics-events", {
+    params: { limit },
+  });
+  return res.data;
+}
+
+/** Aggregated metrics for the admin dashboard. Backend gates this
+ * with a 403 for non-admins. */
+export async function fetchAdminAnalytics(): Promise<AdminAnalyticsDashboard> {
+  const res = await api.get("/auth/admin/analytics");
   return res.data;
 }
 

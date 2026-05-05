@@ -6,7 +6,11 @@ import {
   useCallback,
   type ReactNode,
 } from "react";
-import type { User, FeatureMatrix } from "../types/user";
+import type {
+  User,
+  FeatureMatrix,
+  IndustrySegment,
+} from "../types/user";
 import {
   fetchMe,
   fetchFeatures,
@@ -31,6 +35,10 @@ interface AuthContextType {
     accepted_privacy_version: string;
     accepted_terms_version: string;
     marketing_optin: boolean;
+    /** v23.8 — analytics opt-in (default false). */
+    analytics_consent?: boolean;
+    /** v23.8 — user-self-selected branch. */
+    industry_segment?: IndustrySegment | null;
   }) => Promise<void>;
   /** Re-record consent after the user accepts updated legal docs.
    * Updates the user state in-place on success so the
@@ -40,6 +48,8 @@ interface AuthContextType {
     accepted_privacy_version: string;
     accepted_terms_version: string;
     marketing_optin: boolean;
+    analytics_consent: boolean;
+    industry_segment?: IndustrySegment | null;
   }) => Promise<void>;
   logout: () => void;
   refreshUser: () => Promise<void>;

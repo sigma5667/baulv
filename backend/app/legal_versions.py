@@ -31,8 +31,11 @@ the SPA's ``ConsentRefreshModal`` triggers on next login.
 from __future__ import annotations
 
 # Datenschutzerklärung (Privacy Policy)
-PRIVACY_POLICY_VERSION: str = "1.0"
-PRIVACY_POLICY_DATE: str = "2026-04-27"
+# v1.1 (2026-05-05) — section "Anonymisierte Nutzungsdaten" added
+# alongside the v23.8 analytics opt-in. Existing users see the
+# ConsentRefreshModal on next login and have to re-accept.
+PRIVACY_POLICY_VERSION: str = "1.1"
+PRIVACY_POLICY_DATE: str = "2026-05-05"
 
 # Allgemeine Geschäftsbedingungen (Terms of Service)
 TERMS_VERSION: str = "1.0"

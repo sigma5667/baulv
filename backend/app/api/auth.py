@@ -21,6 +21,10 @@ from app.db.models.user import User
 from app.db.session import get_db
 from app.schemas.user import (
     AccountDeletionRequest,
+    AdminAnalyticsDashboard,
+    AdminTopTemplate,
+    AnalyticsConsentResponse,
+    AnalyticsConsentUpdate,
     AuditLogEntryResponse,
     ConsentRefreshRequest,
     LegalVersionsResponse,
@@ -30,6 +34,7 @@ from app.schemas.user import (
     PrivacySettingsUpdate,
     SessionResponse,
     TokenResponse,
+    UserAnalyticsEventResponse,
     UserLogin,
     UserRegister,
     UserResponse,
@@ -56,11 +61,19 @@ from app.services.password_reset import (
     verify_reset_token,
 )
 from app.services.consent import (
+    record_analytics_optin_change,
     record_consent_refresh,
     record_marketing_optin_change,
     record_registration_consent,
 )
 from app.services.dsgvo import delete_user_account, export_user_data
+from app.services import analytics as analytics_service
+from app.db.models.analytics import (
+    ALLOWED_INDUSTRY_SEGMENTS,
+    EVENT_USER_SIGNUP,
+    INDUSTRY_UNKNOWN,
+    UsageAnalyticsEvent,
+)
 from app.legal_versions import (
     PRIVACY_POLICY_DATE,
     PRIVACY_POLICY_VERSION,
@@ -102,8 +115,42 @@ def _user_response(user: User) -> UserResponse:
         accepted_terms_version=user.current_terms_version,
         required_privacy_version=PRIVACY_POLICY_VERSION,
         required_terms_version=TERMS_VERSION,
+        # v23.8 — analytics state. The frontend reads these to
+        # render the privacy-settings page + the admin nav entry.
+        analytics_consent=user.analytics_consent,
+        industry_segment=user.industry_segment,
+        is_admin=user.is_admin,
         created_at=user.created_at,
     )
+
+
+def _normalise_industry(raw: str | None) -> str | None:
+    """Reject anything outside the canonical industry-segment set.
+
+    Accepts ``None`` (user hasn't picked) and the four canonical
+    values; everything else returns ``None`` rather than raising
+    so a stale frontend can't 500 the registration flow with a
+    typo.
+    """
+    if raw is None:
+        return None
+    if raw in ALLOWED_INDUSTRY_SEGMENTS:
+        return raw
+    return None
+
+
+def _is_admin(user: User) -> bool:
+    """v23.8 — admin gate.
+
+    Either the persistent ``is_admin`` flag (preferred, set
+    explicitly per user) or the v23.3 email-allowlist fallback
+    grants access. The dual gate means existing admin tooling
+    that relied on ``ADMIN_EMAILS`` keeps working without a
+    forced backfill of the new column.
+    """
+    if getattr(user, "is_admin", False):
+        return True
+    return user.email.lower() in settings.admin_email_list
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +213,12 @@ async def register(
             detail="Diese E-Mail-Adresse ist bereits registriert.",
         )
 
+    # v23.8 — normalise the industry choice. ``None`` means "user
+    # didn't pick" — distinct from explicit "unknown". We coerce
+    # unrecognised strings to ``None`` rather than raising so a
+    # stale frontend can't 500 the registration flow with a typo.
+    industry = _normalise_industry(data.industry_segment)
+
     user = User(
         email=data.email.lower().strip(),
         password_hash=hash_password(data.password),
@@ -175,26 +228,45 @@ async def register(
         marketing_email_opt_in=data.marketing_optin,
         current_privacy_version=PRIVACY_POLICY_VERSION,
         current_terms_version=TERMS_VERSION,
+        analytics_consent=data.analytics_consent,
+        industry_segment=industry,
     )
     db.add(user)
     await db.flush()
     await db.refresh(user)
 
     # DSGVO Art. 7 evidence row. Bound to the same transaction as
-    # the user write — if either fails, both roll back.
+    # the user write — if either fails, both roll back. v23.8
+    # captures the analytics-consent flag too so the registration
+    # snapshot is a complete picture of the consent baseline.
     await record_registration_consent(
         db,
         user_id=user.id,
         privacy_version=PRIVACY_POLICY_VERSION,
         terms_version=TERMS_VERSION,
         marketing_optin=data.marketing_optin,
+        analytics_consent=data.analytics_consent,
         request=request,
     )
 
     token = await issue_session(db, user, request)
     await log_event(
         db, event_type=EVENT_REGISTER, user_id=user.id, request=request,
-        meta={"marketing_optin": data.marketing_optin},
+        meta={
+            "marketing_optin": data.marketing_optin,
+            "analytics_consent": data.analytics_consent,
+        },
+    )
+    # v23.8 — fire the user_signup analytics event. Gated on
+    # ``analytics_consent``; the service short-circuits when the
+    # user opted out, so this is a no-op in that case. We pass
+    # the industry as the only payload field — the service
+    # whitelist accepts only that key for ``user_signup``.
+    await analytics_service.record_event(
+        db,
+        event_type=EVENT_USER_SIGNUP,
+        user=user,
+        event_data={"industry": industry or INDUSTRY_UNKNOWN},
     )
     return TokenResponse(access_token=token, user=_user_response(user))
 
@@ -322,6 +394,12 @@ async def refresh_consent(
     user.current_privacy_version = PRIVACY_POLICY_VERSION
     user.current_terms_version = TERMS_VERSION
     user.marketing_email_opt_in = data.marketing_optin
+    # v23.8 — analytics state can change as part of the refresh.
+    # The modal exposes the analytics checkbox alongside the
+    # legal-doc acceptance, so a user might flip it during the
+    # same gesture. Industry segment is similarly opt-in.
+    user.analytics_consent = data.analytics_consent
+    user.industry_segment = _normalise_industry(data.industry_segment)
     await db.flush()
 
     await record_consent_refresh(
@@ -330,6 +408,7 @@ async def refresh_consent(
         privacy_version=PRIVACY_POLICY_VERSION,
         terms_version=TERMS_VERSION,
         marketing_optin=data.marketing_optin,
+        analytics_consent=data.analytics_consent,
         privacy_changed=privacy_changed,
         terms_changed=terms_changed,
         request=request,
@@ -776,6 +855,9 @@ async def update_privacy_settings(
             db,
             user_id=user.id,
             new_value=user.marketing_email_opt_in,
+            # v23.8 — capture current analytics state on the
+            # snapshot so the row is self-contained.
+            analytics_consent=user.analytics_consent,
             request=request,
         )
 
@@ -922,3 +1004,287 @@ async def list_my_audit_log(
         )
         for e in result.scalars().all()
     ]
+
+
+# ---------------------------------------------------------------------------
+# v23.8 — Analytics consent + per-user data export
+# ---------------------------------------------------------------------------
+
+
+@router.get("/me/analytics-consent", response_model=AnalyticsConsentResponse)
+async def get_analytics_consent(user: User = Depends(get_current_user)):
+    """Return the user's current analytics state.
+
+    Cheap read; the data also rides on every ``GET /me`` response,
+    but the dedicated endpoint lets the privacy-settings page poll
+    a leaner payload than the full user record.
+    """
+    return AnalyticsConsentResponse(
+        analytics_consent=user.analytics_consent,
+        industry_segment=user.industry_segment,
+    )
+
+
+@router.put("/me/analytics-consent", response_model=AnalyticsConsentResponse)
+async def update_analytics_consent(
+    data: AnalyticsConsentUpdate,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Toggle the analytics opt-in or update the industry segment.
+
+    Both fields optional → caller patches just what changed. A
+    flip on either triggers a fresh ``consent_snapshots`` row so
+    the DSGVO Art. 7 evidence trail stays complete (consent and
+    consent-withdrawal both auditable). Past events stay in
+    ``usage_analytics`` even when the user opts out — they were
+    already pseudonymised at write-time, so they're statistical
+    data not personal data, and the privacy policy v1.1 spells
+    that out for the user.
+    """
+    consent_changed = False
+    industry_changed = False
+
+    if data.analytics_consent is not None:
+        if user.analytics_consent != data.analytics_consent:
+            user.analytics_consent = data.analytics_consent
+            consent_changed = True
+
+    if data.industry_segment is not None:
+        normalised = _normalise_industry(data.industry_segment)
+        if user.industry_segment != normalised:
+            user.industry_segment = normalised
+            industry_changed = True
+    elif data.industry_segment is None and "industry_segment" in data.model_fields_set:
+        # Explicit ``null`` clears the value (user "didn't pick"
+        # again). ``model_fields_set`` differentiates "field
+        # omitted" from "field explicitly set to null" in pydantic.
+        if user.industry_segment is not None:
+            user.industry_segment = None
+            industry_changed = True
+
+    await db.flush()
+
+    # Write the consent snapshot only when the consent flag itself
+    # actually flipped. An industry-only update is captured on the
+    # next privacy snapshot (the field rides along on every
+    # snapshot type) so we don't double-count the same gesture.
+    if consent_changed:
+        await record_analytics_optin_change(
+            db,
+            user_id=user.id,
+            new_value=user.analytics_consent,
+            marketing_optin=user.marketing_email_opt_in,
+            request=request,
+        )
+        await log_event(
+            db,
+            event_type=EVENT_PRIVACY_UPDATED,
+            user_id=user.id,
+            request=request,
+            meta={
+                "analytics_consent": user.analytics_consent,
+                "industry_segment": user.industry_segment,
+            },
+        )
+    elif industry_changed:
+        # Industry-only edit still goes in the audit log; no consent
+        # snapshot because the legal-text consent state didn't move.
+        await log_event(
+            db,
+            event_type=EVENT_PRIVACY_UPDATED,
+            user_id=user.id,
+            request=request,
+            meta={"industry_segment": user.industry_segment},
+        )
+
+    return AnalyticsConsentResponse(
+        analytics_consent=user.analytics_consent,
+        industry_segment=user.industry_segment,
+    )
+
+
+@router.get(
+    "/me/analytics-events",
+    response_model=list[UserAnalyticsEventResponse],
+)
+async def list_my_analytics_events(
+    limit: int = 200,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """DSGVO Art. 20 — return the user's pseudonymised analytics rows.
+
+    The caller's ``user_id`` is hashed locally via
+    ``analytics_service.hash_user_id`` to find the corresponding
+    rows; we never join back to ``users``. The response includes
+    the ``anonymous_user_id`` so the user can verify the hash
+    matches what's stored — independent confirmation that the
+    rows attributed to them are theirs.
+
+    No body when the user opted out and never had events; an
+    empty list is returned. Capped at ``limit`` (default 200,
+    max 1000) so a malicious caller can't make us page-fault a
+    huge result set.
+    """
+    limit = max(1, min(limit, 1000))
+    anon = analytics_service.hash_user_id(user.id)
+    result = await db.execute(
+        select(UsageAnalyticsEvent)
+        .where(UsageAnalyticsEvent.anonymous_user_id == anon)
+        .order_by(UsageAnalyticsEvent.created_at.desc())
+        .limit(limit)
+    )
+    rows = result.scalars().all()
+    return [
+        UserAnalyticsEventResponse(
+            id=r.id,
+            event_type=r.event_type,
+            event_data=r.event_data,
+            anonymous_user_id=r.anonymous_user_id,
+            region_code=r.region_code,
+            industry_segment=r.industry_segment,
+            created_at=r.created_at,
+        )
+        for r in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# v23.8 — Admin analytics dashboard
+# ---------------------------------------------------------------------------
+
+
+@router.get("/admin/analytics", response_model=AdminAnalyticsDashboard)
+async def admin_analytics_dashboard(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Aggregated metrics for the operator-side analytics view.
+
+    Gated on ``_is_admin(user)`` (either persistent ``is_admin``
+    flag or the v23.3 email allow-list). Returns aggregated
+    values only — no per-row data leaks to the response, so the
+    DSGVO promise that the analytics pipeline never surfaces
+    individual records holds end-to-end.
+
+    Time windows are computed against ``datetime.now(timezone.utc)``
+    so the response is stable even if the underlying rows are
+    timezone-naïve (some are; see the v23.3 audit-cleanup fix).
+
+    No pagination — the response is always a single dashboard
+    payload, fixed schema.
+    """
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Zugriff verweigert.")
+
+    from datetime import timedelta
+
+    now = datetime.now(timezone.utc)
+    cutoff_30d = now - timedelta(days=30)
+
+    # Active users last 30 days = distinct hashes seen in usage_analytics
+    # within the window. Approximation (some users opt-out and won't
+    # show up) but close enough for the dashboard.
+    active_users_stmt = (
+        select(func.count(func.distinct(UsageAnalyticsEvent.anonymous_user_id)))
+        .where(UsageAnalyticsEvent.created_at >= cutoff_30d)
+    )
+    active_users_30d = (await db.execute(active_users_stmt)).scalar_one() or 0
+
+    # Total projects + last-30d count from the canonical Project
+    # table (not the analytics rows — gives the truthful count
+    # even for users who never opted in).
+    projects_total = (
+        await db.execute(select(func.count(Project.id)))
+    ).scalar_one() or 0
+    projects_last_30d = (
+        await db.execute(
+            select(func.count(Project.id)).where(
+                Project.created_at >= cutoff_30d
+            )
+        )
+    ).scalar_one() or 0
+
+    # Average positions per LV — also from the canonical tables.
+    # Returns 0.0 when there are zero LVs (avoids a div-by-zero in
+    # ``func.avg`` which would surface as NULL).
+    avg_positions_stmt = (
+        select(func.coalesce(func.avg(_positions_per_lv_subq()), 0.0))
+    )
+    avg_positions_per_lv = float(
+        (await db.execute(avg_positions_stmt)).scalar_one() or 0.0
+    )
+
+    # Industry-segment distribution from the user table — this is
+    # an aggregate count per segment, not a per-user list.
+    industry_rows = await db.execute(
+        select(User.industry_segment, func.count(User.id))
+        .where(User.industry_segment.is_not(None))
+        .group_by(User.industry_segment)
+    )
+    industry_distribution: dict[str, int] = {
+        seg: int(count) for seg, count in industry_rows.all()
+    }
+
+    # Top 5 templates from the analytics table — only ``template_used``
+    # events that recorded a ``template_id`` in their event_data. We
+    # scan + bucket in Python since template_id lives inside JSONB
+    # and the cross-dialect aggregation on JSONB keys is fiddly.
+    template_rows = await db.execute(
+        select(UsageAnalyticsEvent.event_data)
+        .where(UsageAnalyticsEvent.event_type == "template_used")
+    )
+    template_counts: dict[str, int] = {}
+    for (data_blob,) in template_rows.all():
+        if not data_blob:
+            continue
+        # SQLite (test harness) round-trips JSONB as a JSON-encoded
+        # string; Postgres returns a parsed dict. Handle both.
+        if isinstance(data_blob, str):
+            import json as _json
+            try:
+                data_blob = _json.loads(data_blob)
+            except Exception:  # noqa: BLE001
+                continue
+        tid = data_blob.get("template_id") if isinstance(data_blob, dict) else None
+        if not tid:
+            continue
+        template_counts[tid] = template_counts.get(tid, 0) + 1
+    top_templates = [
+        AdminTopTemplate(template_id=tid, use_count=count)
+        for tid, count in sorted(
+            template_counts.items(), key=lambda kv: kv[1], reverse=True
+        )[:5]
+    ]
+
+    return AdminAnalyticsDashboard(
+        active_users_30d=int(active_users_30d),
+        projects_total=int(projects_total),
+        projects_last_30d=int(projects_last_30d),
+        avg_positions_per_lv=avg_positions_per_lv,
+        industry_distribution=industry_distribution,
+        top_templates=top_templates,
+        generated_at=now,
+    )
+
+
+def _positions_per_lv_subq():
+    """Subquery that returns the position count for each LV.
+
+    Lifted out of ``admin_analytics_dashboard`` for readability —
+    the aggregation is two-step (count per LV, then average across
+    LVs) and inlining the subquery would obscure the intent.
+    """
+    from app.db.models.lv import (
+        Leistungsgruppe as _Lg,
+        Position as _Pos,
+    )
+
+    return (
+        select(func.count(_Pos.id))
+        .join(_Lg, _Pos.gruppe_id == _Lg.id)
+        .group_by(_Lg.lv_id)
+        .scalar_subquery()
+    )

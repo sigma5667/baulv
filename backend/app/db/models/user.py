@@ -32,5 +32,28 @@ class User(Base):
     # acceptance lives in the ``consent_snapshots`` table.
     current_privacy_version: Mapped[str | None] = mapped_column(String(20))
     current_terms_version: Mapped[str | None] = mapped_column(String(20))
+    # v23.8 — DSGVO Art. 6(1)(a) consent for anonymised usage
+    # analytics. Default False; the analytics service short-circuits
+    # without writing if this flag is False, so opt-in must be a
+    # clear affirmative action by the user. The corresponding
+    # consent_snapshots row is written by the consent service so the
+    # opt-in moment is auditable independently of this column.
+    analytics_consent: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    # User-self-selected branch (architect / builder / subcontractor /
+    # unknown). Captured in every analytics event so the admin
+    # dashboard can segment usage by branch without ever joining
+    # back to identifying user data. NULL = "user hasn't picked
+    # yet" (distinct from explicit "unknown").
+    industry_segment: Mapped[str | None] = mapped_column(String(30))
+    # v23.8 — admin gate. Replaces the v23.3 email allowlist for the
+    # per-user analytics dashboard endpoint. The allowlist still
+    # serves as a fallback (settings.admin_email_list); a user
+    # with EITHER ``is_admin=True`` OR an email on the allowlist
+    # passes the gate.
+    is_admin: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)

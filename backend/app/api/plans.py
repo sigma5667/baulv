@@ -42,7 +42,9 @@ from app.schemas.plan import (
     PlanDeletionResult,
     PlanResponse,
 )
+from app.services import analytics as analytics_service
 from app.services import audit
+from app.db.models.analytics import EVENT_PLAN_ANALYZED as _ANALYTICS_PLAN_ANALYZED
 from app.subscriptions import require_feature
 
 logger = logging.getLogger(__name__)
@@ -283,7 +285,31 @@ async def trigger_analysis(
     )
 
     try:
-        return await analyze_plan(plan_id, db)
+        result = await analyze_plan(plan_id, db)
+        # v23.8 — analytics signal for plan_analyzed. Best-effort:
+        # the analyse call itself succeeded, the recorder is
+        # gated on consent and fail-soft, so we never raise here.
+        try:
+            pages_analyzed = int(result.get("pages_analyzed", 0)) if isinstance(result, dict) else 0
+            rooms_extracted = int(result.get("rooms_extracted", 0)) if isinstance(result, dict) else 0
+            await analytics_service.record_event(
+                db,
+                event_type=_ANALYTICS_PLAN_ANALYZED,
+                user=user,
+                event_data={
+                    "pages": pages_analyzed,
+                    "rooms_extracted": rooms_extracted,
+                },
+            )
+        except Exception:  # noqa: BLE001
+            # Belt-and-braces. The recorder swallows internally;
+            # this catch handles anything escaping (e.g. a future
+            # refactor that changes the result-shape contract).
+            logger.exception(
+                "analytics.plan_analyzed failed plan_id=%s — continuing",
+                plan_id,
+            )
+        return result
     except PlanAnalysisError as e:
         # Already German and user-safe. 422 ("unprocessable entity")
         # is the closest semantic match: the request was valid but we

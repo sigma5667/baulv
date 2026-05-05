@@ -3,6 +3,10 @@ import { Link, useNavigate } from "react-router-dom";
 import { Building2, UserPlus, Eye, EyeOff, Loader2 } from "lucide-react";
 import { useAuth } from "../hooks/useAuth";
 import { fetchLegalVersions, type LegalVersions } from "../api/auth";
+import {
+  INDUSTRY_LABELS,
+  type IndustrySegment,
+} from "../types/user";
 
 /**
  * Sign-up page with DSGVO Art. 7-compliant consent capture (v23.2).
@@ -33,6 +37,15 @@ export function RegisterPage() {
   const [privacyAccepted, setPrivacyAccepted] = useState(false);
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [marketingOptin, setMarketingOptin] = useState(false);
+  // v23.8 — anonymised analytics opt-in (default OFF per DSGVO
+  // Art. 7 "clear affirmative action"). When the user ticks the
+  // checkbox, the industry-segment dropdown appears below; we
+  // only ship a non-null segment to the backend if the user
+  // actually chose one (omitted = NULL = "didn't pick").
+  const [analyticsConsent, setAnalyticsConsent] = useState(false);
+  const [industrySegment, setIndustrySegment] = useState<
+    IndustrySegment | ""
+  >("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -85,6 +98,13 @@ export function RegisterPage() {
         accepted_privacy_version: legal.privacy_version,
         accepted_terms_version: legal.terms_version,
         marketing_optin: marketingOptin,
+        // v23.8 — only send a non-null industry when the user
+        // both opted in and picked an option. ``"" || null``
+        // collapses to null which the backend treats as
+        // "user didn't pick".
+        analytics_consent: analyticsConsent,
+        industry_segment:
+          analyticsConsent && industrySegment ? industrySegment : null,
       });
       navigate("/app");
     } catch (err: any) {
@@ -263,6 +283,69 @@ export function RegisterPage() {
                 erhalten. <span className="text-xs">(optional)</span>
               </span>
             </label>
+
+            {/* v23.8 — anonymised analytics opt-in. Default OFF
+                per DSGVO Art. 7 ("clear affirmative action"). The
+                industry dropdown appears only after the user ticks
+                the box, since the segment is only meaningful when
+                analytics is on. The user can toggle this later in
+                /app/settings/datenschutz at any time. */}
+            <label className="flex cursor-pointer items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={analyticsConsent}
+                onChange={(e) => {
+                  setAnalyticsConsent(e.target.checked);
+                  if (!e.target.checked) {
+                    // Clear the industry choice when the user
+                    // un-checks — keeping the dropdown visible
+                    // would imply we still record the segment.
+                    setIndustrySegment("");
+                  }
+                }}
+                className="mt-0.5 h-4 w-4 shrink-0 rounded border-muted-foreground/40 text-primary focus:ring-primary"
+              />
+              <span className="text-muted-foreground">
+                Ich bin damit einverstanden, dass anonymisierte
+                Nutzungsdaten zur Produkt-Verbesserung gesammelt
+                werden.{" "}
+                <span className="text-xs">
+                  (optional, jederzeit widerrufbar)
+                </span>
+              </span>
+            </label>
+
+            {analyticsConsent && (
+              <div className="ml-6 mt-1">
+                <label className="block text-xs text-muted-foreground">
+                  Branche{" "}
+                  <span className="text-muted-foreground/60">
+                    (optional)
+                  </span>
+                </label>
+                <select
+                  value={industrySegment}
+                  onChange={(e) =>
+                    setIndustrySegment(
+                      e.target.value as IndustrySegment | "",
+                    )
+                  }
+                  className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                >
+                  <option value="">— bitte wählen —</option>
+                  {(
+                    Object.entries(INDUSTRY_LABELS) as [
+                      IndustrySegment,
+                      string,
+                    ][]
+                  ).map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
 
           <button

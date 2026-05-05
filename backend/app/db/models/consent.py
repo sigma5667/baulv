@@ -33,6 +33,12 @@ EVENT_REGISTRATION = "registration"
 EVENT_PRIVACY_UPDATE = "privacy_update"
 EVENT_TERMS_UPDATE = "terms_update"
 EVENT_MARKETING_OPTIN_CHANGE = "marketing_optin_change"
+# v23.8 — DSGVO Art. 7 evidence trail for the optional analytics
+# opt-in. Fired both on initial sign-up (when the box was ticked)
+# and every time the user toggles the flag in privacy settings.
+# Stored alongside the legal-version pins so we can reconstruct
+# the exact privacy-policy text the user saw when they consented.
+EVENT_ANALYTICS_OPTIN_CHANGE = "analytics_optin_change"
 
 
 class ConsentSnapshot(Base):
@@ -60,6 +66,17 @@ class ConsentSnapshot(Base):
     # trail is complete and the user's consent state can be
     # reconstructed entirely from this table.
     marketing_optin: Mapped[bool] = mapped_column(Boolean, default=False)
+    # v23.8 — analytics opt-in choice at the moment of the event.
+    # Default False matches the schema default on ``users``; we
+    # record it on every snapshot (not just analytics-toggle
+    # snapshots) so a single row carries the user's full consent
+    # state — same pattern as ``marketing_optin``. NULL stays a
+    # valid state for old rows that were written before v23.8;
+    # the column is set up with a server default so the migration
+    # backfill is automatic.
+    analytics_consent: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
     # Forensic context. Helpful when a user disputes that *they*
     # agreed (vs someone using their device); also part of "the
     # circumstances in which the data was processed" expected under

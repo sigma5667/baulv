@@ -111,6 +111,20 @@ class Settings(BaseSettings):
     # be HTTPS in production or the token is exposed in transit.
     app_base_url: str = "http://localhost:5173"
 
+    # v23.8 — DSGVO Art. 4 Nr. 5 pseudonymisation salt for the
+    # ``usage_analytics`` table. Hashed with the user's UUID via
+    # ``sha256(user.id || salt)`` to produce ``anonymous_user_id``,
+    # so observers without the salt cannot correlate the rows back
+    # to a specific user. The default value is dev-only ("change me
+    # in production"); production MUST set ``ANALYTICS_SALT`` to a
+    # 32+-byte secret. The analytics service refuses to record
+    # events when the default value is detected on a production
+    # boot — see ``app.services.analytics._is_dev_salt``. Rotating
+    # the salt breaks the ability to correlate past and future
+    # events from the same user; documented as a deliberate
+    # operator-action in DEPLOY.md.
+    analytics_salt: str = "change-me-in-production-baulv-analytics-salt-2026"
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
     def model_post_init(self, __context) -> None:

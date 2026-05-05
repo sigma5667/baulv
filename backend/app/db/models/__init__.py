@@ -11,6 +11,7 @@ from app.db.models.api_key import ApiKey
 from app.db.models.mcp_audit import McpAuditLogEntry
 from app.db.models.consent import ConsentSnapshot
 from app.db.models.password_reset_token import PasswordResetToken
+from app.db.models.analytics import UsageAnalyticsEvent
 
 __all__ = [
     "Project", "Building", "Floor", "Unit", "Room", "Opening",
@@ -26,4 +27,5 @@ __all__ = [
     "McpAuditLogEntry",
     "ConsentSnapshot",
     "PasswordResetToken",
+    "UsageAnalyticsEvent",
 ]

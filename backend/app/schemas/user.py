@@ -13,6 +13,12 @@ class UserRegister(BaseModel):
     ``/api/legal/versions`` or reads them from ``/auth/me``) so we
     can verify the client saw the same text we currently serve —
     a stale tab can't sneak a user in under a previous policy.
+
+    v23.8 added the analytics opt-in + industry-segment fields
+    (DSGVO Art. 6(1)(a)). Both default to "off / not selected" so
+    a user who simply ticks the two mandatory boxes lands in the
+    no-analytics, no-industry baseline — the sensible privacy-
+    preserving default.
     """
 
     email: str
@@ -28,6 +34,16 @@ class UserRegister(BaseModel):
     # ("clear affirmative action"). The user has to actively tick
     # the third checkbox in the SPA.
     marketing_optin: bool = False
+    # v23.8 — anonymised-analytics opt-in. Default False ⇒ the
+    # ``record_event`` service short-circuits without writing for
+    # this user. The accompanying ``industry_segment`` field is
+    # only meaningful when this is True; the frontend should hide
+    # the dropdown when the checkbox is off.
+    analytics_consent: bool = False
+    # User-self-selected branch (architect / builder /
+    # subcontractor / unknown). NULL when the user didn't pick
+    # one — distinct from explicit "unknown".
+    industry_segment: str | None = None
 
 
 class UserLogin(BaseModel):
@@ -57,6 +73,14 @@ class UserResponse(BaseModel):
     accepted_terms_version: str | None = None
     required_privacy_version: str
     required_terms_version: str
+    # v23.8 — analytics state. ``analytics_consent`` drives the
+    # service-layer gate; ``industry_segment`` is the user's self-
+    # classification. ``is_admin`` lets the frontend conditionally
+    # render the admin-analytics nav entry without a separate
+    # round-trip.
+    analytics_consent: bool = False
+    industry_segment: str | None = None
+    is_admin: bool = False
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -129,11 +153,18 @@ class ConsentRefreshRequest(BaseModel):
     match what the server currently serves; the marketing flag
     can change as part of the same refresh (the modal exposes
     the same checkbox the registration form does).
+
+    v23.8 — analytics fields exposed too. Existing users hitting
+    the modal because of the privacy-policy v1.1 bump can opt in
+    (or stay opted out) to the new analytics pipeline as part of
+    the same gesture.
     """
 
     accepted_privacy_version: str
     accepted_terms_version: str
     marketing_optin: bool
+    analytics_consent: bool = False
+    industry_segment: str | None = None
 
 
 class LegalVersionsResponse(BaseModel):
@@ -180,3 +211,78 @@ class AuditLogEntryResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------------------
+# v23.8 — Analytics consent + per-user data export
+# ---------------------------------------------------------------------------
+
+
+class AnalyticsConsentUpdate(BaseModel):
+    """Payload for ``PUT /api/auth/me/analytics-consent``.
+
+    Both fields optional so a user can flip just the consent
+    flag without re-asserting their industry, or vice versa. The
+    backend rejects ``industry_segment`` values that aren't on the
+    canonical set defined in ``app.db.models.analytics``.
+    """
+
+    analytics_consent: bool | None = None
+    industry_segment: str | None = None
+
+
+class AnalyticsConsentResponse(BaseModel):
+    """Current analytics state of the authenticated user."""
+
+    analytics_consent: bool
+    industry_segment: str | None
+
+
+class UserAnalyticsEventResponse(BaseModel):
+    """A single row from ``usage_analytics`` shown in its
+    pseudonymised form (DSGVO Art. 20 data export).
+
+    ``anonymous_user_id`` is included so the user can verify that
+    their hash matches what the operator sees — independent
+    confirmation that the rows attributed to them really are
+    theirs and not someone else's.
+    """
+
+    id: UUID
+    event_type: str
+    event_data: dict[str, Any] | None
+    anonymous_user_id: str
+    region_code: str | None
+    industry_segment: str | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------------------
+# v23.8 — Admin analytics dashboard payload
+# ---------------------------------------------------------------------------
+
+
+class AdminTopTemplate(BaseModel):
+    """One row in the "Top 5 verwendete Vorlagen" ranking."""
+
+    template_id: str
+    use_count: int
+
+
+class AdminAnalyticsDashboard(BaseModel):
+    """Aggregated metrics for the admin dashboard.
+
+    Only aggregated values — no per-row data leaks to the
+    response. Aligns with the DSGVO promise that the analytics
+    pipeline never surfaces individual records.
+    """
+
+    active_users_30d: int
+    projects_total: int
+    projects_last_30d: int
+    avg_positions_per_lv: float
+    industry_distribution: dict[str, int]
+    top_templates: list[AdminTopTemplate]
+    generated_at: datetime

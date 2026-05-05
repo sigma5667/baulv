@@ -23,6 +23,12 @@ from app.export.pdf_exporter import export_lv_pdf
 from app.auth import get_current_user
 from app.api.ownership import verify_project_owner, verify_lv_owner
 from app.subscriptions import require_feature, has_feature
+from app.services import analytics as analytics_service
+from app.db.models.analytics import (
+    EVENT_LV_CREATED as ANALYTICS_EVENT_LV_CREATED,
+    EVENT_POSITION_UPDATED as ANALYTICS_EVENT_POSITION_UPDATED,
+    EVENT_TEMPLATE_USED as ANALYTICS_EVENT_TEMPLATE_USED,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +47,19 @@ async def create_lv(
     lv = Leistungsverzeichnis(project_id=project_id, **data.model_dump())
     db.add(lv)
     await db.flush()
+
+    # v23.8 — analytics signal. ``position_count`` is 0 at this
+    # point (blank LV, no positions yet); the calculate / template
+    # flow tracks the populated state separately.
+    await analytics_service.record_event(
+        db,
+        event_type=ANALYTICS_EVENT_LV_CREATED,
+        user=user,
+        event_data={
+            "trade": lv.trade.lower() if isinstance(lv.trade, str) else "",
+            "position_count": 0,
+        },
+    )
 
     stmt = (
         select(Leistungsverzeichnis)
@@ -194,6 +213,24 @@ async def create_lv_from_template(
             user.id,
             gruppen_created,
             positionen_created,
+        )
+
+        # v23.8 — analytics signal. ``template_id`` is recorded only
+        # for system templates (``is_system=True``) — user-owned
+        # template ids are private (they're a per-user identifier
+        # space) and would risk re-identification in aggregate
+        # data. For user templates we still emit the event so the
+        # raw count is right, but we send a generic placeholder id.
+        await analytics_service.record_event(
+            db,
+            event_type=ANALYTICS_EVENT_TEMPLATE_USED,
+            user=user,
+            event_data={
+                "template_id": (
+                    str(tpl.id) if tpl.is_system else "user_template"
+                ),
+                "is_system": tpl.is_system,
+            },
         )
 
         return LVFromTemplateResponse(
@@ -737,7 +774,56 @@ async def update_position(
     if data.kurztext or data.langtext:
         position.text_source = "manual"
     await db.flush()
+
+    # v23.8 — analytics signal. We only emit on actual data edits
+    # (Menge / Einheitspreis), not on lock-toggle alone — the lock
+    # is metadata, not "user is doing real work". Bucket the price
+    # so raw EUR values never land in analytics; the buckets are
+    # pre-defined privacy-safe ranges.
+    edit_keys = set(incoming.keys()) - {"is_locked"}
+    if edit_keys:
+        ep = position.einheitspreis
+        ep_float = float(ep) if ep is not None else None
+        await analytics_service.record_event(
+            db,
+            event_type=ANALYTICS_EVENT_POSITION_UPDATED,
+            user=user,
+            event_data={
+                "has_price": ep_float is not None and ep_float > 0,
+                "has_quantity": (
+                    position.menge is not None
+                    and float(position.menge) > 0
+                ),
+                "price_bucket": _price_bucket(ep_float),
+            },
+        )
     return position
+
+
+# v23.8 — privacy-safe price buckets. Maps a raw EUR value to a
+# coarse range string. The whitelist for ``position_updated``
+# events accepts only these strings, so a contributor accidentally
+# trying to log raw prices would hit the sanitiser's regex and
+# the event would be rejected.
+_PRICE_BUCKETS: tuple[tuple[float, str], ...] = (
+    (5.0, "0-5_eur"),
+    (15.0, "5-15_eur"),
+    (50.0, "15-50_eur"),
+    (150.0, "50-150_eur"),
+    (500.0, "150-500_eur"),
+    (1500.0, "500-1500_eur"),
+    (float("inf"), "1500plus_eur"),
+)
+
+
+def _price_bucket(value: float | None) -> str:
+    """Map a raw EUR value to a privacy-safe range bucket."""
+    if value is None or value <= 0:
+        return "none"
+    for upper, label in _PRICE_BUCKETS:
+        if value < upper:
+            return label
+    return "1500plus_eur"
 
 
 # Upper bound on how long an export is allowed to run before we give

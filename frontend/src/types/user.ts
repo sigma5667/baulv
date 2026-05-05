@@ -21,6 +21,61 @@ export interface User {
    * Always populated; comes from ``app/legal_versions.py``. */
   required_privacy_version: string;
   required_terms_version: string;
+  /** v23.8 — anonymised analytics opt-in. Default false. The
+   * privacy-settings page exposes a toggle; see
+   * ``/app/settings/datenschutz``. */
+  analytics_consent: boolean;
+  /** v23.8 — user-self-selected branch (architect / builder /
+   * subcontractor / unknown). NULL = user hasn't picked one. */
+  industry_segment: IndustrySegment | null;
+  /** v23.8 — admin flag. Drives the "Admin-Analytics" nav entry
+   * visibility. Falls back to the email allow-list on the server,
+   * but the frontend reads only this flag. */
+  is_admin: boolean;
+  created_at: string;
+}
+
+/** Canonical industry-segment values the backend accepts. The
+ * registration form, consent-refresh modal, and privacy-settings
+ * page all key off this set. */
+export type IndustrySegment =
+  | "architect"
+  | "builder"
+  | "subcontractor"
+  | "unknown";
+
+/** Human-readable German labels for the dropdown UIs. Single
+ * source of truth so all three forms (register, refresh modal,
+ * settings) read consistently. */
+export const INDUSTRY_LABELS: Record<IndustrySegment, string> = {
+  architect: "Architekt / Planer",
+  builder: "Bauunternehmen / Generalunternehmer",
+  subcontractor: "Subunternehmen / Handwerker",
+  unknown: "Andere / Sonstige",
+};
+
+/** v23.8 — Aggregated metrics for the admin analytics dashboard
+ * (``/api/auth/admin/analytics``). Mirrors
+ * ``app.schemas.user.AdminAnalyticsDashboard``. */
+export interface AdminAnalyticsDashboard {
+  active_users_30d: number;
+  projects_total: number;
+  projects_last_30d: number;
+  avg_positions_per_lv: number;
+  industry_distribution: Record<string, number>;
+  top_templates: { template_id: string; use_count: number }[];
+  generated_at: string;
+}
+
+/** v23.8 — single pseudonymised analytics event surfaced via
+ * ``GET /api/auth/me/analytics-events``. */
+export interface UserAnalyticsEvent {
+  id: string;
+  event_type: string;
+  event_data: Record<string, unknown> | null;
+  anonymous_user_id: string;
+  region_code: string | null;
+  industry_segment: string | null;
   created_at: string;
 }
 

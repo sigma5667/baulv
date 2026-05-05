@@ -25,6 +25,7 @@ from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.consent import (
+    EVENT_ANALYTICS_OPTIN_CHANGE,
     EVENT_MARKETING_OPTIN_CHANGE,
     EVENT_PRIVACY_UPDATE,
     EVENT_REGISTRATION,
@@ -73,6 +74,7 @@ async def record_consent(
     privacy_version: str | None,
     terms_version: str | None,
     marketing_optin: bool,
+    analytics_consent: bool = False,
     request: Request | None = None,
 ) -> ConsentSnapshot:
     """Write a single consent-snapshot row.
@@ -81,6 +83,11 @@ async def record_consent(
     the row is queryable inside the same session, but we never
     commit. That lets the register endpoint write the user, the
     snapshot, and the audit-event entry as a single atomic unit.
+
+    ``analytics_consent`` (v23.8) defaults to False so older call
+    sites that haven't been updated still record a truthful
+    "analytics-off" snapshot. New call sites should always pass
+    the user's current flag.
 
     On internal failure we log and re-raise — losing a consent
     snapshot must NOT silently succeed. This is the difference
@@ -94,6 +101,7 @@ async def record_consent(
         privacy_version=privacy_version,
         terms_version=terms_version,
         marketing_optin=marketing_optin,
+        analytics_consent=analytics_consent,
         ip_address=_client_ip(request),
         user_agent=_user_agent(request),
     )
@@ -107,8 +115,13 @@ async def record_consent(
         )
         raise
     logger.info(
-        "consent.snapshot_recorded event=%s user=%s privacy=%s terms=%s marketing=%s",
-        event_type, user_id, privacy_version, terms_version, marketing_optin,
+        "consent.snapshot_recorded event=%s user=%s privacy=%s terms=%s marketing=%s analytics=%s",
+        event_type,
+        user_id,
+        privacy_version,
+        terms_version,
+        marketing_optin,
+        analytics_consent,
     )
     return snapshot
 
@@ -127,11 +140,19 @@ async def record_registration_consent(
     privacy_version: str,
     terms_version: str,
     marketing_optin: bool,
+    analytics_consent: bool = False,
     request: Request | None = None,
 ) -> ConsentSnapshot:
     """Snapshot for the initial sign-up moment. Both versions
     required — registration is the one event where neither can
-    be NULL."""
+    be NULL.
+
+    ``analytics_consent`` records the user's optional opt-in (v23.8)
+    so the registration snapshot is a complete picture of the
+    consent state at signup — every later analytics-toggle row in
+    ``consent_snapshots`` describes a *change* relative to this
+    baseline.
+    """
     return await record_consent(
         db,
         event_type=EVENT_REGISTRATION,
@@ -139,6 +160,7 @@ async def record_registration_consent(
         privacy_version=privacy_version,
         terms_version=terms_version,
         marketing_optin=marketing_optin,
+        analytics_consent=analytics_consent,
         request=request,
     )
 
@@ -150,6 +172,7 @@ async def record_consent_refresh(
     privacy_version: str,
     terms_version: str,
     marketing_optin: bool,
+    analytics_consent: bool,
     privacy_changed: bool,
     terms_changed: bool,
     request: Request | None = None,
@@ -162,6 +185,11 @@ async def record_consent_refresh(
     If both changed simultaneously (rare but possible on a major
     legal review), we use ``privacy_update`` — privacy carries
     more user-impact in DSGVO terms, so it gets the dominant tag.
+
+    ``analytics_consent`` (v23.8) is captured on every refresh too
+    — the modal exposes the analytics checkbox alongside the
+    legal-doc acceptance, so the user might flip it during the
+    same gesture.
     """
     if privacy_changed:
         event_type = EVENT_PRIVACY_UPDATE
@@ -183,6 +211,7 @@ async def record_consent_refresh(
         privacy_version=privacy_version,
         terms_version=terms_version,
         marketing_optin=marketing_optin,
+        analytics_consent=analytics_consent,
         request=request,
     )
 
@@ -192,6 +221,7 @@ async def record_marketing_optin_change(
     *,
     user_id: UUID,
     new_value: bool,
+    analytics_consent: bool,
     request: Request | None = None,
 ) -> ConsentSnapshot:
     """Snapshot when the user toggles their marketing-mail flag.
@@ -208,6 +238,37 @@ async def record_marketing_optin_change(
         privacy_version=PRIVACY_POLICY_VERSION,
         terms_version=TERMS_VERSION,
         marketing_optin=new_value,
+        analytics_consent=analytics_consent,
+        request=request,
+    )
+
+
+async def record_analytics_optin_change(
+    db: AsyncSession,
+    *,
+    user_id: UUID,
+    new_value: bool,
+    marketing_optin: bool,
+    request: Request | None = None,
+) -> ConsentSnapshot:
+    """Snapshot when the user toggles the analytics-opt-in flag.
+
+    v23.8 — the analytics pipeline is opt-in, and DSGVO Art. 7
+    requires we can demonstrate consent (and consent withdrawal).
+    Every flip — both directions — produces a row here. The
+    ``new_value`` lands in both ``analytics_consent`` (the new
+    state at the moment of the snapshot) and the snapshot's
+    ``event_type`` (``analytics_optin_change``) so the row is
+    self-describing without a join to ``users``.
+    """
+    return await record_consent(
+        db,
+        event_type=EVENT_ANALYTICS_OPTIN_CHANGE,
+        user_id=user_id,
+        privacy_version=PRIVACY_POLICY_VERSION,
+        terms_version=TERMS_VERSION,
+        marketing_optin=marketing_optin,
+        analytics_consent=new_value,
         request=request,
     )
 
@@ -215,10 +276,12 @@ async def record_marketing_optin_change(
 # Re-export the event-type constants so call sites only import from
 # this module and don't need to know about the model file.
 __all__ = (
+    "EVENT_ANALYTICS_OPTIN_CHANGE",
     "EVENT_MARKETING_OPTIN_CHANGE",
     "EVENT_PRIVACY_UPDATE",
     "EVENT_REGISTRATION",
     "EVENT_TERMS_UPDATE",
+    "record_analytics_optin_change",
     "record_consent",
     "record_consent_refresh",
     "record_marketing_optin_change",

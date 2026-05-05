@@ -26,6 +26,8 @@ import { DatenschutzPage } from "./pages/DatenschutzPage";
 import { AGBPage } from "./pages/AGBPage";
 import { ApiPricingPage } from "./pages/ApiPricingPage";
 import { DevelopersPage } from "./pages/DevelopersPage";
+import { PrivacySettingsPage } from "./pages/PrivacySettingsPage";
+import { AdminAnalyticsPage } from "./pages/AdminAnalyticsPage";
 
 function AuthenticatedApp() {
   return (
@@ -42,6 +44,18 @@ function AuthenticatedApp() {
           <Route path="/profile" element={<ProfilePage />} />
           <Route path="/api-keys" element={<ApiKeysPage />} />
           <Route path="/subscription" element={<SubscriptionPage />} />
+          {/* v23.8 — privacy settings + admin analytics. Both routes
+              are mounted unconditionally; the admin page renders a
+              local 403 fallback for non-admins (matches the backend
+              gate) so we don't need a conditional route. */}
+          <Route
+            path="/settings/datenschutz"
+            element={<PrivacySettingsPage />}
+          />
+          <Route
+            path="/admin/analytics"
+            element={<AdminAnalyticsPage />}
+          />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AppShell>
