@@ -50,7 +50,7 @@ den Mengen und Preisen weitermachen.
 > in LV 12345 zustande kommt."*
 
 Der Agent ruft `get_position_with_proof` auf und übersetzt die
-Berechnungsnachweise (Raum, Wandfläche brutto, ÖNORM-Faktor,
+Berechnungsnachweise (Raum, Wandfläche brutto, Berechnungs-Faktor,
 Öffnungsabzüge) in eine Erklärung für den Auftraggeber.
 
 **Szenario 3 — Preise tunen**
@@ -259,7 +259,7 @@ Agent kennt sie automatisch.
 | `list_rooms`               | Flache Raumliste mit Geometrie.                  |
 | `list_lvs`                 | Alle LVs eines Projekts.                         |
 | `get_lv`                   | LV komplett mit Gruppen + Positionen.            |
-| `get_position_with_proof`  | Position + Berechnungsnachweise (ÖNORM B 2210).  |
+| `get_position_with_proof`  | Position + Berechnungsnachweise (Mengenermittlung). |
 | `list_templates`           | Vorlagen (System + eigene), filterbar.           |
 
 ### Schreibend

@@ -15,7 +15,18 @@ export function Footer() {
           <span className="font-semibold text-foreground">BauLV</span>
           <span className="text-muted-foreground">— &copy; 2026</span>
         </div>
+        {/* v23.7 — added the API + Developers links so the public-
+            facing surface advertises the MCP integration to anyone
+            scrolling to the bottom of the landing page. Legal links
+            stay on the right edge as the Impressumpflicht expects. */}
         <nav className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1">
+          <Link to="/api-pricing" className="hover:text-foreground">
+            API für Entwickler
+          </Link>
+          <Link to="/developers" className="hover:text-foreground">
+            Developer-Doku
+          </Link>
+          <span className="hidden text-muted-foreground/40 md:inline">·</span>
           <Link to="/impressum" className="hover:text-foreground">
             Impressum
           </Link>

@@ -5,12 +5,12 @@ Austrian construction language. Quantities and unit-price placeholders
 come from the deterministic calculation engine — AI is strictly for
 prose.
 
-The previous version retrieved chunks from an ÖNORM RAG index and
-injected them into the prompt. That index has been removed; Claude
-now relies on its baseline knowledge of Austrian building practice
-plus the trade and kurztext of each position to produce text. If the
-result is wrong, the user edits it (or locks the position) — same as
-before.
+A previous iteration retrieved chunks from an external RAG index of
+construction-rule documents and injected them into the prompt. That
+index has been removed; Claude now relies on its baseline knowledge
+of Austrian building practice plus the trade and kurztext of each
+position to produce text. If the result is wrong, the user edits it
+(or locks the position) — same as before.
 """
 
 import json

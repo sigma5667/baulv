@@ -47,9 +47,9 @@ SYSTEM_PROMPT = (
 # ``claude-sonnet-4-5`` ID fell out of rotation and was returning
 # persistent 503s. The in-app advisor reasons about construction
 # project context so Sonnet-tier capability is the right floor (Haiku
-# would skimp on the nuanced ÖNORM-style advice the German prompt
-# elicits). If a future regression points at the model ID, bump this
-# to ``claude-opus-4-7`` — same API shape.
+# would skimp on the nuanced building-industry advice the German
+# prompt elicits). If a future regression points at the model ID,
+# bump this to ``claude-opus-4-7`` — same API shape.
 ADVISOR_MODEL = "claude-sonnet-4-6"
 
 

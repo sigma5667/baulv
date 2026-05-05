@@ -12,8 +12,13 @@ class Berechnungsnachweis(Base):
     """Traceable calculation proof for each position per room.
 
     Every calculated quantity must show: which room, which formula,
-    which ÖNORM factor, and the result. This is the core traceability
-    requirement of the system.
+    which surcharge factor, and the result. This is the core
+    traceability requirement of the system.
+
+    Column-name note: the ``onorm_*`` legacy column names persist
+    here for migration-cost reasons. They are aliased to neutral
+    public-facing names (``rule_factor``, ``rule_paragraph``,
+    ``rule_ref``) at the Pydantic layer — see ``schemas/lv.py``.
     """
     __tablename__ = "berechnungsnachweise"
 

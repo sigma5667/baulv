@@ -41,9 +41,23 @@ export function DashboardPage() {
 
   const createMutation = useMutation({
     mutationFn: createProject,
-    onSuccess: () => {
+    onSuccess: (project) => {
       queryClient.invalidateQueries({ queryKey: ["projects"] });
       setShowForm(false);
+      // v23.7 (Bug 5) — confirmation toast, consistent with the
+      // delete-toast in the same page. The server returns the
+      // newly-created project so we can surface the name in the
+      // message; falls back to a generic phrase if the response
+      // ever lacks a name (defensive — in practice the schema
+      // requires it).
+      toast.success(
+        project?.name
+          ? `Projekt „${project.name}" wurde angelegt.`
+          : "Projekt wurde angelegt.",
+      );
+    },
+    onError: () => {
+      toast.error("Anlegen fehlgeschlagen. Bitte versuchen Sie es erneut.");
     },
   });
 

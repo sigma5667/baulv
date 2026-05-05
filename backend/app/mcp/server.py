@@ -325,7 +325,7 @@ _TOOLS: list[mcp_types.Tool] = [
         name="get_position_with_proof",
         description=(
             "Liefert eine einzelne Position mit allen "
-            "Berechnungsnachweisen (Raum, Formel, ÖNORM-Faktor, "
+            "Berechnungsnachweisen (Raum, Formel, Berechnungs-Faktor, "
             "Abzüge, Netto-Menge). Genau das, was der Agent braucht, "
             "um eine Mengenermittlung zu erklären oder zu prüfen."
         ),

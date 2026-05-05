@@ -1,7 +1,8 @@
-"""Tests for Malerarbeiten calculation engine (ÖNORM B 2230-1).
+"""Tests for the Malerarbeiten calculation engine.
 
 These tests verify the deterministic, traceable calculation of
-quantities for painter work according to Austrian standards.
+quantities for painter work according to standard Austrian
+construction-industry measurement rules.
 """
 
 import uuid
@@ -83,7 +84,7 @@ class TestMalerarbeitenBasic:
 
 
 class TestMalerarbeitenDeductions:
-    """Opening deductions per ÖNORM B 2230-1."""
+    """Opening deductions following standard Austrian measurement rules."""
 
     def test_small_opening_not_deducted(self, calculator):
         """Openings < 5.0 m² on plaster are NOT deducted."""
@@ -116,7 +117,7 @@ class TestMalerarbeitenDeductions:
 
 
 class TestMalerarbeitenFactors:
-    """ÖNORM surcharge factors."""
+    """Surcharge factors (Treppenhaus, Höhenzuschlag)."""
 
     def test_staircase_factor(self, calculator):
         """Staircase gets factor 1.5."""
@@ -182,14 +183,28 @@ class TestMalerarbeitenTraceability:
                 assert line.room_id
                 assert line.room_name == "Wohnzimmer"
 
-    def test_measurement_lines_have_onorm_reference(self, calculator):
+    def test_measurement_lines_have_rule_reference(self, calculator):
+        """Every measurement line carries a non-empty rule reference
+        + paragraph string. v23.7 changed the values from the old
+        ``B2230-1_*`` slugs / ``§3.x ÖNORM B 2230-1`` paragraphs to
+        neutral German labels (``wandbeschichtung``,
+        ``§3.2 Wandbeschichtung`` etc.) — the test now asserts shape
+        rather than a specific ÖNORM reference."""
         room = _make_room()
         results = calculator.calculate([room])
 
         for pos in results:
             for line in pos.measurement_lines:
-                assert line.onorm_rule_ref.startswith("B2230-1")
-                assert "ÖNORM B 2230-1" in line.onorm_paragraph
+                assert line.onorm_rule_ref
+                assert line.onorm_paragraph
+                # The neutralised paragraph string starts with a
+                # paragraph marker and a German topic label — no
+                # norm-number references.
+                assert line.onorm_paragraph.startswith("§")
+                # Defensive: lock that no ÖNORM reference slipped
+                # back in.
+                assert "ÖNORM" not in line.onorm_paragraph
+                assert "ÖNORM" not in line.onorm_rule_ref
 
     def test_measurement_lines_have_formula(self, calculator):
         room = _make_room(perimeter=18.0, height=2.7)

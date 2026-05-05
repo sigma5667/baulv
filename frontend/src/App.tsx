@@ -24,6 +24,8 @@ import { ChatPage } from "./pages/ChatPage";
 import { ImpressumPage } from "./pages/ImpressumPage";
 import { DatenschutzPage } from "./pages/DatenschutzPage";
 import { AGBPage } from "./pages/AGBPage";
+import { ApiPricingPage } from "./pages/ApiPricingPage";
+import { DevelopersPage } from "./pages/DevelopersPage";
 
 function AuthenticatedApp() {
   return (
@@ -88,6 +90,14 @@ export default function App() {
       <Route path="/impressum" element={<ImpressumPage />} />
       <Route path="/datenschutz" element={<DatenschutzPage />} />
       <Route path="/agb" element={<AGBPage />} />
+
+      {/* v23.7 — public marketing + technical landing pages for the
+          MCP API. Both are reachable without authentication; the
+          tier CTAs link into the existing /app/api-keys flow when
+          the user is logged in, and the ProtectedRoute bounces them
+          to /login otherwise. */}
+      <Route path="/api-pricing" element={<ApiPricingPage />} />
+      <Route path="/developers" element={<DevelopersPage />} />
 
       {/* Protected app routes */}
       <Route path="/app/*" element={<AuthenticatedApp />} />

@@ -83,7 +83,7 @@
     {
       "name": "get_position_with_proof",
       "category": "read",
-      "description": "Einzelne Position mit allen Berechnungsnachweisen (Raum, Formel, ÖNORM-Faktor, Abzüge)."
+      "description": "Einzelne Position mit allen Berechnungsnachweisen (Raum, Formel, Berechnungs-Faktor, Abzüge)."
     },
     {
       "name": "list_templates",

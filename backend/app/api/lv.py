@@ -326,8 +326,53 @@ async def run_calculation(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Run the deterministic calculation engine for this LV."""
+    """Run the deterministic calculation engine for this LV.
+
+    Pre-flight: returns a 400 with a friendly German message if the
+    project has zero rooms. The calculation engine itself raises
+    ``ValueError`` in that case (see ``calculate_lv``); the early
+    check here gives operators a clean grep target ("calculate.no_rooms")
+    and guards against any future engine refactor that might let the
+    no-rooms path fall through to a 500. v23.7 hardened this after a
+    tester observed the engine raising for a hypothetical edge case
+    where ``rooms`` was empty but the trade calculator's internal
+    invariants asserted on a non-empty list.
+    """
     await verify_lv_owner(lv_id, user, db)
+
+    # Pre-flight room count. The engine ALSO checks this and raises a
+    # ValueError → 400, but doing it here means the failure mode is
+    # explicit at the API surface and we never even spin up the
+    # eager-load query for an LV we know can't be calculated.
+    lv = await db.get(Leistungsverzeichnis, lv_id)
+    if lv is None:
+        # Defence in depth — verify_lv_owner above already 404s if
+        # ownership/lookup fails, but the explicit branch makes the
+        # intent unambiguous.
+        raise HTTPException(404, "LV nicht gefunden")
+    room_count_stmt = (
+        select(func.count(Room.id))
+        .join(Unit, Room.unit_id == Unit.id)
+        .join(Floor, Unit.floor_id == Floor.id)
+        .join(Building, Floor.building_id == Building.id)
+        .where(Building.project_id == lv.project_id)
+    )
+    room_count = (await db.execute(room_count_stmt)).scalar_one()
+    if room_count == 0:
+        logger.info(
+            "calculate.no_rooms lv_id=%s project_id=%s user_id=%s",
+            lv_id,
+            lv.project_id,
+            user.id,
+        )
+        raise HTTPException(
+            400,
+            "Bitte zuerst Räume hinzufügen oder einen Bauplan analysieren, "
+            "bevor Sie berechnen. Sie können entweder einen Plan hochladen "
+            "und über die Plananalyse Räume extrahieren oder die "
+            "Gebäudestruktur manuell anlegen.",
+        )
+
     try:
         results = await calculate_lv(lv_id, db)
         return {

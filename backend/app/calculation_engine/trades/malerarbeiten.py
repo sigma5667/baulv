@@ -1,7 +1,10 @@
-"""ÖNORM B 2230-1: Maler- und Beschichtungsarbeiten
+"""Maler- und Beschichtungsarbeiten — Mengenermittlung.
 
 Deterministic calculation of all quantities for painter work
-according to Austrian standard ÖNORM B 2230-1.
+according to standard Austrian construction-industry measurement
+rules. The rule references in this module are deliberately neutral —
+``rule_ref`` strings carry internal slugs (e.g. ``wandbeschichtung``)
+and ``rule_paragraph`` strings carry plain-language section labels.
 
 Key rules implemented:
 - Wall painting: perimeter × height, deductions for openings > 5.0 m² (on plaster/concrete)
@@ -29,9 +32,12 @@ from app.calculation_engine.types import (
 class MalerarbeitenCalculator(TradeCalculator):
 
     trade_name = "malerarbeiten"
-    onorm_reference = "B 2230-1"
+    # Internal label kept for backwards-compat with the abstract base
+    # class. Surfaced nowhere user-visible. Public API only renders
+    # the per-line ``rule_ref`` / ``rule_paragraph`` values.
+    onorm_reference = "Maler-Beschichtung"
 
-    # ÖNORM B 2230-1 constants
+    # Calculation constants for wall and ceiling painting.
     DEDUCTION_THRESHOLD_PUTZ_M2 = Decimal("5.0")     # Openings on plaster/concrete: deduct >5.0 m²
     DEDUCTION_THRESHOLD_HOLZ_M2 = Decimal("0.5")     # Openings on wood/metal: deduct >0.5 m²
     STAIRCASE_FACTOR = Decimal("1.5")                  # Treppenhaus factor
@@ -153,8 +159,8 @@ class MalerarbeitenCalculator(TradeCalculator):
             formula_expression=" ".join(formula_parts),
             raw_quantity=self._round(gross_wall),
             onorm_factor=self._round(combined_factor, 4),
-            onorm_rule_ref="B2230-1_wandbeschichtung",
-            onorm_paragraph="§3.2 ÖNORM B 2230-1",
+            onorm_rule_ref="wandbeschichtung",
+            onorm_paragraph="§3.2 Wandbeschichtung",
             deductions=deduction_details,
             net_quantity=self._round(net),
             unit="m2",
@@ -189,8 +195,8 @@ class MalerarbeitenCalculator(TradeCalculator):
             formula_expression=" ".join(formula_parts),
             raw_quantity=self._round(ceiling),
             onorm_factor=self._round(combined_factor, 4),
-            onorm_rule_ref="B2230-1_deckenbeschichtung",
-            onorm_paragraph="§3.3 ÖNORM B 2230-1",
+            onorm_rule_ref="deckenbeschichtung",
+            onorm_paragraph="§3.3 Deckenbeschichtung",
             deductions=[],
             net_quantity=self._round(net),
             unit="m2",
@@ -214,15 +220,15 @@ class MalerarbeitenCalculator(TradeCalculator):
             formula_expression=f"Öffnungen: {opening_desc}",
             raw_quantity=self._round(leibung),
             onorm_factor=Decimal("1.0"),
-            onorm_rule_ref="B2230-1_leibung",
-            onorm_paragraph="§3.5 ÖNORM B 2230-1",
+            onorm_rule_ref="leibung",
+            onorm_paragraph="§3.5 Leibungen",
             deductions=[],
             net_quantity=self._round(leibung),
             unit="m2",
         )
 
     def _height_factor(self, height_m: Decimal) -> Decimal:
-        """ÖNORM B 2230-1 height surcharge factor."""
+        """Height surcharge factor — branchenüblich für Räume > 3,20 m."""
         if height_m > Decimal("5.0"):
             return self.HEIGHT_FACTOR_OVER_500
         elif height_m > Decimal("3.2"):

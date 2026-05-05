@@ -11,10 +11,11 @@ from app.calculation_engine.types import (
 
 
 class TradeCalculator(ABC):
-    """Abstract base class for trade-specific ÖNORM calculation modules.
+    """Abstract base class for trade-specific calculation modules.
 
     Each trade (Gewerk) implements this class with its specific
-    measurement rules from the relevant ÖNORM standard.
+    Mengenermittlung rules according to standard Austrian
+    construction-industry measurement practice.
 
     CRITICAL: All calculations must be deterministic and traceable.
     No AI calls, no database access, no side effects.
@@ -28,7 +29,10 @@ class TradeCalculator(ABC):
     @property
     @abstractmethod
     def onorm_reference(self) -> str:
-        """ÖNORM standard reference, e.g., 'B 2230-1'."""
+        """Internal trade-reference label. Surfaced nowhere user-visible
+        — kept for backward compatibility with subclasses; the public
+        API only renders per-line ``rule_ref``/``rule_paragraph``
+        strings, which carry the human-readable rule labels."""
 
     @abstractmethod
     def calculate(self, rooms: list[RoomWithOpenings]) -> list[PositionQuantity]:
@@ -68,10 +72,11 @@ class TradeCalculator(ABC):
         room: RoomWithOpenings,
         min_area: Decimal,
     ) -> tuple[Decimal, list[DeductionDetail]]:
-        """Calculate opening deductions according to ÖNORM rules.
+        """Calculate opening deductions per the trade's measurement rules.
 
-        Most ÖNORM standards specify a minimum opening area below which
-        openings are NOT deducted (e.g., >2.5 m² or >5.0 m²).
+        Standard Austrian construction-industry rules specify a
+        minimum opening area below which openings are NOT deducted
+        (typically > 2.5 m² or > 5.0 m² depending on substrate).
 
         Returns:
             Tuple of (total_deduction, list_of_detail_records)

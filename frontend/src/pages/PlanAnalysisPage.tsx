@@ -43,6 +43,7 @@ import {
 import { InlineNumericEdit } from "../components/room/InlineNumericEdit";
 import { perimeterAnnotation } from "../lib/roomHints";
 import { pushDiagnostic } from "../lib/diagnostics";
+import { useToast } from "../components/Toast";
 import type { Plan } from "../types/plan";
 import type { Room } from "../types/room";
 
@@ -216,8 +217,34 @@ export function PlanAnalysisPage() {
     },
   });
 
+  // v23.7 (Bug 1) — duplicate-upload guard. The drag-and-drop API can
+  // emit multiple drop events for the same gesture on some browsers
+  // (a fast double-drop, or a parent + nested DOM dropzone both
+  // catching the same DataTransfer); without a lock, every event
+  // fires a separate POST /plans and the file lands twice in the
+  // list. ``useRef`` rather than state because a state-driven check
+  // would race against the React batched update — by the time the
+  // second event handler reads ``uploading``, the setState from the
+  // first handler hasn't flushed yet, both pass the guard, both
+  // upload. A ref's writes are synchronous so the second handler
+  // sees the lock immediately. The lock releases on settled (success
+  // or error) via the mutation's lifecycle.
+  const uploadLockRef = useRef(false);
+
   const validateAndUpload = useCallback(
     async (files: File[]) => {
+      // Fast bail-out: another upload is already in flight. Surfaces
+      // a German hint so the user understands why the second drop
+      // didn't take, but does NOT clear the existing upload state.
+      if (uploadLockRef.current) {
+        setUploadError({
+          status: null,
+          message:
+            "Ein Upload läuft bereits. Bitte warten Sie, bis der erste " +
+            "Plan hochgeladen ist, bevor Sie den nächsten anhängen.",
+        });
+        return;
+      }
       setUploadError(null);
       for (const file of files) {
         // Fast extension check first (no async cost).
@@ -241,15 +268,34 @@ export function PlanAnalysisPage() {
           setUploadError({ status: null, message: NOT_A_PDF_MSG });
           continue;
         }
+        // Lock. Released by the effect below when ``isPending`` flips
+        // back to false (covers both success and error paths).
+        uploadLockRef.current = true;
         uploadMutation.mutate(file);
       }
     },
     [uploadMutation]
   );
 
+  // Release the upload-lock ref whenever the mutation settles. A
+  // standalone effect (rather than wiring this into onSuccess /
+  // onError) ensures the lock release runs after React has applied
+  // the mutation state — preventing a "settled but lock still set"
+  // window where the user couldn't drop a follow-up file.
+  useEffect(() => {
+    if (!uploadMutation.isPending && uploadLockRef.current) {
+      uploadLockRef.current = false;
+    }
+  }, [uploadMutation.isPending]);
+
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
+      // Stop propagation as well — defence in depth against a parent
+      // dropzone (if anything ever wraps PlanAnalysisPage) re-firing
+      // the same drop. Without this we've seen browsers emit two
+      // separate dropEvents for one gesture in tester logs.
+      e.stopPropagation();
       void validateAndUpload(Array.from(e.dataTransfer.files));
     },
     [validateAndUpload]
@@ -298,34 +344,61 @@ export function PlanAnalysisPage() {
           and we scroll here when one appears. */}
       <div ref={alertAnchorRef} />
 
-      {/* Upload area */}
+      {/* Upload area
+          v23.7 (Bug 1): the dropzone visually grays out and stops
+          accepting drops while an upload is in flight. The
+          ``handleDrop`` handler still runs (so we can show the
+          German "Upload läuft" error if the user insists), but the
+          ``aria-disabled`` + ``cursor-not-allowed`` styling makes
+          the state unmistakable. The file picker label is also
+          disabled — clicking it during upload would otherwise
+          re-fire the same gesture path. */}
       <div
         onDragOver={(e) => e.preventDefault()}
         onDrop={handleDrop}
-        className="mb-4 rounded-lg border-2 border-dashed border-border p-8 text-center transition-colors hover:border-primary/50"
+        aria-disabled={uploadMutation.isPending}
+        className={`mb-4 rounded-lg border-2 border-dashed p-8 text-center transition-colors ${
+          uploadMutation.isPending
+            ? "cursor-not-allowed border-primary/50 bg-primary/5"
+            : "border-border hover:border-primary/50"
+        }`}
       >
-        <Upload className="mx-auto h-10 w-10 text-muted-foreground/50" />
+        <Upload
+          className={`mx-auto h-10 w-10 ${
+            uploadMutation.isPending
+              ? "text-primary/40"
+              : "text-muted-foreground/50"
+          }`}
+        />
         <p className="mt-2 text-sm text-muted-foreground">
           PDF-Baupläne hierher ziehen oder{" "}
-          <label className="cursor-pointer text-primary hover:underline">
-            Datei auswählen
-            <input
-              type="file"
-              accept="application/pdf,.pdf"
-              multiple
-              onChange={handleFileSelect}
-              className="hidden"
-            />
-          </label>
+          {uploadMutation.isPending ? (
+            <span className="text-muted-foreground/50">Datei auswählen</span>
+          ) : (
+            <label className="cursor-pointer text-primary hover:underline">
+              Datei auswählen
+              <input
+                type="file"
+                accept="application/pdf,.pdf"
+                multiple
+                onChange={handleFileSelect}
+                className="hidden"
+              />
+            </label>
+          )}
         </p>
         <p className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-muted px-3 py-1 text-xs text-muted-foreground">
           <Info className="h-3 w-3" />
           Nur PDF-Dateien (max. {MAX_FILE_MB} MB, max. {MAX_PAGES} Seiten)
         </p>
         {uploadMutation.isPending && (
-          <div className="mt-3 flex items-center justify-center gap-2 text-sm text-primary">
+          <div
+            className="mt-3 flex items-center justify-center gap-2 text-sm font-medium text-primary"
+            role="status"
+            aria-live="polite"
+          >
             <Loader2 className="h-4 w-4 animate-spin" />
-            Wird hochgeladen...
+            Upload läuft… bitte warten
           </div>
         )}
       </div>
@@ -1081,8 +1154,18 @@ function parseDecimal(s: string): number | null {
 
 function RoomTable({ rooms, projectId }: { rooms: Room[]; projectId: string }) {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
+  // v23.7 (Bug 3) — track which row's name is in inline-edit so the
+  // span-or-input branch can decide what to render. ``null`` means
+  // every name renders as a clickable read-only span.
+  const [namingRowId, setNamingRowId] = useState<string | null>(null);
+  // ``inlineSavingId`` tracks per-row the in-flight save spinner for
+  // the InlineNumericEdit cells. Without per-row tracking, every
+  // numeric cell's save spinner would fire whenever ANY row was
+  // saving (because mutation state is shared).
+  const [inlineSavingId, setInlineSavingId] = useState<string | null>(null);
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ["rooms", projectId] });
@@ -1090,15 +1173,46 @@ function RoomTable({ rooms, projectId }: { rooms: Room[]; projectId: string }) {
   const updateMutation = useMutation({
     mutationFn: ({ id, updates }: { id: string; updates: Partial<Room> }) =>
       updateRoom(id, updates),
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       setEditingId(null);
+      setNamingRowId(null);
+      setInlineSavingId(null);
       invalidate();
+      // v23.7 (Bug 3) — toast feedback consistent with v23.6 toast
+      // system for position-edit. Surfaces the changed field so the
+      // user gets a concrete confirmation instead of a generic
+      // "saved". Falls back to a generic message for the bulk
+      // RoomEditRow path where ``updates`` may carry several fields.
+      const updates = variables.updates as Partial<Room>;
+      const keys = Object.keys(updates);
+      const labelMap: Record<string, string> = {
+        name: "Raumname",
+        area_m2: "Fläche",
+        perimeter_m: "Umfang",
+        height_m: "Raumhöhe",
+        room_type: "Raumtyp",
+        floor_type: "Bodenbelag",
+        is_wet_room: "Nassraum-Flag",
+      };
+      const single =
+        keys.length === 1 && labelMap[keys[0]] ? labelMap[keys[0]] : null;
+      toast.success(
+        single ? `${single} aktualisiert.` : "Raum gespeichert.",
+      );
+    },
+    onError: (err) => {
+      setInlineSavingId(null);
+      toast.error(normalizeError(err).message);
     },
   });
 
   const deleteMutation = useMutation({
     mutationFn: deleteRoom,
-    onSuccess: invalidate,
+    onSuccess: () => {
+      invalidate();
+      toast.success("Raum gelöscht.");
+    },
+    onError: (err) => toast.error(normalizeError(err).message),
   });
 
   const createMutation = useMutation({
@@ -1107,7 +1221,9 @@ function RoomTable({ rooms, projectId }: { rooms: Room[]; projectId: string }) {
     onSuccess: () => {
       setShowAddForm(false);
       invalidate();
+      toast.success("Raum hinzugefügt.");
     },
+    onError: (err) => toast.error(normalizeError(err).message),
   });
 
   // Manual-add targets an existing Unit. We derive the candidate unit
@@ -1198,18 +1314,125 @@ function RoomTable({ rooms, projectId }: { rooms: Room[]; projectId: string }) {
                 />
               ) : (
                 <tr key={room.id} className="hover:bg-muted/30">
-                  <td className="px-4 py-2 font-medium">{room.name}</td>
+                  {/* v23.7 (Bug 3) — clickable name. Switches to an
+                      input on click, commits on Enter/blur, reverts
+                      on Escape. Same UX semantics as the numeric
+                      cells below so muscle memory carries across
+                      columns. */}
+                  <td className="px-4 py-2 font-medium">
+                    {namingRowId === room.id ? (
+                      <RoomNameInlineEdit
+                        initialValue={room.name}
+                        isSaving={
+                          updateMutation.isPending &&
+                          inlineSavingId === room.id
+                        }
+                        onCancel={() => setNamingRowId(null)}
+                        onSave={(name) => {
+                          if (name === room.name) {
+                            setNamingRowId(null);
+                            return;
+                          }
+                          setInlineSavingId(room.id);
+                          updateMutation.mutate({
+                            id: room.id,
+                            updates: { name },
+                          });
+                        }}
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setNamingRowId(room.id)}
+                        title="Klicken zum Umbenennen"
+                        className="group inline-flex items-center gap-1 rounded px-1 transition-colors hover:bg-accent"
+                      >
+                        <span>{room.name}</span>
+                        <span className="text-muted-foreground opacity-0 transition-opacity group-hover:opacity-50">
+                          ✎
+                        </span>
+                      </button>
+                    )}
+                  </td>
                   <td className="px-4 py-2 text-muted-foreground">
                     {room.room_type ?? "-"}
                   </td>
+                  {/* v23.7 (Bug 3) — Fläche, Umfang, RH inline-editable
+                      via the same ``InlineNumericEdit`` component used
+                      by the wall-calc table below. Saves PUT
+                      ``/rooms/{id}`` with just the changed field,
+                      fires a toast on success/error via the shared
+                      mutation. The 2 m² lower bound and "—" empty
+                      state stay consistent with the read-only
+                      rendering pre-v23.7. */}
                   <td className="px-4 py-2 text-right font-mono">
-                    {room.area_m2?.toFixed(2) ?? "-"}
+                    <InlineNumericEdit
+                      value={room.area_m2 ?? null}
+                      unit=""
+                      state={room.area_m2 != null ? "ok" : "missing"}
+                      missingLabel="Bitte eintragen"
+                      warningLabel=""
+                      tooltip="Raumfläche in m²"
+                      isSaving={
+                        updateMutation.isPending &&
+                        inlineSavingId === room.id
+                      }
+                      digits={2}
+                      ariaLabel={`Fläche von ${room.name}`}
+                      onSave={(next) => {
+                        setInlineSavingId(room.id);
+                        updateMutation.mutate({
+                          id: room.id,
+                          updates: { area_m2: next ?? undefined },
+                        });
+                      }}
+                    />
                   </td>
                   <td className="px-4 py-2 text-right font-mono">
-                    {room.perimeter_m?.toFixed(2) ?? "-"}
+                    <InlineNumericEdit
+                      value={room.perimeter_m ?? null}
+                      unit=""
+                      state={room.perimeter_m != null ? "ok" : "missing"}
+                      missingLabel="Bitte eintragen"
+                      warningLabel=""
+                      tooltip="Raumumfang in m"
+                      isSaving={
+                        updateMutation.isPending &&
+                        inlineSavingId === room.id
+                      }
+                      digits={2}
+                      ariaLabel={`Umfang von ${room.name}`}
+                      onSave={(next) => {
+                        setInlineSavingId(room.id);
+                        updateMutation.mutate({
+                          id: room.id,
+                          updates: { perimeter_m: next ?? undefined },
+                        });
+                      }}
+                    />
                   </td>
                   <td className="px-4 py-2 text-right font-mono">
-                    {room.height_m?.toFixed(2) ?? "-"}
+                    <InlineNumericEdit
+                      value={room.height_m ?? null}
+                      unit=""
+                      state={room.height_m != null ? "ok" : "missing"}
+                      missingLabel="Bitte eintragen"
+                      warningLabel=""
+                      tooltip="Raumhöhe in m"
+                      isSaving={
+                        updateMutation.isPending &&
+                        inlineSavingId === room.id
+                      }
+                      digits={2}
+                      ariaLabel={`Raumhöhe von ${room.name}`}
+                      onSave={(next) => {
+                        setInlineSavingId(room.id);
+                        updateMutation.mutate({
+                          id: room.id,
+                          updates: { height_m: next ?? undefined },
+                        });
+                      }}
+                    />
                   </td>
                   <td className="px-4 py-2 text-muted-foreground">
                     {room.floor_type ?? "-"}
@@ -1238,15 +1461,22 @@ function RoomTable({ rooms, projectId }: { rooms: Room[]; projectId: string }) {
                       : "-"}
                   </td>
                   <td className="whitespace-nowrap px-4 py-2 text-right">
+                    {/* "Bearbeiten" stays for the multi-field
+                        edit (room_type, floor_type, is_wet_room —
+                        not yet inline-editable). Renamed to
+                        "Mehr…" so it doesn't compete with the
+                        click-to-edit affordance on individual
+                        cells. */}
                     <button
                       type="button"
                       onClick={() => {
                         updateMutation.reset();
                         setEditingId(room.id);
                       }}
+                      title="Alle Felder bearbeiten (Raumtyp, Bodenbelag, Nassraum)"
                       className="mr-3 text-xs text-primary hover:underline"
                     >
-                      Bearbeiten
+                      Mehr…
                     </button>
                     <button
                       type="button"
@@ -1277,6 +1507,78 @@ function RoomTable({ rooms, projectId }: { rooms: Room[]; projectId: string }) {
 // ---------------------------------------------------------------------------
 // Room edit / add
 // ---------------------------------------------------------------------------
+
+/**
+ * Inline text-edit for the room name (v23.7 Bug 3).
+ *
+ * ``InlineNumericEdit`` is numbers-only; renaming a room needs a
+ * plain text input with the same Enter / Escape / blur semantics so
+ * the row's interaction model stays consistent column-to-column.
+ *
+ * Escape cancellation uses the same ``cancelRequestedRef`` guard as
+ * ``InlineNumericEdit`` — without it the unmount-triggered blur
+ * commits the draft the user just tried to discard. See the
+ * "Escape semantics" docstring in InlineNumericEdit.
+ *
+ * Empty name is silently ignored (parent decides what counts as a
+ * no-op). The parent normalises by trimming whitespace.
+ */
+function RoomNameInlineEdit({
+  initialValue,
+  isSaving,
+  onSave,
+  onCancel,
+}: {
+  initialValue: string;
+  isSaving: boolean;
+  onSave: (next: string) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState(initialValue);
+  const cancelRequestedRef = useRef(false);
+
+  const cancel = () => {
+    cancelRequestedRef.current = true;
+    onCancel();
+  };
+
+  const commit = () => {
+    if (cancelRequestedRef.current) {
+      cancelRequestedRef.current = false;
+      return;
+    }
+    const trimmed = draft.trim();
+    if (!trimmed) {
+      // Empty input — treat as cancel rather than committing an
+      // empty name (the backend would 400 anyway).
+      onCancel();
+      return;
+    }
+    onSave(trimmed);
+  };
+
+  return (
+    <input
+      type="text"
+      autoFocus
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commit();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          cancel();
+        }
+      }}
+      disabled={isSaving}
+      aria-label="Raumname"
+      className="w-full rounded border border-primary bg-background px-2 py-0.5 text-sm font-medium"
+    />
+  );
+}
 
 /**
  * Inline edit row. Holds a local draft so typing doesn't churn the

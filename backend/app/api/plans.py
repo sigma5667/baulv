@@ -185,21 +185,52 @@ async def upload_plan(
             f"Maximal {settings.max_plan_file_mb} MB pro Plan erlaubt.",
         )
 
+    # v23.7 — extract page_count from the PDF metadata at upload time.
+    # Pre-v23.7 we deferred this to the AI analysis step (the pipeline
+    # writes ``plan.page_count = len(rendered_pages)`` after rendering),
+    # which meant the plans-list UI rendered "? Seiten" for every plan
+    # the user uploaded but hadn't yet analysed — unprofessional and a
+    # constant pain-point in tester feedback. Reading the page count
+    # here is dirt-cheap (PyMuPDF only parses the xref/trailer, doesn't
+    # render anything) so we do it inline rather than as a background
+    # task. ``page_count`` stays NULL on extraction failure so the UI
+    # falls back to its existing graceful path.
+    extracted_page_count: int | None = None
+    try:
+        import fitz  # PyMuPDF — same lib used by the analysis pipeline
+
+        doc = fitz.open(str(file_path))
+        try:
+            extracted_page_count = doc.page_count
+        finally:
+            doc.close()
+    except Exception as e:  # noqa: BLE001
+        # Best-effort. A corrupt PDF will fail the analysis step
+        # later with a friendly German message; for the upload step
+        # we don't want a metadata read to abort the whole request.
+        logger.warning(
+            "Plan upload: page_count extraction failed plan_file=%s err=%s",
+            file_path,
+            e,
+        )
+
     plan = Plan(
         project_id=project_id,
         filename=file.filename,
         file_path=str(file_path),
         file_size_bytes=actual_size,
+        page_count=extracted_page_count,
         plan_type=plan_type,
     )
     db.add(plan)
     await db.flush()
     logger.info(
-        "Plan uploaded: project=%s plan=%s file=%s bytes=%d",
+        "Plan uploaded: project=%s plan=%s file=%s bytes=%d pages=%s",
         project_id,
         plan.id,
         file.filename,
         actual_size,
+        extracted_page_count if extracted_page_count is not None else "unknown",
     )
     return plan
 

@@ -10,8 +10,9 @@
 
 - **Bauplan-Analyse**: PDF/Bild-Upload → KI extrahiert Räume,
   Wandflächen, Decken, Öffnungen.
-- **Mengenermittlung nach ÖNORM B 2210**: korrekter Wand-/Deckenfaktor,
-  automatische Öffnungsabzüge, transparente Berechnungsnachweise.
+- **Mengenermittlung nach österreichischen Baustandards**: korrekter
+  Wand-/Deckenfaktor, automatische Öffnungsabzüge, transparente
+  Berechnungsnachweise mit branchenüblichen Berechnungsregeln.
 - **LV-Vorlagen-Bibliothek**: System-Vorlagen für Standard-Gewerke
   plus persönliche Vorlagen — ein Klick und das Gerüst steht.
 - **Export**: Excel und PDF für den Auftraggeber.
@@ -86,7 +87,7 @@ der `tools/list`-Call zur Laufzeit.
 - `list_lvs` — Alle Leistungsverzeichnisse eines Projekts.
 - `get_lv` — Komplettes LV inklusive Gruppen und Positionen.
 - `get_position_with_proof` — Einzelne Position mit allen
-  Berechnungsnachweisen (Raum, Formel, ÖNORM-Faktor, Abzüge).
+  Berechnungsnachweisen (Raum, Formel, Berechnungs-Faktor, Abzüge).
 - `list_templates` — Verfügbare LV-Vorlagen (System + eigene),
   optional gefiltert nach Kategorie/Gewerk.
 
@@ -131,5 +132,4 @@ der `tools/list`-Call zur Laufzeit.
 ## Quellen für tieferen Kontext
 
 - MCP-Spezifikation: <https://modelcontextprotocol.io>
-- ÖNORM B 2210: Verputz- und Anstricharbeiten — Mengenermittlung
 - Discovery-JSON: <https://baulv.at/.well-known/mcp.json>

@@ -106,6 +106,21 @@ export function LandingPage() {
             <a href="#pricing" className="text-sm text-muted-foreground hover:text-foreground">
               Preise
             </a>
+            {/* v23.7 — direct links to the API marketing + dev pages
+                so visitors can find the MCP product without scrolling
+                to the footer. */}
+            <Link
+              to="/api-pricing"
+              className="text-sm text-muted-foreground hover:text-foreground"
+            >
+              API
+            </Link>
+            <Link
+              to="/developers"
+              className="text-sm text-muted-foreground hover:text-foreground"
+            >
+              Entwickler
+            </Link>
             <Link
               to="/login"
               className="text-sm font-medium text-primary hover:text-primary/80"

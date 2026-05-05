@@ -38,17 +38,17 @@ class PositionUpdate(BaseModel):
 class BerechnungsnachweisResponse(BaseModel):
     """Traceable calculation proof for a single position × room pair.
 
-    The underlying DB columns are still named ``onorm_factor``,
-    ``onorm_rule_ref``, and ``onorm_paragraph`` because they carry
-    the math metadata emitted by the calculation engine. We expose
-    them under generic names (``rule_factor``, ``rule_ref``,
-    ``rule_paragraph``) so the frontend never sees the word "ÖNORM"
-    — the application is a calculation engine, not a norm library.
+    The underlying DB columns retain their legacy ``onorm_*`` names
+    because renaming them would trigger an unnecessary migration and
+    the names are nowhere user-visible. We expose them under generic
+    public names (``rule_factor``, ``rule_ref``, ``rule_paragraph``)
+    so the API surface stays norm-neutral — the application is a
+    calculation engine, not a standards reference.
 
     ``populate_by_name`` + ``Field(alias=...)`` means the ORM row's
     ``onorm_factor`` attribute still fills the ``rule_factor`` field
     without a manual projection layer; the response JSON uses the
-    generic keys.
+    generic keys exclusively.
     """
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)

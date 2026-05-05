@@ -27,9 +27,12 @@ machinery on our side:
      openings, LVs, groups, positions, calculation proofs, and chat
      sessions/messages in one statement.
 
-  ÖNORM library data (``onorm_dokumente``, ``onorm_regeln``) is shared,
-  non-personal reference data and is intentionally *not* touched — it
-  does not belong to the user.
+  Legacy reference-library tables (``onorm_dokumente``,
+  ``onorm_regeln``) — historical schema, both tables were dropped
+  in migrations 008 and 010 — were shared non-personal data and
+  would be out of scope here regardless. The ``onorm_*`` column
+  names that remain on ``berechnungsnachweise`` are aliased to
+  neutral public names at the API layer (see ``schemas/lv.py``).
 """
 
 from __future__ import annotations
@@ -228,8 +231,7 @@ def _plan_dict(p: Plan) -> dict[str, Any]:
 def _berechnung_dict(b: Berechnungsnachweis) -> dict[str, Any]:
     # Column names in the DB still carry the historic ``onorm_`` prefix
     # (see backend/app/db/models/calculation.py). We rename them on the
-    # way out so the exported JSON uses generic terms — the app no
-    # longer presents itself as an ÖNORM tool to the user.
+    # way out so the exported JSON uses generic, norm-neutral keys.
     return _iso(
         {
             "id": b.id,
