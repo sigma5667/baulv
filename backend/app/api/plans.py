@@ -36,7 +36,11 @@ from app.db.models.plan import Plan
 from app.db.models.project import Opening, Room
 from app.db.models.user import User
 from app.db.session import get_db
-from app.plan_analysis.pipeline import PlanAnalysisError, analyze_plan
+from app.plan_analysis.pipeline import (
+    PlanAnalysisError,
+    analyze_plan,
+    analyze_schnitt_plan,
+)
 from app.schemas.plan import (
     PlanDeletionPreview,
     PlanDeletionResult,
@@ -312,11 +316,13 @@ async def trigger_analysis(
         plan.plan_type,
     )
 
-    # v24.1 — Plan-Typ Gate. The analysis pipeline is grundriss-only
-    # for now. Lageplan: never analyzed (storage-only); Schnitt:
-    # waiting on Feature 4 (height extraction) which lands in v24.2.
-    # NULL plan_type counts as ``grundriss`` (legacy plans uploaded
-    # before v24.1) — that's the back-compat path.
+    # v24.2 — Plan-Typ Gate.
+    #
+    # Lageplan: never analysed (storage-only).
+    # Schnitt:  routed through ``analyze_schnitt_plan`` — extracts
+    #           ``height_m`` from the cross-section and writes the
+    #           matched values back onto existing project rooms.
+    # Grundriss / NULL plan_type (legacy): standard ``analyze_plan``.
     if plan.plan_type == PLAN_TYPE_LAGEPLAN:
         raise HTTPException(
             status_code=400,
@@ -325,24 +331,30 @@ async def trigger_analysis(
                 "Speicherung als Projektkontext."
             ),
         )
-    if plan.plan_type == PLAN_TYPE_SCHNITT:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Die Höhen-Extraktion aus Schnitt-Plänen ist derzeit in "
-                "Vorbereitung. Bitte verwenden Sie diesen Plan vorerst "
-                "nur als Referenz für manuelle Höhen-Eingaben."
-            ),
-        )
+
+    is_schnitt = plan.plan_type == PLAN_TYPE_SCHNITT
+    # Pin the analytics ``plan_type`` field so legacy NULL rows still
+    # land on a known value the schema-whitelist accepts.
+    analytics_plan_type = (
+        PLAN_TYPE_SCHNITT if is_schnitt else PLAN_TYPE_GRUNDRISS
+    )
 
     try:
-        result = await analyze_plan(plan_id, db)
-        # v23.8 — analytics signal for plan_analyzed. Best-effort:
-        # the analyse call itself succeeded, the recorder is
+        if is_schnitt:
+            result = await analyze_schnitt_plan(plan_id, db)
+        else:
+            result = await analyze_plan(plan_id, db)
+        # v23.8 / v24.2 — analytics signal for plan_analyzed. Best
+        # effort: the analyse call itself succeeded, the recorder is
         # gated on consent and fail-soft, so we never raise here.
+        # ``plan_type`` differentiates Grundriss vs Schnitt so we can
+        # see how often the Vision-API is invoked for each mode (cost
+        # control + UX signal); ``heights_matched`` is Schnitt-only
+        # and 0 for Grundriss.
         try:
             pages_analyzed = int(result.get("pages_analyzed", 0)) if isinstance(result, dict) else 0
             rooms_extracted = int(result.get("rooms_extracted", 0)) if isinstance(result, dict) else 0
+            heights_matched = int(result.get("heights_matched", 0)) if isinstance(result, dict) else 0
             await analytics_service.record_event(
                 db,
                 event_type=_ANALYTICS_PLAN_ANALYZED,
@@ -350,6 +362,8 @@ async def trigger_analysis(
                 event_data={
                     "pages": pages_analyzed,
                     "rooms_extracted": rooms_extracted,
+                    "plan_type": analytics_plan_type,
+                    "heights_matched": heights_matched,
                 },
             )
         except Exception:  # noqa: BLE001

@@ -188,6 +188,15 @@ _EVENT_SCHEMAS: dict[str, dict[str, ValueSanitiser]] = {
     EVENT_PLAN_ANALYZED: {
         "pages": _int_in_range(0, 100),
         "rooms_extracted": _int_in_range(0, 1000),
+        # v24.1 / v24.2 — differentiate Grundriss vs Schnitt vs
+        # Lageplan in the funnel (Lageplan never reaches this event
+        # but we whitelist the value so a future "log all plan-typ
+        # attempts" pivot doesn't need a migration).
+        "plan_type": _enum_value({"grundriss", "schnitt", "lageplan"}),
+        # v24.2 — Schnitt-only counter. Grundriss runs log 0 here.
+        # Bound matches ``rooms_extracted`` since matches are by
+        # definition ≤ extractions.
+        "heights_matched": _int_in_range(0, 1000),
     },
     EVENT_USER_SIGNUP: {
         "industry": _enum_value(ALLOWED_INDUSTRY_SEGMENTS),

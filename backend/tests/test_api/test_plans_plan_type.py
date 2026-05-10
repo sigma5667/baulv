@@ -1,4 +1,4 @@
-"""Tests for the v24.1 Plan-Typ workflow.
+"""Tests for the v24.1 + v24.2 Plan-Typ workflow.
 
 Coverage:
 
@@ -9,8 +9,9 @@ Coverage:
   3. Analyse-endpoint accepts grundriss (+ legacy NULL plan_type
      as back-compat).
   4. Analyse-endpoint refuses lageplan with a 400 + German message.
-  5. Analyse-endpoint refuses schnitt with a 400 + "in Vorbereitung"
-     message — placeholder until v24.2 ships height extraction.
+  5. **v24.2** — Analyse-endpoint now ROUTES schnitt plans to
+     ``analyze_schnitt_plan`` (height-extraction pipeline). The
+     pre-v24.2 placeholder 400 ("in Vorbereitung") is gone.
 
 The upload tests reuse the helper pattern from
 ``test_plans_upload_metadata.py`` (synthetic PDF via fitz, mock
@@ -239,33 +240,50 @@ async def test_analyse_refuses_lageplan(db_session: AsyncSession):
 
 
 # ---------------------------------------------------------------------------
-# 5. Analyse refuses schnitt with 400 + "in Vorbereitung"
+# 5. Analyse routes schnitt to analyze_schnitt_plan (v24.2)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_analyse_refuses_schnitt_with_v24_2_hint(
+async def test_analyse_routes_schnitt_to_schnitt_pipeline(
     db_session: AsyncSession,
 ):
+    """v24.2 — the placeholder 400 from v24.1 is gone. Schnitt
+    plans now dispatch to ``analyze_schnitt_plan`` which extracts
+    heights and writes them onto matching project rooms. The
+    Grundriss path's ``analyze_plan`` must NOT be invoked for a
+    Schnitt — a regression here would mean we burn the Vision
+    budget extracting room geometry from a cross-section PDF
+    (wrong prompt, wrong output, wasted call)."""
     user, project = await _seed_user_and_project(db_session)
     plan = await _seed_plan_with_type(
         db_session, user=user, project=project, plan_type=PLAN_TYPE_SCHNITT
     )
 
-    with patch("app.api.plans.analyze_plan") as engine_spy, patch(
+    with patch("app.api.plans.analyze_plan") as grundriss_spy, patch(
+        "app.api.plans.analyze_schnitt_plan"
+    ) as schnitt_spy, patch(
         "app.api.plans.verify_plan_owner",
         return_value=plan,
     ):
-        with pytest.raises(HTTPException) as exc_info:
-            await trigger_analysis(
-                plan_id=plan.id, user=user, db=db_session
-            )
-        engine_spy.assert_not_called()
+        schnitt_spy.return_value = {
+            "plan_id": str(plan.id),
+            "pages_analyzed": 1,
+            "rooms_extracted": 3,
+            "heights_extracted": 3,
+            "heights_matched": 2,
+            "rooms_in_project": 5,
+            "page_errors": [],
+        }
+        result = await trigger_analysis(
+            plan_id=plan.id, user=user, db=db_session
+        )
 
-    assert exc_info.value.status_code == 400
-    # Pin the German wording so the frontend's special-casing of
-    # "in Vorbereitung" doesn't drift away from this string.
-    assert "Vorbereitung" in exc_info.value.detail
+    grundriss_spy.assert_not_called()
+    schnitt_spy.assert_called_once()
+    assert result["plan_id"] == str(plan.id)
+    assert result["heights_matched"] == 2
+    assert result["rooms_in_project"] == 5
 
 
 # ---------------------------------------------------------------------------

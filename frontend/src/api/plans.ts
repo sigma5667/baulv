@@ -35,6 +35,19 @@ export interface AnalyzePlanResult {
   rooms_extracted: number;
   /** Per-page errors that didn't fail the whole run (e.g. one bad page). */
   page_errors: string[];
+  /**
+   * v24.2 — Schnitt-only fields. Populated when the analysed plan
+   * was a Schnitt-Plan; the backend pipeline writes height_m onto
+   * matching project rooms and reports the X-of-Y count back so the
+   * frontend can show a precise toast.
+   *
+   * For Grundriss runs these stay undefined; the toast renderer
+   * falls back to the Grundriss copy when ``heights_matched`` is
+   * absent.
+   */
+  heights_extracted?: number;
+  heights_matched?: number;
+  rooms_in_project?: number;
 }
 
 export const analyzePlan = async (planId: string): Promise<AnalyzePlanResult> => {

@@ -1030,3 +1030,446 @@ async def _store_extraction_result(
 
     await db.flush()
     return rooms_created
+
+
+# ---------------------------------------------------------------------------
+# v24.2 — Schnitt-Plan Höhen-Extraktion (Feature 4)
+# ---------------------------------------------------------------------------
+
+
+SCHNITT_HEIGHT_PROMPT = (
+    Path(__file__).parent / "prompts" / "schnitt_height_extraction.txt"
+).read_text(encoding="utf-8")
+
+
+# Plausibility bounds for extracted heights. Anything outside this
+# range is dropped before persisting — the model sometimes gloms
+# onto window-sill heights ("0,90 m") or building-total heights
+# ("12,40 m") and labels them as Raumhöhe. Bounds chosen to fit
+# every plausible Austrian residential / light-commercial room.
+_SCHNITT_MIN_HEIGHT_M = 1.5
+_SCHNITT_MAX_HEIGHT_M = 5.0
+
+
+async def analyze_schnitt_plan(plan_id: UUID, db: AsyncSession) -> dict:
+    """v24.2 — extract ``height_m`` from a Schnitt-Plan and write it
+    onto matching grundriss-rooms.
+
+    Pipeline shape mirrors ``analyze_plan`` but:
+
+      * Prompts Vision with ``SCHNITT_HEIGHT_PROMPT`` (room name +
+        floor + height only — no full room geometry).
+      * Does NOT create new Building/Floor/Unit/Room rows. Schnitt
+        plans are referenced data, not source-of-truth for the
+        building tree.
+      * Matches extracted ``raumname`` strings against existing
+        rooms in the same project via ``_match_schnitt_height``.
+        On match: ``room.height_m`` is set, ``ceiling_height_source``
+        flips to ``"schnitt"``.
+
+    Returns a dict with the standard ``plan_analyzed`` shape plus
+    Schnitt-specific counts (``heights_extracted``, ``heights_matched``,
+    ``rooms_in_project``) so the frontend toast can give a precise
+    "X of Y rooms updated" message and the analytics event has
+    something to log.
+
+    Failure modes are surfaced via ``PlanAnalysisError`` exactly
+    like ``analyze_plan`` does so the route handler's existing
+    ``except PlanAnalysisError`` keeps working.
+    """
+    plan = await db.get(Plan, plan_id)
+    if not plan:
+        raise PlanAnalysisError("Plan wurde nicht gefunden.")
+
+    if not settings.anthropic_api_key:
+        logger.error(
+            "Schnitt analysis requested but ANTHROPIC_API_KEY is not set"
+        )
+        raise PlanAnalysisError(
+            "KI-Analyse ist derzeit nicht verfügbar — der Claude-API-Schlüssel "
+            "ist nicht konfiguriert. Bitte kontaktieren Sie den Support."
+        )
+
+    plan.analysis_status = "processing"
+    await db.flush()
+
+    logger.info(
+        "Starting Schnitt analysis: plan_id=%s file=%s",
+        plan_id,
+        plan.file_path,
+    )
+
+    try:
+        # Re-use the existing PDF→images render path verbatim.
+        # Same DPI ladder, same JPEG fallback, same page cap.
+        try:
+            rendered_pages, render_errors = await asyncio.to_thread(
+                _pdf_to_images, plan.file_path
+            )
+        except FileNotFoundError:
+            raise PlanAnalysisError(
+                "Die hochgeladene PDF-Datei wurde auf dem Server nicht "
+                "gefunden. Bitte laden Sie den Plan erneut hoch."
+            )
+        except RuntimeError as e:
+            logger.exception(
+                "schnitt_pdf_open.failed plan=%s err=%s: %s",
+                plan_id,
+                type(e).__name__,
+                e,
+            )
+            raise PlanAnalysisError(
+                "Die PDF-Datei konnte nicht gelesen werden. Bitte "
+                "prüfen Sie, ob die Datei nicht beschädigt ist."
+            )
+
+        plan.page_count = len(rendered_pages)
+        await db.flush()
+
+        if not rendered_pages and not render_errors:
+            raise PlanAnalysisError("Die PDF enthält keine Seiten.")
+        if not rendered_pages:
+            joined = "; ".join(render_errors[:3])
+            raise PlanAnalysisError(
+                "Keine Seite des Schnitt-Plans konnte für die KI-Analyse "
+                f"vorbereitet werden. {joined}"
+            )
+        if len(rendered_pages) > settings.max_plan_pages:
+            raise PlanAnalysisError(
+                f"Die PDF hat {len(rendered_pages)} Seiten — maximal "
+                f"{settings.max_plan_pages} Seiten pro Plan erlaubt."
+            )
+
+        import anthropic  # late import — same pattern as analyze_plan
+
+        # Vision call per page. Schnitt-Pläne sind typischerweise
+        # 1-2 Seiten; wenn jemand einen 20-Seiten-Schnitt hochlädt
+        # akzeptieren wir das aber lassen den existing page-cap
+        # greifen.
+        all_extracted: list[dict] = []
+        page_errors: list[str] = list(render_errors)
+        for page_number, image_bytes, mime_type in rendered_pages:
+            try:
+                result = await _vision_call(
+                    image_bytes,
+                    mime_type=mime_type,
+                    prompt_text=SCHNITT_HEIGHT_PROMPT,
+                    page_number=page_number,
+                )
+            except asyncio.TimeoutError:
+                page_errors.append(
+                    f"Seite {page_number}: Zeitüberschreitung bei der "
+                    f"KI-Analyse"
+                )
+                continue
+            except anthropic.RateLimitError:
+                page_errors.append(
+                    f"Seite {page_number}: KI-Anfrage abgelehnt — Rate-Limit "
+                    f"erreicht. Bitte einen Moment warten."
+                )
+                break
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "Schnitt vision call failed plan=%s page=%d: %s",
+                    plan_id, page_number, exc,
+                )
+                page_errors.append(
+                    _format_page_error(page_number, exc)
+                )
+                continue
+
+            if not isinstance(result, dict):
+                page_errors.append(
+                    f"Seite {page_number}: KI-Antwort nicht verwertbar"
+                )
+                continue
+            for entry in result.get("rooms", []) or []:
+                if isinstance(entry, dict):
+                    all_extracted.append(entry)
+
+        # Sanitise + match. Empty extraction list is a soft-fail:
+        # we still complete the run with a "no heights extracted"
+        # report so the frontend can show a useful toast instead
+        # of a generic 500.
+        sanitized = _sanitize_schnitt_heights(all_extracted)
+        matched_count = await _apply_schnitt_heights_to_rooms(
+            sanitized, plan.project_id, db
+        )
+
+        # Total room count for the project — for the "X of Y" toast.
+        rooms_in_project = await _count_project_rooms(plan.project_id, db)
+
+        plan.analysis_status = "completed"
+        await db.flush()
+
+        logger.info(
+            "Schnitt analysis completed: plan_id=%s pages=%d "
+            "extracted=%d matched=%d project_rooms=%d errors=%d",
+            plan_id,
+            len(rendered_pages),
+            len(sanitized),
+            matched_count,
+            rooms_in_project,
+            len(page_errors),
+        )
+
+        return {
+            "plan_id": str(plan_id),
+            "pages_analyzed": len(rendered_pages),
+            # Same key as analyze_plan returns so the analytics
+            # event-shape stays uniform across both paths.
+            "rooms_extracted": len(sanitized),
+            # Schnitt-specific keys for the frontend toast.
+            "heights_extracted": len(sanitized),
+            "heights_matched": matched_count,
+            "rooms_in_project": rooms_in_project,
+            "page_errors": page_errors,
+        }
+
+    except PlanAnalysisError:
+        plan.analysis_status = "failed"
+        await db.flush()
+        raise
+    except Exception as e:  # noqa: BLE001
+        logger.exception(
+            "Unexpected failure during Schnitt analysis %s: %s", plan_id, e
+        )
+        plan.analysis_status = "failed"
+        await db.flush()
+        raise PlanAnalysisError(
+            "Bei der Höhen-Extraktion aus dem Schnitt-Plan ist ein "
+            "unerwarteter Fehler aufgetreten. Bitte versuchen Sie es "
+            "erneut oder kontaktieren Sie den Support."
+        )
+
+
+async def _vision_call(
+    image_bytes: bytes,
+    *,
+    mime_type: str,
+    prompt_text: str,
+    page_number: int,
+) -> dict | None:
+    """Generic single-page Vision call. Returns parsed-JSON or None.
+
+    Factored out so the Grundriss path
+    (``_extract_rooms_from_image``) and the Schnitt path
+    (``analyze_schnitt_plan``) share the same JSON-parse +
+    timeout + error-shape contract without one drifting from the
+    other.
+    """
+    import anthropic
+
+    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+    message = await asyncio.wait_for(
+        client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=_VISION_MAX_TOKENS,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": mime_type,
+                                "data": image_b64,
+                            },
+                        },
+                        {"type": "text", "text": prompt_text},
+                    ],
+                }
+            ],
+        ),
+        timeout=_CLAUDE_CALL_TIMEOUT_S,
+    )
+    response_text = "".join(
+        getattr(block, "text", "") for block in (message.content or [])
+    ).strip()
+    if not response_text:
+        logger.warning(
+            "Vision call empty content on page %d", page_number
+        )
+        return None
+    try:
+        return json.loads(_extract_json_blob(response_text))
+    except (json.JSONDecodeError, ValueError) as e:
+        preview = response_text[:500].replace("\n", "\\n")
+        logger.warning(
+            "Vision response not parseable as JSON on page %d: %s — preview=%s",
+            page_number,
+            e,
+            preview,
+        )
+        return None
+
+
+def _normalise_room_name(name: str | None) -> str:
+    """Collapse a room name to its match-key form.
+
+    Lower-case, whitespace-collapsed, dashes/dots/slashes removed,
+    German vowel umlauts NOT folded — Vision returns "Küche" with
+    the umlaut intact and so do we; folding would lose info on
+    rooms like "Küche / Esszimmer". Whitespace normalisation gets
+    us through the typical "WOHNEN / KOCHEN" vs "Wohnen/Kochen"
+    casing/spacing variants.
+    """
+    if not name:
+        return ""
+    s = str(name).lower()
+    # Drop common separators and strip — but keep umlauts so
+    # "wohnzimmer" doesn't collapse onto "wohnzmmr".
+    for ch in ("/", "-", ".", "_"):
+        s = s.replace(ch, " ")
+    return " ".join(s.split())
+
+
+def _normalise_floor_label(label: str | None) -> str:
+    """Compact floor-label match-key. EG / 1.OG / KG / DG variants
+    all fold into a stable lowercase form ("eg", "1og", "kg", "dg")
+    so Vision's typography quirks don't block matches."""
+    if not label:
+        return ""
+    s = str(label).lower().replace(".", "").replace(" ", "")
+    return s
+
+
+def _sanitize_schnitt_heights(
+    raw: list[dict],
+) -> list[dict]:
+    """Drop entries with missing/implausible heights or names.
+
+    Returns a list of sanitised dicts with only the three fields
+    we care about (``raumname``, ``geschoss``, ``hoehe_m``) so the
+    matching layer doesn't have to wade through Vision's optional
+    extras.
+    """
+    out: list[dict] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("raumname")
+        height = entry.get("hoehe_m") or entry.get("höhe_m")
+        if not name:
+            continue
+        try:
+            height_f = float(height)
+        except (TypeError, ValueError):
+            continue
+        if not (_SCHNITT_MIN_HEIGHT_M <= height_f <= _SCHNITT_MAX_HEIGHT_M):
+            continue
+        out.append(
+            {
+                "raumname": str(name),
+                "geschoss": entry.get("geschoss"),
+                "hoehe_m": height_f,
+            }
+        )
+    return out
+
+
+async def _apply_schnitt_heights_to_rooms(
+    extracted: list[dict],
+    project_id: UUID,
+    db: AsyncSession,
+) -> int:
+    """Match each extracted Schnitt-room against project rooms and
+    write the height back. Returns the count of rooms successfully
+    updated.
+
+    Match strategy (in priority order):
+
+      1. Name + floor exact match (after normalisation).
+      2. Name-only exact match (after normalisation), iff the room
+         is unambiguous in the project (only one room with that
+         name across all floors).
+      3. No match → entry skipped.
+
+    Conservative on purpose: we'd rather miss a few heights than
+    paint the wrong height onto the wrong room. The user sees a
+    "X of Y rooms updated" toast and can fill the rest manually
+    via the inline-edit cell.
+    """
+    if not extracted:
+        return 0
+
+    # Eager-load every room in the project once. The project's
+    # building → floor → unit → room tree is small (typically
+    # < 50 rooms) so a single round-trip + Python-side matching
+    # is cheaper than per-extraction-entry queries.
+    stmt = (
+        select(Room, Floor)
+        .join(Unit, Room.unit_id == Unit.id)
+        .join(Floor, Unit.floor_id == Floor.id)
+        .join(Building, Floor.building_id == Building.id)
+        .where(Building.project_id == project_id)
+    )
+    rows = (await db.execute(stmt)).all()
+
+    # Build two indexes: (name, floor) → list[Room] and name → list[Room].
+    by_name_floor: dict[tuple[str, str], list[Room]] = {}
+    by_name: dict[str, list[Room]] = {}
+    for room, floor in rows:
+        nname = _normalise_room_name(room.name)
+        nfloor = _normalise_floor_label(floor.name) if floor else ""
+        by_name_floor.setdefault((nname, nfloor), []).append(room)
+        by_name.setdefault(nname, []).append(room)
+
+    matched = 0
+    for entry in extracted:
+        target_name = _normalise_room_name(entry["raumname"])
+        target_floor = _normalise_floor_label(entry.get("geschoss"))
+        height = entry["hoehe_m"]
+
+        candidate: Room | None = None
+
+        # Tier 1: name + floor match.
+        nf_matches = by_name_floor.get((target_name, target_floor), [])
+        if len(nf_matches) == 1:
+            candidate = nf_matches[0]
+        elif len(nf_matches) > 1:
+            # Multiple rooms with the same name on the same floor —
+            # ambiguous. Skip rather than pick the wrong one.
+            logger.info(
+                "schnitt.match_ambiguous name=%s floor=%s candidates=%d",
+                target_name, target_floor, len(nf_matches),
+            )
+            continue
+
+        # Tier 2: name-only match.
+        if candidate is None:
+            n_matches = by_name.get(target_name, [])
+            if len(n_matches) == 1:
+                candidate = n_matches[0]
+
+        if candidate is None:
+            continue
+
+        # Apply. Source flips to ``schnitt`` so the WallCalc table
+        # shows the correct provenance badge.
+        candidate.height_m = height
+        candidate.ceiling_height_source = "schnitt"
+        matched += 1
+
+    if matched:
+        await db.flush()
+    return matched
+
+
+async def _count_project_rooms(
+    project_id: UUID, db: AsyncSession
+) -> int:
+    """Total number of rooms in the project. Used by the Schnitt-
+    analyze route's "X of Y" reporting."""
+    from sqlalchemy import func
+
+    stmt = (
+        select(func.count(Room.id))
+        .join(Unit, Room.unit_id == Unit.id)
+        .join(Floor, Unit.floor_id == Floor.id)
+        .join(Building, Floor.building_id == Building.id)
+        .where(Building.project_id == project_id)
+    )
+    return int((await db.execute(stmt)).scalar_one() or 0)

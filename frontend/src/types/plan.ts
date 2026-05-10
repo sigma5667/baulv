@@ -18,7 +18,7 @@ export const PLAN_TYPE_DESCRIPTIONS: Record<PlanType, string> = {
   grundriss:
     "Standard-Bauplan mit Räumen, Wänden und Maßen. Wird per KI analysiert.",
   schnitt:
-    "Vertikalschnitt mit Raumhöhen. Höhen-Extraktion ist in Vorbereitung.",
+    "Vertikalschnitt mit Raumhöhen. Die KI extrahiert die Höhen und schreibt sie auf passende Räume.",
   lageplan:
     "Übersichtsplan des Grundstücks. Wird gespeichert, nicht analysiert.",
 };

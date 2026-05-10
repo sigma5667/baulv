@@ -115,6 +115,13 @@ export function PlanAnalysisPage() {
     pages_analyzed: number;
     rooms_extracted: number;
     page_errors: string[];
+    /** v24.2 — Schnitt-mode discriminator. When ``"schnitt"`` the
+     *  success banner switches from "Räume extrahiert" to
+     *  "Höhen aktualisiert" wording and renders the X-of-Y match
+     *  ratio. Defaults to ``"grundriss"`` for legacy /unknown. */
+    mode: "grundriss" | "schnitt";
+    heights_matched?: number;
+    rooms_in_project?: number;
   }>(null);
 
   // Plan deletion state — when set, the confirmation dialog opens.
@@ -215,10 +222,24 @@ export function PlanAnalysisPage() {
           delete next[planId];
           return next;
         });
+        // v24.2 — Discriminate Schnitt vs Grundriss results.
+        // The backend's Schnitt-path is the only one that returns
+        // ``heights_matched`` (numeric, possibly 0); Grundriss runs
+        // omit it entirely. Falling back on ``plan.plan_type`` from
+        // the cached list is the safety net for "result is missing
+        // the field for some reason" — better wrong copy than
+        // no toast.
+        const plan = plansById.get(planId);
+        const isSchnittRun =
+          result.heights_matched !== undefined ||
+          normalisePlanType(plan?.plan_type) === "schnitt";
         setAnalyzeSummary({
           pages_analyzed: result.pages_analyzed ?? 0,
           rooms_extracted: result.rooms_extracted ?? 0,
           page_errors: result.page_errors ?? [],
+          mode: isSchnittRun ? "schnitt" : "grundriss",
+          heights_matched: result.heights_matched,
+          rooms_in_project: result.rooms_in_project,
         });
         queryClient.invalidateQueries({ queryKey: ["plans", projectId] });
         queryClient.invalidateQueries({ queryKey: ["rooms", projectId] });
@@ -388,11 +409,12 @@ export function PlanAnalysisPage() {
           and we scroll here when one appears. */}
       <div ref={alertAnchorRef} />
 
-      {/* v24.1 — Plan-Typ-Wahl vor dem Upload. Drei Toggle-Buttons
-          (Grundriss / Schnitt / Lageplan) bestimmen wie der Plan
-          serverseitig weiterverarbeitet wird:
+      {/* v24.1 / v24.2 — Plan-Typ-Wahl vor dem Upload. Drei
+          Toggle-Buttons (Grundriss / Schnitt / Lageplan) bestimmen
+          wie der Plan serverseitig weiterverarbeitet wird:
             - Grundriss: KI-Plananalyse extrahiert Räume
-            - Schnitt: Speicherung; Höhen-Extraktion in Vorbereitung (v24.2)
+            - Schnitt: Vision-Höhen-Extraktion schreibt height_m
+              auf passende Räume (v24.2)
             - Lageplan: nur Speicherung, keine Analyse
           Der State bleibt zwischen Uploads stehen — wer mehrere
           Schnitte hochlädt, muss den Toggle nur einmal flippen. */}
@@ -484,11 +506,36 @@ export function PlanAnalysisPage() {
           <CheckCircle className="mt-0.5 h-5 w-5 shrink-0 text-green-600" />
           <div className="flex-1 text-sm">
             <p className="font-medium text-green-900">
-              Analyse abgeschlossen —{" "}
-              {analyzeSummary.rooms_extracted} Räume aus{" "}
-              {analyzeSummary.pages_analyzed}{" "}
-              {analyzeSummary.pages_analyzed === 1 ? "Seite" : "Seiten"}{" "}
-              extrahiert.
+              {analyzeSummary.mode === "schnitt" ? (
+                <>
+                  {/* v24.2 — Schnitt success copy. "X von Y Räumen"
+                      is the headline number; the rest gives context
+                      so the user understands a sub-total isn't a
+                      failure (manual edit fills the rest). */}
+                  Höhen-Extraktion abgeschlossen —{" "}
+                  {analyzeSummary.heights_matched ?? 0} von{" "}
+                  {analyzeSummary.rooms_in_project ?? 0}{" "}
+                  {(analyzeSummary.rooms_in_project ?? 0) === 1
+                    ? "Raum"
+                    : "Räumen"}{" "}
+                  aktualisiert.
+                  {(analyzeSummary.heights_matched ?? 0) <
+                    (analyzeSummary.rooms_in_project ?? 0) && (
+                    <span className="ml-1 font-normal">
+                      Restliche Höhen können Sie direkt in der
+                      Wandflächen-Tabelle nachpflegen.
+                    </span>
+                  )}
+                </>
+              ) : (
+                <>
+                  Analyse abgeschlossen —{" "}
+                  {analyzeSummary.rooms_extracted} Räume aus{" "}
+                  {analyzeSummary.pages_analyzed}{" "}
+                  {analyzeSummary.pages_analyzed === 1 ? "Seite" : "Seiten"}{" "}
+                  extrahiert.
+                </>
+              )}
             </p>
             {analyzeSummary.page_errors.length > 0 && (
               <details className="mt-1 text-green-800">
@@ -907,7 +954,7 @@ function PlanRow({
   // (NULL oder unbekannte Strings) auf "grundriss", damit ältere
   // Pläne nicht ohne Badge dastehen. Drei distinct color-codes:
   //   grundriss → blue (analysierbar)
-  //   schnitt   → amber (wartet auf v24.2)
+  //   schnitt   → amber (Höhen-Extraktion verfügbar, v24.2)
   //   lageplan  → grey (read-only)
   const planType = normalisePlanType(plan.plan_type);
   const isGrundriss = planType === "grundriss";
@@ -1015,13 +1062,14 @@ function PlanRow({
             </button>
           )}
 
-          {/* v24.1 — Analyse-Button only for Grundriss; Schnitt
-              and Lageplan get type-specific labels.
+          {/* v24.1 / v24.2 — Aktions-Button je nach Plan-Typ:
                 - Lageplan: keine Analyse, "Nur Speicherung"-Pill
-                - Schnitt: Höhen-Extraktion ist v24.2-Material;
-                  bis dahin ein "in Vorbereitung"-Hinweis
-                - Grundriss + pending/failed: bisheriges Verhalten
-                  (Pro-Gate + Loading-State + Retry-Label) */}
+                - Schnitt: Höhen-Extraktion (Vision-API, neu in v24.2)
+                  → eigene Labels "Höhen extrahieren" / "Erneut extrahieren"
+                  damit der User Grundriss-Analyse und Schnitt-Höhenlauf
+                  semantisch unterscheidet.
+                - Grundriss: bisheriges Verhalten (Pro-Gate + Loading
+                  + Retry-Label) */}
           {isLageplan && (
             <span
               className="rounded-md bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-700"
@@ -1030,12 +1078,52 @@ function PlanRow({
               Nur Speicherung
             </span>
           )}
-          {isSchnitt && plan.analysis_status !== "completed" && (
+          {isSchnitt &&
+            (plan.analysis_status === "pending" ||
+              plan.analysis_status === "failed") &&
+            (canAnalyze ? (
+              <button
+                onClick={onAnalyze}
+                disabled={isAnalyzing}
+                className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                title={PLAN_TYPE_DESCRIPTIONS.schnitt}
+              >
+                {isAnalyzing ? (
+                  <>
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Extrahiere Höhen…
+                  </>
+                ) : (
+                  <>
+                    <Search className="h-3 w-3" />
+                    {plan.analysis_status === "failed"
+                      ? "Erneut extrahieren"
+                      : "Höhen extrahieren"}
+                  </>
+                )}
+              </button>
+            ) : (
+              <Link
+                to="/app/subscription"
+                className="flex items-center gap-1.5 rounded-md border border-amber-400 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-100"
+                title="Schnitt-Analyse ist im Pro-Plan enthalten."
+              >
+                <Lock className="h-3 w-3" />
+                Upgrade erforderlich
+              </Link>
+            ))}
+          {isSchnitt && plan.analysis_status === "completed" && (
+            // After the Schnitt Vision-Lauf erfolgreich gelaufen ist:
+            // status="completed" pinnt den Pill auf eine subtile
+            // grüne Bestätigung. Der User kann den Lauf jederzeit
+            // über das Delete-Plan-Re-Upload-Trio neu auslösen,
+            // aber ein "Erneut extrahieren"-Button neben einem
+            // erfolgreichen Lauf führt zu mehr Verwirrung als Nutzen.
             <span
-              className="rounded-md bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-900"
+              className="rounded-md bg-green-50 px-3 py-1.5 text-xs font-medium text-green-800"
               title={PLAN_TYPE_DESCRIPTIONS.schnitt}
             >
-              Höhen-Extraktion in Vorbereitung
+              Höhen extrahiert
             </span>
           )}
           {isGrundriss &&
