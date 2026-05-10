@@ -23,10 +23,19 @@ export const PLAN_TYPE_DESCRIPTIONS: Record<PlanType, string> = {
     "Übersichtsplan des Grundstücks. Wird gespeichert, nicht analysiert.",
 };
 
-/** Coerce a free-form ``plan_type`` (incl. NULL / legacy values)
- * into one of the canonical types. Default is ``grundriss`` to
- * mirror the backend's back-compat path. */
-export function normalisePlanType(raw: string | null): PlanType {
+/** Coerce a free-form ``plan_type`` (incl. NULL / undefined /
+ * legacy values) into one of the canonical types. Default is
+ * ``grundriss`` to mirror the backend's back-compat path.
+ *
+ * The ``undefined`` branch is the realistic case: callers do
+ * ``plansById.get(id)?.plan_type`` and the optional-chain returns
+ * ``undefined`` when the lookup misses or when the Plan was
+ * persisted before the ``plan_type`` column existed. Treating it
+ * identically to ``null`` keeps every call site honest without
+ * forcing a non-null assertion. */
+export function normalisePlanType(
+  raw: string | null | undefined,
+): PlanType {
   if (raw === "schnitt" || raw === "lageplan") return raw;
   return "grundriss";
 }
