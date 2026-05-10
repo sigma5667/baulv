@@ -7,8 +7,14 @@ import {
   Calculator,
   ArrowLeft,
   Trash2,
+  FileDown,
+  Loader2,
 } from "lucide-react";
-import { fetchProject, deleteProject } from "../api/projects";
+import {
+  fetchProject,
+  deleteProject,
+  downloadMengenermittlungPdf,
+} from "../api/projects";
 import { fetchPlans } from "../api/plans";
 import { fetchProjectRooms } from "../api/rooms";
 import { fetchProjectLVs } from "../api/lv";
@@ -47,6 +53,24 @@ export function ProjectDetailPage() {
     },
     onError: () => {
       toast.error("Löschen fehlgeschlagen. Bitte versuchen Sie es erneut.");
+    },
+  });
+
+  // v23.9 — Mengenermittlung-PDF download. Backend renders the PDF
+  // and streams it with a sensible filename; this just orchestrates
+  // the request + browser download trigger and surfaces toast
+  // feedback for the loading + error states. Empty projects are
+  // not blocked client-side — backend produces a valid cover-only
+  // PDF in that case (deliberate UX choice, see endpoint docstring).
+  const downloadPdfMutation = useMutation({
+    mutationFn: () => downloadMengenermittlungPdf(id!),
+    onSuccess: () => {
+      toast.success("Mengenermittlung wurde heruntergeladen.");
+    },
+    onError: () => {
+      toast.error(
+        "PDF konnte nicht erstellt werden. Bitte erneut versuchen.",
+      );
     },
   });
 
@@ -139,7 +163,7 @@ export function ProjectDetailPage() {
       )}
 
       {/* Action cards */}
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-3 mb-6">
         {/* Plans */}
         <Link
           to={`/app/projects/${id}/plans`}
@@ -224,6 +248,48 @@ export function ProjectDetailPage() {
             </div>
           )}
         </Link>
+      </div>
+
+      {/* v23.9 — Mengenermittlung-PDF-Download. Unter den Plan-/LV-/
+          Strukturkarten platziert (Spec: "Button im Projekt-Dashboard
+          unter Plan-Cards") damit der User nach dem Plan-Upload und
+          der Strukturpflege ein druckbares Cover-Dokument für die
+          Vorabkalkulation erzeugen kann. Verfügbar auch ohne Räume
+          — der Backend-Renderer produziert dann ein Cover-only-PDF
+          mit dem Vermerk "Noch keine Räume erfasst". */}
+      <div className="rounded-lg border border-dashed bg-muted/30 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <div className="rounded-lg bg-primary/10 p-2">
+              <FileDown className="h-5 w-5 text-primary" />
+            </div>
+            <div>
+              <p className="font-medium">Mengenermittlung als PDF</p>
+              <p className="text-sm text-muted-foreground">
+                Druckbare Übersicht aller Räume mit Berechnungs-
+                Nachweisen für die Vorabkalkulation.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => downloadPdfMutation.mutate()}
+            disabled={downloadPdfMutation.isPending}
+            className="flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {downloadPdfMutation.isPending ? (
+              <>
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Erstelle PDF…
+              </>
+            ) : (
+              <>
+                <FileDown className="h-3.5 w-3.5" />
+                📄 Mengenermittlung drucken
+              </>
+            )}
+          </button>
+        </div>
       </div>
     </div>
   );

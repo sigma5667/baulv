@@ -1,6 +1,9 @@
+import io
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +15,9 @@ from app.auth import get_current_user
 from app.subscriptions import check_project_limit
 from app.services import analytics as analytics_service
 from app.db.models.analytics import EVENT_PROJECT_CREATED
+from app.export.mengenermittlung_pdf import export_mengenermittlung_pdf
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -100,6 +106,83 @@ async def update_project(
         setattr(project, key, value)
     await db.flush()
     return project
+
+
+# ---------------------------------------------------------------------------
+# v23.9 — Mengenermittlung-PDF
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{project_id}/mengenermittlung.pdf")
+async def export_project_mengenermittlung(
+    project_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Stream a printable A4 Mengenermittlung PDF for the project.
+
+    Available to every authenticated user (no Pro-Gate). Empty
+    projects (no rooms yet) still produce a valid PDF — the cover
+    sheet plus a "Noch keine Räume erfasst" note. That's a
+    deliberate UX choice so the user can save a cover-only PDF
+    while still populating the project; refusing with a 400 would
+    be more annoying than helpful.
+
+    Tenancy: ownership check before the heavyweight render. A
+    non-owner gets 403 before reportlab is even imported.
+    """
+    project = await db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(404, "Projekt nicht gefunden")
+    if project.user_id != user.id:
+        raise HTTPException(403, "Zugriff verweigert")
+
+    try:
+        pdf_bytes = await export_mengenermittlung_pdf(
+            project_id=project_id,
+            db=db,
+            creator=user,
+        )
+    except ValueError as e:
+        # Project disappeared between the ownership check and the
+        # render (extremely unlikely race). Treat as 404.
+        raise HTTPException(404, str(e))
+    except Exception:  # noqa: BLE001
+        # Any reportlab/render exception. Log + 500 with a German
+        # user-facing message so the SPA's error banner has
+        # something useful to display.
+        logger.exception(
+            "mengenermittlung_pdf.failed project_id=%s user_id=%s",
+            project_id,
+            user.id,
+        )
+        raise HTTPException(
+            500,
+            "Mengenermittlung-PDF konnte nicht erstellt werden. Bitte "
+            "versuchen Sie es erneut oder kontaktieren Sie den Support.",
+        )
+
+    # Filename derived from project name (sanitised) — falls back to
+    # the project ID for projects with non-ASCII or empty names.
+    safe_name = "".join(
+        c if c.isalnum() or c in ("-", "_") else "_"
+        for c in (project.name or "")
+    ).strip("_")
+    filename = (
+        f"Mengenermittlung_{safe_name}.pdf"
+        if safe_name
+        else f"Mengenermittlung_{project_id}.pdf"
+    )
+
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            # PDFs may carry user-typed text; don't let proxies cache.
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.delete("/{project_id}", status_code=204)
