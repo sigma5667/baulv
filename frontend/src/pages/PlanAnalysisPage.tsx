@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -18,6 +18,8 @@ import {
   Calculator,
   Building2,
   Trash2,
+  Filter,
+  X as XIcon,
 } from "lucide-react";
 import {
   fetchPlans,
@@ -140,11 +142,34 @@ export function PlanAnalysisPage() {
     enabled: !!projectId,
   });
 
+  // v24.0 — Plan-filter for the rooms view. ``null`` = "Alle Pläne",
+  // a UUID = "nur dieser Plan". Setting it from a plan-card click
+  // (see PlanRow below) or from the filter dropdown above the
+  // tables. Persisted into the React Query cache key so different
+  // selections keep their results independently — switching back
+  // to "all" doesn't burn a refetch when we already had it.
+  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
+
   const { data: rooms = [] } = useQuery({
-    queryKey: ["rooms", projectId],
-    queryFn: () => fetchProjectRooms(projectId!),
+    queryKey: ["rooms", projectId, selectedPlanId],
+    queryFn: () =>
+      fetchProjectRooms(
+        projectId!,
+        selectedPlanId ? { planId: selectedPlanId } : undefined,
+      ),
     enabled: !!projectId,
   });
+
+  // Plan-id → Plan lookup map for the "Plan"-Spalte the aggregation
+  // tables show when no filter is active. Cheap to memoise; recomputes
+  // only when the plans list mutates.
+  const plansById = useMemo(
+    () => new Map(plans.map((p) => [p.id, p])),
+    [plans],
+  );
+
+  // Selected plan as the convenience reference for the filter banner.
+  const selectedPlan = selectedPlanId ? plansById.get(selectedPlanId) ?? null : null;
 
   const uploadMutation = useMutation({
     mutationFn: (file: File) => uploadPlan(projectId!, file),
@@ -474,10 +499,26 @@ export function PlanAnalysisPage() {
                   })
                 }
                 onDelete={() => setDeletingPlan(plan)}
+                isFiltered={selectedPlanId === plan.id}
+                onFilterToRooms={() => setSelectedPlanId(plan.id)}
               />
             ))}
           </div>
         </div>
+      )}
+
+      {/* v24.0 — Plan-Filter banner. Shown only when there's more
+          than one plan (single-plan projects don't need the filter
+          UI; their rooms are already implicitly per-plan). The
+          banner is the canonical filter UI; PlanRow's "Räume
+          dieses Plans anzeigen" button just sets the same state. */}
+      {plans.length > 1 && rooms.length > 0 && (
+        <PlanFilterBanner
+          plans={plans}
+          selectedPlanId={selectedPlanId}
+          selectedPlan={selectedPlan}
+          onChange={setSelectedPlanId}
+        />
       )}
 
       {/* Empty-state: no rooms yet. Points the user to the manual
@@ -512,9 +553,16 @@ export function PlanAnalysisPage() {
       {rooms.length > 0 && (
         <div className="mb-8">
           <h2 className="mb-3 text-lg font-semibold">
-            Extrahierte Räume ({rooms.length})
+            {selectedPlan
+              ? `Räume aus „${selectedPlan.filename}" (${rooms.length})`
+              : `Extrahierte Räume (${rooms.length})`}
           </h2>
-          <RoomTable rooms={rooms} projectId={projectId!} />
+          <RoomTable
+            rooms={rooms}
+            projectId={projectId!}
+            plansById={plansById}
+            showPlanColumn={selectedPlanId === null && plans.length > 1}
+          />
         </div>
       )}
 
@@ -532,7 +580,12 @@ export function PlanAnalysisPage() {
             werden abgezogen. Amber-markierte Zeilen brauchen eine
             bestätigte Raumhöhe.
           </p>
-          <WallCalculationTable rooms={rooms} projectId={projectId!} />
+          <WallCalculationTable
+            rooms={rooms}
+            projectId={projectId!}
+            plansById={plansById}
+            showPlanColumn={selectedPlanId === null && plans.length > 1}
+          />
         </div>
       )}
 
@@ -792,6 +845,8 @@ function PlanRow({
   rowError,
   onDismissRowError,
   onDelete,
+  isFiltered,
+  onFilterToRooms,
 }: {
   plan: Plan;
   canAnalyze: boolean;
@@ -800,6 +855,12 @@ function PlanRow({
   rowError: string | null;
   onDismissRowError: () => void;
   onDelete: () => void;
+  /** v24.0 — true when this plan is the currently-selected
+   * filter target. The card gets a subtle ring + the filter
+   * button toggles state. */
+  isFiltered: boolean;
+  /** v24.0 — sets the page-level plan-filter to this plan. */
+  onFilterToRooms: () => void;
 }) {
   const statusIcon =
     {
@@ -844,7 +905,13 @@ function PlanRow({
       : "";
 
   return (
-    <div className="rounded-lg border bg-card">
+    <div
+      className={`rounded-lg border bg-card transition-all ${
+        isFiltered
+          ? "border-primary/60 ring-2 ring-primary/20"
+          : "hover:border-border"
+      }`}
+    >
       <div className="flex items-center justify-between px-4 py-3">
         <div className="flex items-center gap-3">
           {statusIcon}
@@ -862,6 +929,32 @@ function PlanRow({
         </div>
 
         <div className="flex items-center gap-2">
+          {/* v24.0 — Filter-Button. Available when the plan has at
+              least been analysed (rooms exist for it) so clicking
+              never produces an empty-result-set surprise. The
+              ``isFiltered`` state shows the active filter via the
+              border ring above + a "Filter aktiv" indicator here. */}
+          {plan.analysis_status === "completed" && (
+            <button
+              type="button"
+              onClick={onFilterToRooms}
+              disabled={isFiltered}
+              className={`flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                isFiltered
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-input hover:bg-accent"
+              } disabled:cursor-default`}
+              title={
+                isFiltered
+                  ? "Aktueller Filter — siehe Banner unten"
+                  : "Räume-Tabellen unten auf diesen Plan filtern"
+              }
+            >
+              <Filter className="h-3 w-3" />
+              {isFiltered ? "Filter aktiv" : "Räume filtern"}
+            </button>
+          )}
+
           {(plan.analysis_status === "pending" ||
             plan.analysis_status === "failed") &&
             (canAnalyze ? (
@@ -1152,7 +1245,24 @@ function parseDecimal(s: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function RoomTable({ rooms, projectId }: { rooms: Room[]; projectId: string }) {
+function RoomTable({
+  rooms,
+  projectId,
+  plansById,
+  showPlanColumn,
+}: {
+  rooms: Room[];
+  projectId: string;
+  /** v24.0 — lookup map for resolving ``room.plan_id`` to its
+   * filename. Populated from the plans-query on the page level so
+   * we don't re-fetch per row. */
+  plansById?: Map<string, Plan>;
+  /** v24.0 — render an extra "Plan" column when no plan-filter is
+   * active (i.e. aggregate view across multiple plans). Hidden in
+   * single-plan projects + when a filter is active to keep the
+   * table compact. */
+  showPlanColumn?: boolean;
+}) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -1285,6 +1395,13 @@ function RoomTable({ rooms, projectId }: { rooms: Room[]; projectId: string }) {
           <thead className="bg-muted/50">
             <tr>
               <th className="px-4 py-2 text-left font-medium">Raum</th>
+              {/* v24.0 — Plan-Spalte nur in der Aggregations-Ansicht
+                  (kein aktiver Filter und mehrere Pläne im Projekt).
+                  Zeigt den Filename des Plans aus dem die Räume
+                  extrahiert wurden, oder „—" für manuell angelegte. */}
+              {showPlanColumn && (
+                <th className="px-4 py-2 text-left font-medium">Plan</th>
+              )}
               <th className="px-4 py-2 text-left font-medium">Typ</th>
               <th className="px-4 py-2 text-right font-medium">Fläche m²</th>
               <th className="px-4 py-2 text-right font-medium">Umfang m</th>
@@ -1311,6 +1428,7 @@ function RoomTable({ rooms, projectId }: { rooms: Room[]; projectId: string }) {
                   }}
                   isPending={updateMutation.isPending}
                   error={updateError}
+                  showPlanColumn={showPlanColumn}
                 />
               ) : (
                 <tr key={room.id} className="hover:bg-muted/30">
@@ -1354,6 +1472,14 @@ function RoomTable({ rooms, projectId }: { rooms: Room[]; projectId: string }) {
                       </button>
                     )}
                   </td>
+                  {/* v24.0 — Plan-Spalte (Aggregations-Ansicht). */}
+                  {showPlanColumn && (
+                    <td className="px-4 py-2 text-xs text-muted-foreground">
+                      {room.plan_id
+                        ? plansById?.get(room.plan_id)?.filename ?? "—"
+                        : "—"}
+                    </td>
+                  )}
                   <td className="px-4 py-2 text-muted-foreground">
                     {room.room_type ?? "-"}
                   </td>
@@ -1593,12 +1719,17 @@ function RoomEditRow({
   onCancel,
   isPending,
   error,
+  showPlanColumn,
 }: {
   room: Room;
   onSave: (updates: Partial<Room>) => void;
   onCancel: () => void;
   isPending: boolean;
   error: NormalizedError | null;
+  /** v24.0 — match the column count of the parent table so the
+   * inline-edit row doesn't shift columns sideways when the
+   * Plan-Spalte is rendered above it. */
+  showPlanColumn?: boolean;
 }) {
   const [draft, setDraft] = useState({
     name: room.name,
@@ -1637,6 +1768,11 @@ function RoomEditRow({
             aria-label="Raum-Name"
           />
         </td>
+        {/* v24.0 — empty spacer matching the parent's Plan-Spalte so
+            the colspan stays balanced (the edit row doesn't expose
+            plan reassignment; the user changes the plan-room link
+            via the plan-deletion flow instead). */}
+        {showPlanColumn && <td className="px-4 py-2" />}
         <td className="px-2 py-2">
           <input
             type="text"
@@ -1726,7 +1862,10 @@ function RoomEditRow({
       </tr>
       {error && (
         <tr className="bg-destructive/5">
-          <td colSpan={10} className="px-4 py-2 text-xs text-destructive">
+          <td
+            colSpan={showPlanColumn ? 11 : 10}
+            className="px-4 py-2 text-xs text-destructive"
+          >
             Speichern fehlgeschlagen: {error.message}
           </td>
         </tr>
@@ -1886,9 +2025,15 @@ function ceilingSourceLabel(source: string): string {
 function WallCalculationTable({
   rooms,
   projectId,
+  plansById,
+  showPlanColumn,
 }: {
   rooms: Room[];
   projectId: string;
+  /** v24.0 — same as RoomTable: lookup map + flag for the
+   * aggregation-view Plan-Spalte. */
+  plansById?: Map<string, Plan>;
+  showPlanColumn?: boolean;
 }) {
   const queryClient = useQueryClient();
   const invalidate = () =>
@@ -1969,6 +2114,10 @@ function WallCalculationTable({
           <thead className="bg-muted/50">
             <tr>
               <th className="px-3 py-2 text-left font-medium">Raumname</th>
+              {/* v24.0 — Plan-Spalte (Aggregations-Ansicht). */}
+              {showPlanColumn && (
+                <th className="px-3 py-2 text-left font-medium">Plan</th>
+              )}
               <th className="px-3 py-2 text-right font-medium">
                 Wandlänge m
               </th>
@@ -2001,6 +2150,14 @@ function WallCalculationTable({
                       </span>
                     )}
                   </td>
+                  {/* v24.0 — Plan-Spalte (Aggregations-Ansicht). */}
+                  {showPlanColumn && (
+                    <td className="px-3 py-2 text-xs text-muted-foreground">
+                      {room.plan_id
+                        ? plansById?.get(room.plan_id)?.filename ?? "—"
+                        : "—"}
+                    </td>
+                  )}
                   <td className="px-3 py-2 text-right">
                     {/* Wandlänge — annotation comes from
                         ``perimeterAnnotation`` (see lib/roomHints.ts).
@@ -2141,7 +2298,9 @@ function WallCalculationTable({
           </tbody>
           <tfoot className="bg-muted/30">
             <tr className="font-medium">
-              <td className="px-3 py-2" colSpan={4}>
+              {/* v24.0 — Spans über die ersten 4 (oder 5 mit Plan-
+                  Spalte) Spalten bis zur Brutto-m²-Zelle. */}
+              <td className="px-3 py-2" colSpan={showPlanColumn ? 5 : 4}>
                 Summe über {rooms.length}{" "}
                 {rooms.length === 1 ? "Raum" : "Räume"}
               </td>
@@ -2157,6 +2316,79 @@ function WallCalculationTable({
           </tfoot>
         </table>
       </div>
+    </div>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// v24.0 — Plan-Filter banner
+// ---------------------------------------------------------------------------
+
+/**
+ * Filter banner that lets the user scope the rooms + Wandberechnungs-
+ * tables to a single plan. Renders only when the project has more
+ * than one plan (single-plan projects don't need the dropdown).
+ *
+ * The state lives one level up in ``PlanAnalysisPage``; this is a
+ * pure controlled-component. Two interaction surfaces:
+ *
+ *   1. Native ``<select>`` dropdown — full plan list, plus the "Alle
+ *      Pläne"-default. Listed in upload-order so the user can match
+ *      against the plan-cards above.
+ *   2. "Filter entfernen" button — only when a filter is active.
+ *      Sets ``selectedPlanId`` back to ``null``.
+ */
+function PlanFilterBanner({
+  plans,
+  selectedPlanId,
+  selectedPlan,
+  onChange,
+}: {
+  plans: Plan[];
+  selectedPlanId: string | null;
+  selectedPlan: Plan | null;
+  onChange: (next: string | null) => void;
+}) {
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-3 rounded-md border border-border bg-muted/30 px-4 py-3">
+      <Filter className="h-4 w-4 text-primary" />
+      <label className="text-sm font-medium text-foreground" htmlFor="plan-filter">
+        Plan-Filter:
+      </label>
+      <select
+        id="plan-filter"
+        value={selectedPlanId ?? ""}
+        onChange={(e) => onChange(e.target.value || null)}
+        className="rounded-md border bg-background px-2 py-1 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+      >
+        <option value="">Alle Pläne ({plans.length})</option>
+        {plans.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.filename}
+          </option>
+        ))}
+      </select>
+      {selectedPlan && (
+        <>
+          <span className="text-xs text-muted-foreground">
+            Aktiv: <strong>{selectedPlan.filename}</strong>
+          </span>
+          <button
+            type="button"
+            onClick={() => onChange(null)}
+            className="ml-auto flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-accent"
+          >
+            <XIcon className="h-3 w-3" />
+            Filter entfernen
+          </button>
+        </>
+      )}
+      {!selectedPlan && (
+        <span className="ml-auto text-xs text-muted-foreground">
+          Räume aller Pläne aggregiert. Plan-Spalte zeigt Herkunft.
+        </span>
+      )}
     </div>
   );
 }

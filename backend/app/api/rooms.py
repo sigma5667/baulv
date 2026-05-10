@@ -234,10 +234,26 @@ async def create_room(
 @router.get("/projects/{project_id}/rooms", response_model=list[RoomResponse])
 async def list_project_rooms(
     project_id: UUID,
+    plan_id: UUID | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all rooms for a project (across all buildings/floors/units)."""
+    """List rooms for a project (across all buildings/floors/units).
+
+    v24.0 — optional ``plan_id`` query parameter to scope the result
+    set to rooms that originated from a specific plan. Used by the
+    plan-filter dropdown on ``PlanAnalysisPage`` and by the
+    Mengenermittlung-PDF flow when the user wants a per-plan view
+    instead of the project-wide aggregate.
+
+    The filter is a simple equality check on ``Room.plan_id``;
+    rooms whose ``plan_id`` is NULL (manual creation) are returned
+    only when no ``plan_id`` query parameter is provided. Tenancy
+    of the *plan* itself is not re-checked here: a foreign plan_id
+    will simply produce an empty result set rather than a 403,
+    because cross-tenant existence-leak via "did this query find
+    anything" is not a concern at our threat-model.
+    """
     await verify_project_owner(project_id, user, db)
     stmt = (
         select(Room)
@@ -246,6 +262,8 @@ async def list_project_rooms(
         .options(selectinload(Room.openings))
         .order_by(Room.name)
     )
+    if plan_id is not None:
+        stmt = stmt.where(Room.plan_id == plan_id)
     result = await db.execute(stmt)
     return result.scalars().all()
 

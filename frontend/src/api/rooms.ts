@@ -6,8 +6,30 @@ import type {
   WallCalculationResult,
 } from "../types/room";
 
-export const fetchProjectRooms = async (projectId: string): Promise<Room[]> => {
-  const { data } = await api.get(`/projects/${projectId}/rooms`);
+/**
+ * v24.0 — optional ``planId`` filter scopes the result to rooms
+ * that originated from a specific plan. The PlanAnalysisPage
+ * filter-dropdown passes this through; React Query keys include
+ * the planId so different filter selections cache independently.
+ *
+ * ``planId === undefined`` → all rooms in the project (current
+ * default for the global Wandberechnungs-View).
+ * ``planId === <uuid>``    → rooms where ``room.plan_id`` matches.
+ *
+ * We deliberately don't add a "no-plan" sentinel; rooms without
+ * a plan_id (manual creation) are surfaced only via the unfiltered
+ * call. If the use-case for "show me only manual rooms" appears
+ * later, that's a follow-up filter mode.
+ */
+export const fetchProjectRooms = async (
+  projectId: string,
+  options?: { planId?: string },
+): Promise<Room[]> => {
+  const params: Record<string, string> = {};
+  if (options?.planId) {
+    params.plan_id = options.planId;
+  }
+  const { data } = await api.get(`/projects/${projectId}/rooms`, { params });
   return data;
 };
 
