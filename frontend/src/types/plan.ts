@@ -26,7 +26,7 @@ export const PLAN_TYPE_DESCRIPTIONS: Record<PlanType, string> = {
 /** Coerce a free-form ``plan_type`` (incl. NULL / legacy values)
  * into one of the canonical types. Default is ``grundriss`` to
  * mirror the backend's back-compat path. */
-export function normalisePlanType(raw: string | null): PlanType {
+export function normalisePlanType(raw: string | null | undefined): PlanType {
   if (raw === "schnitt" || raw === "lageplan") return raw;
   return "grundriss";
 }
