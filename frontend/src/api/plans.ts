@@ -1,12 +1,24 @@
 import api from "./client";
-import type { Plan } from "../types/plan";
+import type { Plan, PlanType } from "../types/plan";
 
 export const fetchPlans = async (projectId: string): Promise<Plan[]> => {
   const { data } = await api.get(`/plans/projects/${projectId}/plans`);
   return data;
 };
 
-export const uploadPlan = async (projectId: string, file: File, planType = "grundriss"): Promise<Plan> => {
+/**
+ * v24.1 — ``planType`` is now typed against the PlanType union.
+ * Default stays ``"grundriss"`` so existing callers without the
+ * argument keep their previous behaviour. The backend rejects any
+ * other string with a 400 (whitelist guard); the frontend toggle
+ * is constrained to the same three values, so this should never
+ * round-trip an invalid value in practice.
+ */
+export const uploadPlan = async (
+  projectId: string,
+  file: File,
+  planType: PlanType = "grundriss",
+): Promise<Plan> => {
   const formData = new FormData();
   formData.append("file", file);
   const { data } = await api.post(

@@ -35,7 +35,7 @@
 // The activate handler below deletes any cache whose name doesn't
 // match, so bumping this is how we evict stale assets on every deploy.
 // See ``docs/DEPLOY.md`` for the bump checklist.
-const CACHE_NAME = "baulv-v24.0-2026-05-06-plan-filter-aggregation";
+const CACHE_NAME = "baulv-v24.1-2026-05-06-plan-typ-dropdown";
 const STATIC_ASSETS = [
   "/manifest.json",
   "/icons/icon-192.png",

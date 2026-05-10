@@ -46,7 +46,12 @@ import { InlineNumericEdit } from "../components/room/InlineNumericEdit";
 import { perimeterAnnotation } from "../lib/roomHints";
 import { pushDiagnostic } from "../lib/diagnostics";
 import { useToast } from "../components/Toast";
-import type { Plan } from "../types/plan";
+import type { Plan, PlanType } from "../types/plan";
+import {
+  PLAN_TYPE_DESCRIPTIONS,
+  PLAN_TYPE_LABELS,
+  normalisePlanType,
+} from "../types/plan";
 import type { Room } from "../types/room";
 
 // Kept in sync with backend config.max_plan_file_mb / max_plan_pages —
@@ -150,6 +155,14 @@ export function PlanAnalysisPage() {
   // to "all" doesn't burn a refetch when we already had it.
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
 
+  // v24.1 — Plan-Typ for the next upload. Toggle UI sits above the
+  // dropzone; the value rides through the upload mutation as a
+  // query-param. Default is ``grundriss`` because that's the
+  // overwhelming majority of uploads.
+  const [pendingPlanType, setPendingPlanType] = useState<PlanType>(
+    "grundriss",
+  );
+
   const { data: rooms = [] } = useQuery({
     queryKey: ["rooms", projectId, selectedPlanId],
     queryFn: () =>
@@ -172,7 +185,13 @@ export function PlanAnalysisPage() {
   const selectedPlan = selectedPlanId ? plansById.get(selectedPlanId) ?? null : null;
 
   const uploadMutation = useMutation({
-    mutationFn: (file: File) => uploadPlan(projectId!, file),
+    // v24.1 — pass the user-selected ``pendingPlanType`` so the
+    // backend persists Grundriss / Schnitt / Lageplan correctly.
+    // Read on each mutate call (not captured at hook-creation
+    // time) so a quick toggle-then-drop sequence picks up the
+    // latest value.
+    mutationFn: (file: File) =>
+      uploadPlan(projectId!, file, pendingPlanType),
     onSuccess: () => {
       setUploadError(null);
       queryClient.invalidateQueries({ queryKey: ["plans", projectId] });
@@ -368,6 +387,20 @@ export function PlanAnalysisPage() {
       {/* Scroll anchor — any error banner below lives in this region
           and we scroll here when one appears. */}
       <div ref={alertAnchorRef} />
+
+      {/* v24.1 — Plan-Typ-Wahl vor dem Upload. Drei Toggle-Buttons
+          (Grundriss / Schnitt / Lageplan) bestimmen wie der Plan
+          serverseitig weiterverarbeitet wird:
+            - Grundriss: KI-Plananalyse extrahiert Räume
+            - Schnitt: Speicherung; Höhen-Extraktion in Vorbereitung (v24.2)
+            - Lageplan: nur Speicherung, keine Analyse
+          Der State bleibt zwischen Uploads stehen — wer mehrere
+          Schnitte hochlädt, muss den Toggle nur einmal flippen. */}
+      <PlanTypeToggle
+        value={pendingPlanType}
+        onChange={setPendingPlanType}
+        disabled={uploadMutation.isPending}
+      />
 
       {/* Upload area
           v23.7 (Bug 1): the dropzone visually grays out and stops
@@ -870,6 +903,17 @@ function PlanRow({
       failed: <AlertCircle className="h-4 w-4 text-destructive" />,
     }[plan.analysis_status] ?? <FileText className="h-4 w-4" />;
 
+  // v24.1 — Plan-Typ als Badge. Normalisiert pre-v24.1-Daten
+  // (NULL oder unbekannte Strings) auf "grundriss", damit ältere
+  // Pläne nicht ohne Badge dastehen. Drei distinct color-codes:
+  //   grundriss → blue (analysierbar)
+  //   schnitt   → amber (wartet auf v24.2)
+  //   lageplan  → grey (read-only)
+  const planType = normalisePlanType(plan.plan_type);
+  const isGrundriss = planType === "grundriss";
+  const isSchnitt = planType === "schnitt";
+  const isLageplan = planType === "lageplan";
+
   // Before analysis, the status label should reflect the user's real
   // capability. Basis users can't trigger analysis — the action button
   // is already replaced by the upgrade pill — so "Bereit zur Analyse"
@@ -916,11 +960,27 @@ function PlanRow({
         <div className="flex items-center gap-3">
           {statusIcon}
           <div>
-            <p className="text-sm font-medium">{plan.filename}</p>
+            <div className="flex items-center gap-2">
+              <p className="text-sm font-medium">{plan.filename}</p>
+              {/* v24.1 — Plan-Typ-Badge. Color-coded so der User
+                  beim Scannen der Liste sofort sieht welcher Plan
+                  Räume liefert (Grundriss) und welcher nur als
+                  Referenz dient (Schnitt/Lageplan). */}
+              <span
+                className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                  isGrundriss
+                    ? "bg-blue-100 text-blue-800"
+                    : isSchnitt
+                      ? "bg-amber-100 text-amber-800"
+                      : "bg-gray-100 text-gray-700"
+                }`}
+                title={PLAN_TYPE_DESCRIPTIONS[planType]}
+              >
+                {PLAN_TYPE_LABELS[planType]}
+              </span>
+            </div>
             <p className="text-xs text-muted-foreground">
-              {plan.plan_type ?? "Plan"}
-              {pageCountText ? ` · ${pageCountText}` : ""}
-              {" · "}
+              {pageCountText ? `${pageCountText} · ` : ""}
               <span className={pendingClass}>
                 {statusLabel[plan.analysis_status] ?? plan.analysis_status}
               </span>
@@ -955,8 +1015,32 @@ function PlanRow({
             </button>
           )}
 
-          {(plan.analysis_status === "pending" ||
-            plan.analysis_status === "failed") &&
+          {/* v24.1 — Analyse-Button only for Grundriss; Schnitt
+              and Lageplan get type-specific labels.
+                - Lageplan: keine Analyse, "Nur Speicherung"-Pill
+                - Schnitt: Höhen-Extraktion ist v24.2-Material;
+                  bis dahin ein "in Vorbereitung"-Hinweis
+                - Grundriss + pending/failed: bisheriges Verhalten
+                  (Pro-Gate + Loading-State + Retry-Label) */}
+          {isLageplan && (
+            <span
+              className="rounded-md bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-700"
+              title={PLAN_TYPE_DESCRIPTIONS.lageplan}
+            >
+              Nur Speicherung
+            </span>
+          )}
+          {isSchnitt && plan.analysis_status !== "completed" && (
+            <span
+              className="rounded-md bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-900"
+              title={PLAN_TYPE_DESCRIPTIONS.schnitt}
+            >
+              Höhen-Extraktion in Vorbereitung
+            </span>
+          )}
+          {isGrundriss &&
+            (plan.analysis_status === "pending" ||
+              plan.analysis_status === "failed") &&
             (canAnalyze ? (
               <button
                 onClick={onAnalyze}
@@ -2389,6 +2473,88 @@ function PlanFilterBanner({
           Räume aller Pläne aggregiert. Plan-Spalte zeigt Herkunft.
         </span>
       )}
+    </div>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// v24.1 — Plan-Typ Toggle (Grundriss / Schnitt / Lageplan)
+// ---------------------------------------------------------------------------
+
+/**
+ * Three-button segmented control above the upload dropzone. Pure
+ * controlled component — state lives one level up in
+ * ``PlanAnalysisPage`` and rides through the upload mutation as a
+ * query-param. Visually echoes the same blue/amber/grey color
+ * scheme used by the per-row badges so the user can correlate
+ * "I'm uploading a schnitt" with the amber pill that shows up in
+ * the list afterwards.
+ *
+ * Disabled while an upload is in flight (mutation pending) so the
+ * toggle can't change mid-flight and produce a Plan with the wrong
+ * persisted type.
+ */
+function PlanTypeToggle({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: PlanType;
+  onChange: (next: PlanType) => void;
+  disabled: boolean;
+}) {
+  // Build options inline so the order is stable and matches the
+  // user's most-common-first reading. (PLAN_TYPE_LABELS as a
+  // Record-iter has no guaranteed order across V8 versions for
+  // historical keys, even if it works in practice.)
+  const options: { value: PlanType; label: string; tone: string }[] = [
+    {
+      value: "grundriss",
+      label: "Grundriss",
+      tone:
+        "data-[active=true]:bg-blue-100 data-[active=true]:text-blue-900 data-[active=true]:border-blue-300",
+    },
+    {
+      value: "schnitt",
+      label: "Schnitt",
+      tone:
+        "data-[active=true]:bg-amber-100 data-[active=true]:text-amber-900 data-[active=true]:border-amber-300",
+    },
+    {
+      value: "lageplan",
+      label: "Lageplan",
+      tone:
+        "data-[active=true]:bg-gray-100 data-[active=true]:text-gray-800 data-[active=true]:border-gray-300",
+    },
+  ];
+
+  return (
+    <div className="mb-3 rounded-md border bg-card p-3">
+      <div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-foreground">
+        <span>Plan-Typ:</span>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {options.map((opt) => {
+          const active = value === opt.value;
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              data-active={active}
+              onClick={() => onChange(opt.value)}
+              disabled={disabled}
+              className={`rounded-md border bg-background px-3 py-1.5 text-sm font-medium transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 ${opt.tone}`}
+              title={PLAN_TYPE_DESCRIPTIONS[opt.value]}
+            >
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
+      <p className="mt-2 text-xs text-muted-foreground">
+        {PLAN_TYPE_DESCRIPTIONS[value]}
+      </p>
     </div>
   );
 }

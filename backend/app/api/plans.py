@@ -59,6 +59,18 @@ router = APIRouter()
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
+# v24.1 — Plan-Typ Whitelist. Drives both the upload's accept-set
+# and the analyze-endpoint's gate. NULL values in the DB (legacy
+# plans uploaded before v24.1) are treated as ``grundriss`` for the
+# analyze path so existing projects don't break on the new gate.
+PLAN_TYPE_GRUNDRISS = "grundriss"
+PLAN_TYPE_SCHNITT = "schnitt"
+PLAN_TYPE_LAGEPLAN = "lageplan"
+ALLOWED_PLAN_TYPES: frozenset[str] = frozenset(
+    {PLAN_TYPE_GRUNDRISS, PLAN_TYPE_SCHNITT, PLAN_TYPE_LAGEPLAN}
+)
+
+
 def _safe_filename(name: str | None) -> str:
     """Return a filesystem-safe filename derived from ``name``.
 
@@ -85,7 +97,7 @@ def _safe_filename(name: str | None) -> str:
 async def upload_plan(
     project_id: UUID,
     file: UploadFile = File(...),
-    plan_type: str = Query("grundriss"),
+    plan_type: str = Query(PLAN_TYPE_GRUNDRISS),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -95,8 +107,23 @@ async def upload_plan(
     filename is safe. The per-project upload directory is
     ``{upload_path}/{project_id}/`` and the stored file is prefixed
     with a short UUID so re-uploading the same name doesn't collide.
+
+    v24.1 — ``plan_type`` is now strictly validated against
+    ``ALLOWED_PLAN_TYPES``. Default stays ``grundriss`` so legacy
+    callers (pre-v24.1 frontend builds, MCP scripts) keep working.
     """
     await verify_project_owner(project_id, user, db)
+
+    # v24.1 — Plan-Typ Whitelist. Done before the disk write so an
+    # invalid value short-circuits without spilling bytes onto the
+    # filesystem. The frontend toggle is constrained to the same
+    # three values; this gate catches manually-crafted requests.
+    if plan_type not in ALLOWED_PLAN_TYPES:
+        raise HTTPException(
+            400,
+            "Ungültiger Plan-Typ. Erlaubt sind: "
+            "Grundriss, Schnitt, Lageplan.",
+        )
 
     # --- Validation ----------------------------------------------------
     # The user-facing rejection text is pinned so the frontend and
@@ -275,14 +302,38 @@ async def trigger_analysis(
     # status (to spot retries), filename, and on-disk size.
     logger.info(
         "Plan analysis trigger: plan=%s user=%s plan_subscription=%s status=%s "
-        "filename=%s file_size=%s",
+        "filename=%s file_size=%s plan_type=%s",
         plan_id,
         user.id,
         user.subscription_plan,
         plan.analysis_status,
         plan.filename,
         plan.file_size_bytes,
+        plan.plan_type,
     )
+
+    # v24.1 — Plan-Typ Gate. The analysis pipeline is grundriss-only
+    # for now. Lageplan: never analyzed (storage-only); Schnitt:
+    # waiting on Feature 4 (height extraction) which lands in v24.2.
+    # NULL plan_type counts as ``grundriss`` (legacy plans uploaded
+    # before v24.1) — that's the back-compat path.
+    if plan.plan_type == PLAN_TYPE_LAGEPLAN:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Lagepläne werden nicht analysiert. Sie dienen nur der "
+                "Speicherung als Projektkontext."
+            ),
+        )
+    if plan.plan_type == PLAN_TYPE_SCHNITT:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Die Höhen-Extraktion aus Schnitt-Plänen ist derzeit in "
+                "Vorbereitung. Bitte verwenden Sie diesen Plan vorerst "
+                "nur als Referenz für manuelle Höhen-Eingaben."
+            ),
+        )
 
     try:
         result = await analyze_plan(plan_id, db)
