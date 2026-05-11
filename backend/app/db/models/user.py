@@ -15,6 +15,14 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255))
     full_name: Mapped[str] = mapped_column(String(255))
     company_name: Mapped[str | None] = mapped_column(String(255))
+    # v24.3 — User-Profil-Branding fuer das Mengenermittlungs-PDF.
+    # ``role`` (z.B. "Bautraeger", "Architekt") wird im Header neben
+    # ``company_name`` ausgegeben; ``logo_path`` zeigt auf die Datei
+    # im Upload-Verzeichnis, die der Renderer oben links einbettet.
+    # Beide nullable — User ohne gepflegtes Profil bekommt im PDF
+    # weiterhin nur Name+Email (Fallback-Logik im PDF-Header).
+    role: Mapped[str | None] = mapped_column(String(100))
+    logo_path: Mapped[str | None] = mapped_column(String(500))
     subscription_plan: Mapped[str] = mapped_column(String(50), default="basis")
     stripe_customer_id: Mapped[str | None] = mapped_column(String(255))
     stripe_subscription_id: Mapped[str | None] = mapped_column(String(255))

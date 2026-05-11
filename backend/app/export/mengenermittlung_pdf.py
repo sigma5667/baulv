@@ -1,24 +1,28 @@
-"""PDF-Export der Mengenermittlung für ein Projekt (v23.9).
+"""PDF-Export der Mengenermittlung für ein Projekt.
 
 Sister of ``pdf_exporter.py`` (which is for LVs). Same reportlab
 toolchain, A4 portrait, conservative margins. Built on top of the
 calculation-engine's room data — no AI calls, no DB writes.
 
-Layout per spec
-===============
+Layout (v24.3 — nach Profi-Feedback überarbeitet)
+==================================================
 
-  1. Header — Projektmetadaten, Plan-Referenzen, Datum + Ersteller
-  2. Übersichts-Tabelle — eine Zeile pro Raum (Name, Geschoss,
-     Fläche, Umfang, Höhe, Wand brutto/netto, Volumen)
-  3. Detail-Nachweis pro Raum — Formel-Block mit der Berechnungs-
-     Logik (Umfang × Höhe = brutto; minus Abzüge = netto), plus
-     einer kleinen "Skizze" (proportionierter Box, falls bbox-
-     Koordinaten vorhanden; sonst ein Standard-Quadrat mit dem
-     Raumtyp als Label)
-  4. Summen — Anzahl Räume, Σ Boden / Decke / Wand brutto / Wand
-     netto, Σ Volumen
-  5. Footer — "Erstellt mit BauLV", Hinweis Vorabkalkulation, Seite
-     X von Y
+  1. Header — Logo (oder "BauLV"-Text-Fallback) oben links, Titel
+     und Untertitel rechts daneben.
+  2. Disclaimer-Kasten — dezent gerahmter Hinweis "Diese
+     Mengenermittlung ist eine Vorabkalkulation und ersetzt keine
+     geprüfte Berechnung."
+  3. Metadaten-Block — Projekt, Adresse, Auftraggeber etc. Leere
+     Felder werden komplett weggelassen (statt em-dash).
+  4. Übersichts-Tabelle — eine Zeile pro Raum (Name, Geschoss,
+     Fläche, Umfang, Höhe, Wand brutto/netto, Volumen).
+  5. Detail-Nachweis pro Raum — Formel-Block + kleine Skizze.
+  6. Summen — Anzahl Räume, Σ Boden / Decke / Wand brutto / netto,
+     Σ Volumen.
+  7. Footer (jede Seite) — "Erstellt mit BauLV" links, Disclaimer
+     mittig, "Seite X von N" rechts. KEINE internen Versions-
+     Strings (Build-Tags, Branch-Namen) im Footer — Profi-Feedback
+     v24.3 hatte solche Marker als unprofessionell markiert.
 
 Privacy / DSGVO
 ===============
@@ -33,8 +37,10 @@ Mengenermittlung".
 from __future__ import annotations
 
 import io
+import logging
 from datetime import datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 from typing import Iterable
 from uuid import UUID
 
@@ -42,7 +48,9 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
+from reportlab.pdfgen.canvas import Canvas
 from reportlab.platypus import (
+    Image,
     KeepTogether,
     PageBreak,
     Paragraph,
@@ -67,6 +75,21 @@ from app.db.models.project import (
 from app.db.models.user import User
 
 
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# v24.3 — Branding/Logo constants
+# ---------------------------------------------------------------------------
+#
+# Logo-Box im Header. 40 mm × 20 mm folgt der Spec ("max 4 cm × 2 cm,
+# Aspect-Ratio erhalten"). reportlab's Image kann mit ``preserveAspectRatio``
+# unter beiden Werten skalieren — kürzere Seite wird volle Box-Höhe/Breite,
+# die andere proportional reduziert.
+_LOGO_MAX_WIDTH_MM = 40.0
+_LOGO_MAX_HEIGHT_MM = 20.0
+
+
 # ---------------------------------------------------------------------------
 # Helpers — German number formatting + safe text escape
 # ---------------------------------------------------------------------------
@@ -85,7 +108,15 @@ def _safe(text: object) -> str:
 
 
 def _fmt(value: object, digits: int = 2) -> str:
-    """German-style number with comma as decimal separator. None → em-dash."""
+    """German-style number with comma as decimal separator. None → em-dash.
+
+    Tables (Übersicht, Summen, Detail-Formeln) call this with
+    ``None`` for missing measurements and still need a visible
+    placeholder — there an em-dash signals "value missing" inside
+    the columnar layout. The metadata block uses ``_present_only``
+    instead so unfilled rows disappear entirely; the choice is
+    explicit per caller.
+    """
     if value is None:
         return "—"
     try:
@@ -133,10 +164,18 @@ async def export_mengenermittlung_pdf(
     """Render the project's Mengenermittlung as a PDF. Returns raw bytes.
 
     Raises ``ValueError`` if the project is missing — the route handler
-    translates that into a 404. Empty projects (no rooms) get a
-    placeholder PDF with the header + a "noch keine Räume erfasst"
-    note. We don't 400 in that case because the user might want a
-    cover sheet for a project they're about to populate.
+    translates that into a 404.
+
+    v24.3 — The route handler (``api/projects.py``) refuses empty
+    projects with a 400 before calling here; this function still
+    handles the no-rooms case gracefully by simply skipping the
+    Übersicht/Detail/Summen sections (defence-in-depth, the API
+    guard is the primary protection).
+
+    ``author`` metadata is fixed to the literal ``"BauLV"`` — no
+    internal version markers in PDF metadata or footer (v24.3
+    Profi-Feedback explicitly called out "v23.9-claude"-style
+    debug artefacts as unprofessional).
     """
     # Eager-load the building tree + plans so we render in one
     # session and don't trip async-greenlet errors.
@@ -169,34 +208,32 @@ async def export_mengenermittlung_pdf(
         topMargin=20 * mm,
         bottomMargin=22 * mm,
         title=f"Mengenermittlung — {project.name}",
+        # v24.3 — author stays exactly "BauLV". No build tag, no
+        # version, no branch name. PDF metadata is just as user-
+        # visible as the footer once the file leaves the browser.
         author="BauLV",
+        creator="BauLV",
     )
 
     styles = _build_styles()
     story: list = []
 
     _append_header(story, project, creator, styles)
+    _append_disclaimer_box(story, styles)
+    _append_metadata_block(story, project, creator, styles)
+    _append_plan_references(story, project, styles)
 
-    if not rooms_with_context:
-        story.append(Spacer(1, 6 * mm))
-        story.append(
-            Paragraph(
-                "<b>Noch keine Räume erfasst.</b><br/>"
-                "Laden Sie einen Bauplan hoch und starten Sie die "
-                "KI-Plananalyse, oder erfassen Sie die Gebäudestruktur "
-                "manuell unter <i>Gebäudestruktur</i>.",
-                styles["MEMeta"],
-            )
-        )
-    else:
+    if rooms_with_context:
         _append_overview_table(story, rooms_with_context, styles)
         _append_room_details(story, rooms_with_context, styles)
         _append_summary(story, rooms_with_context, styles)
 
+    # v24.3 — Two-pass page numbering via NumberedCanvas so the
+    # footer can render "Seite X von N" instead of the bare
+    # "Seite X" of the old build.
     doc.build(
         story,
-        onFirstPage=_draw_footer,
-        onLaterPages=_draw_footer,
+        canvasmaker=_NumberedCanvas,
     )
     return buffer.getvalue()
 
@@ -329,12 +366,116 @@ def _build_styles():
             leading=14,
         )
     )
+    # v24.3 — Disclaimer-Box auf Seite 1. Etwas kleiner als der
+    # Metadaten-Block damit der Kasten dezent wirkt, aber gross
+    # genug zum tatsaechlichen Lesen (im Footer-7.5pt wurde der
+    # Hinweis verlaesslich uebersehen).
+    base.add(
+        ParagraphStyle(
+            name="MEDisclaimer",
+            parent=base["Normal"],
+            fontSize=9,
+            leading=12,
+            textColor=colors.HexColor("#1f2937"),
+        )
+    )
     return base
 
 
 # ---------------------------------------------------------------------------
-# Header — Projekt-Metadaten + Plan-Referenzen + Ersteller/Datum
+# v24.3 — Header (Logo + Titel) + Disclaimer-Box + Metadata + Plan-Refs
 # ---------------------------------------------------------------------------
+
+
+def _format_creator_label(creator: User | None) -> str:
+    """Build the "Erstellt von" string per v24.3 spec.
+
+    Priority:
+
+      1. ``full_name`` + ``company_name`` → "Max Mustermann, Bau GmbH"
+      2. ``full_name`` alone               → "Max Mustermann"
+      3. Email fallback                    → "max@example.com"
+
+    The username (the part before the @ in the email) is **never**
+    used as a display label — Profi-Feedback v24.3 explicitly
+    flagged "Erstellt von: kafjd" as unprofessional.
+
+    ``role`` (Funktion, e.g. "Bautraeger") is appended in
+    parentheses when set so a small architect office can identify
+    itself as "Erika Beispiel, Beispiel Architekten ZT GmbH
+    (Planverfasserin)" without re-using the company field.
+    """
+    if creator is None:
+        return ""
+    parts: list[str] = []
+    name = (creator.full_name or "").strip()
+    company = (creator.company_name or "").strip() if creator.company_name else ""
+    role = (creator.role or "").strip() if creator.role else ""
+    email = (creator.email or "").strip()
+
+    if name and company:
+        parts.append(f"{name}, {company}")
+    elif name:
+        parts.append(name)
+    elif email:
+        parts.append(email)
+    # No silent username fallback. If somehow nothing's set, the
+    # "Erstellt von" row simply isn't rendered (see
+    # ``_append_metadata_block``).
+
+    if parts and role:
+        parts[0] = f"{parts[0]} ({role})"
+
+    return parts[0] if parts else ""
+
+
+def _build_logo_flowable(creator: User | None) -> Image | Paragraph:
+    """Top-left header flowable. Returns the user's logo image if
+    one is uploaded; otherwise a small "BauLV" text-logo.
+
+    The reportlab ``Image`` is created with explicit width/height
+    so the cell-layout knows its bounds — ``preserveAspectRatio``
+    keeps the upload's aspect ratio inside the 40×20 mm box.
+
+    Any error reading the logo (file missing, decoder rejected the
+    bytes) falls back to the text-logo silently. We log a warning
+    but don't surface to the user — a PDF that still renders is
+    better than a 500 because someone deleted an image file
+    behind the server's back.
+    """
+    if creator is not None and creator.logo_path:
+        try:
+            path = Path(creator.logo_path)
+            if path.is_file():
+                img = Image(
+                    str(path),
+                    width=_LOGO_MAX_WIDTH_MM * mm,
+                    height=_LOGO_MAX_HEIGHT_MM * mm,
+                    kind="proportional",
+                )
+                # ``hAlign`` left-anchors the image inside the
+                # outer container so a square logo doesn't drift
+                # to centre when the box width is wider than the
+                # scaled image.
+                img.hAlign = "LEFT"
+                return img
+        except Exception as e:  # noqa: BLE001
+            # Image() can raise on corrupt files, missing PIL, or
+            # unreadable bytes — degrade to the text-logo rather
+            # than fail the whole render.
+            logger.warning(
+                "logo embed failed user=%s path=%s err=%s",
+                getattr(creator, "id", "?"),
+                creator.logo_path,
+                e,
+            )
+
+    # Fallback "BauLV" wordmark. Small, discreet — the spec calls
+    # this "klein, unauffällig".
+    return Paragraph(
+        "<font size=14 color='#1f2937'><b>BauLV</b></font>",
+        ParagraphStyle("MELogoText", fontSize=14, leading=16),
+    )
 
 
 def _append_header(
@@ -343,31 +484,108 @@ def _append_header(
     creator: User | None,
     styles,
 ) -> None:
-    story.append(Paragraph("MENGENERMITTLUNG", styles["METitle"]))
-    story.append(
+    """Top of page 1: logo on the left, title block on the right.
+
+    Two-column Table so the logo and title sit side-by-side at
+    consistent vertical alignment regardless of the logo's actual
+    height. The right column carries the title + subtitle stack.
+    """
+    logo_flowable = _build_logo_flowable(creator)
+    title_block = [
+        Paragraph("MENGENERMITTLUNG", styles["METitle"]),
         Paragraph(
             "Vorabkalkulation nach branchenüblichen Mengenermittlungs-Standards",
             styles["MESubtitle"],
+        ),
+    ]
+
+    header_row = Table(
+        [[logo_flowable, title_block]],
+        colWidths=[45 * mm, 120 * mm],
+    )
+    header_row.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ]
         )
     )
+    story.append(header_row)
 
-    # --- Projekt + Erstellungs-Metadaten ---
-    today = datetime.now(timezone.utc).strftime("%d.%m.%Y")
-    creator_label = (
-        f"{creator.full_name} ({creator.email})"
-        if creator is not None
-        else "—"
+
+def _append_disclaimer_box(story: list, styles) -> None:
+    """Single-cell bordered box right under the header.
+
+    Pre-v24.3 the disclaimer lived only in the footer's 7.5pt grey
+    font — easy to overlook. Profi-Feedback marked this as a risk
+    ("Subunternehmer könnte das versehentlich erhalten und gegen
+    den Bauträger verwenden"). The box raises visibility without
+    being shouty: 1px dezent-graue Linie, 5mm Padding.
+    """
+    story.append(Spacer(1, 4 * mm))
+    disclaimer = Paragraph(
+        "<b>Hinweis:</b> Diese Mengenermittlung ist eine "
+        "Vorabkalkulation und ersetzt keine geprüfte Berechnung. "
+        "Die Werte basieren auf den im Projekt erfassten Räumen "
+        "und sind als Anhaltspunkt für die Kalkulation gedacht.",
+        styles["MEDisclaimer"],
     )
-    rows: list[tuple[str, str]] = [
-        ("Projekt", project.name or "—"),
-        ("Adresse", project.address or "—"),
-        ("Auftraggeber", project.client_name or "—"),
-        ("Projektnummer", project.project_number or "—"),
-        ("Grundstücksnr.", project.grundstuecksnr or "—"),
-        ("Planverfasser", project.planverfasser or "—"),
+    box = Table(
+        [[disclaimer]],
+        colWidths=[165 * mm],
+    )
+    box.setStyle(
+        TableStyle(
+            [
+                ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#9ca3af")),
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f9fafb")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5 * mm),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 5 * mm),
+                ("TOPPADDING", (0, 0), (-1, -1), 3 * mm),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3 * mm),
+            ]
+        )
+    )
+    story.append(box)
+
+
+def _append_metadata_block(
+    story: list,
+    project: Project,
+    creator: User | None,
+    styles,
+) -> None:
+    """Two-column Projekt-Metadaten table. Empty fields are
+    **omitted**, not rendered with em-dash placeholders.
+
+    v24.3 — pre-v24.3 unfilled rows showed "Adresse: —" /
+    "Auftraggeber: —" which Profi-Feedback marked as visual noise
+    in a cover document. Skipping the entire row keeps the block
+    tight on projects that only have a name + creator filled in.
+    """
+    story.append(Spacer(1, 4 * mm))
+    today = datetime.now(timezone.utc).strftime("%d.%m.%Y")
+    creator_label = _format_creator_label(creator)
+    # Tuples of (label, value). Empty/None values are filtered out
+    # below so unfilled rows simply don't render.
+    raw_rows: list[tuple[str, str | None]] = [
+        ("Projekt", project.name),
+        ("Adresse", project.address),
+        ("Auftraggeber", project.client_name),
+        ("Projektnummer", project.project_number),
+        ("Grundstücksnr.", project.grundstuecksnr),
+        ("Planverfasser", project.planverfasser),
         ("Erstellt am", today),
-        ("Erstellt von", creator_label),
+        ("Erstellt von", creator_label or None),
     ]
+    rows = [(label, value) for label, value in raw_rows if value]
+    if not rows:
+        return
+
     meta_rows = [
         [
             Paragraph(f"<b>{_safe(label)}:</b>", styles["MEMeta"]),
@@ -387,28 +605,39 @@ def _append_header(
     )
     story.append(meta_table)
 
-    # --- Plan-Referenzen (falls vorhanden) ---
+
+def _append_plan_references(
+    story: list,
+    project: Project,
+    styles,
+) -> None:
+    """Plan-Referenzen-Tabelle (falls Plaene hochgeladen wurden).
+
+    Separat vom Metadaten-Block weil das eine richtige Tabelle ist,
+    keine Key-Value-Liste.
+    """
     plans = list(project.plans or [])
-    if plans:
-        story.append(Spacer(1, 4 * mm))
-        story.append(Paragraph("Plan-Referenzen", styles["MESection"]))
-        plan_rows = [["#", "Dateiname", "Seiten", "Status"]]
-        for idx, plan in enumerate(plans, start=1):
-            plan_rows.append(
-                [
-                    str(idx),
-                    _safe(plan.filename or "—")[:80],
-                    str(plan.page_count) if plan.page_count is not None else "—",
-                    _safe(plan.analysis_status or "—"),
-                ]
-            )
-        plan_table = Table(
-            plan_rows,
-            colWidths=[10 * mm, 100 * mm, 25 * mm, 30 * mm],
-            repeatRows=1,
+    if not plans:
+        return
+    story.append(Spacer(1, 4 * mm))
+    story.append(Paragraph("Plan-Referenzen", styles["MESection"]))
+    plan_rows = [["#", "Dateiname", "Seiten", "Status"]]
+    for idx, plan in enumerate(plans, start=1):
+        plan_rows.append(
+            [
+                str(idx),
+                _safe(plan.filename or "—")[:80],
+                str(plan.page_count) if plan.page_count is not None else "—",
+                _safe(plan.analysis_status or "—"),
+            ]
         )
-        plan_table.setStyle(_compact_table_style())
-        story.append(plan_table)
+    plan_table = Table(
+        plan_rows,
+        colWidths=[10 * mm, 100 * mm, 25 * mm, 30 * mm],
+        repeatRows=1,
+    )
+    plan_table.setStyle(_compact_table_style())
+    story.append(plan_table)
 
 
 # ---------------------------------------------------------------------------
@@ -749,19 +978,62 @@ def _append_summary(
 
 
 # ---------------------------------------------------------------------------
-# Footer
+# v24.3 — Footer via NumberedCanvas (two-pass page counting)
 # ---------------------------------------------------------------------------
+#
+# Pre-v24.3 the footer rendered "Seite 1" — reportlab's running
+# page counter is only the CURRENT page; the total isn't known
+# until the document is fully laid out. The canonical reportlab
+# recipe for "Seite X von N" is a Canvas subclass that buffers
+# every showPage() into a state list, then on save() walks the
+# list and draws the footer with len(states) as the total.
+#
+# Profi-Feedback (v24.3) explicitly asked for "Seite X von N";
+# Feedback-Punkt 6 in the spec.
 
 
-def _draw_footer(canvas, doc) -> None:
-    """Page-footer drawn on every page. Three-column layout: software
-    identifier (left), Vorabkalkulations-Disclaimer (centre), page
-    counter (right)."""
+class _NumberedCanvas(Canvas):
+    """Canvas subclass that defers per-page rendering until the
+    total page count is known.
+
+    Implementation pattern straight from the reportlab user-guide
+    recipe for total-page numbering — we override ``showPage`` to
+    snapshot the state of each page, and ``save`` to walk the
+    snapshots and draw the footer with the now-known total.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._saved_page_states: list[dict] = []
+
+    def showPage(self) -> None:  # noqa: N802 — reportlab API spelling
+        self._saved_page_states.append(dict(self.__dict__))
+        self._startPage()
+
+    def save(self) -> None:
+        total = len(self._saved_page_states)
+        for state in self._saved_page_states:
+            self.__dict__.update(state)
+            _draw_footer(self, total)
+            super().showPage()
+        super().save()
+
+
+def _draw_footer(canvas: Canvas, total_pages: int) -> None:
+    """Three-column footer: software identifier (left), Vorab-
+    kalkulations-Disclaimer (centre), "Seite X von N" (right).
+
+    v24.3 — explicitly NO internal version strings here. The
+    pre-v24.3 footer was already clean ("Erstellt mit BauLV") but
+    Profi-Feedback flagged "v23.9-claude"-style markers as a
+    long-running anti-pattern; this comment locks the contract so
+    a future refactor doesn't reintroduce them.
+    """
     canvas.saveState()
     canvas.setFont("Helvetica", 7.5)
     canvas.setFillColor(colors.HexColor("#6b7280"))
 
-    width = doc.pagesize[0]
+    width = A4[0]
     bottom_y = 12 * mm
 
     canvas.drawString(18 * mm, bottom_y, "Erstellt mit BauLV")
@@ -771,7 +1043,9 @@ def _draw_footer(canvas, doc) -> None:
         "Vorabkalkulation — keine rechtsverbindliche Mengenermittlung",
     )
     page_num = canvas.getPageNumber()
-    canvas.drawRightString(width - 18 * mm, bottom_y, f"Seite {page_num}")
+    canvas.drawRightString(
+        width - 18 * mm, bottom_y, f"Seite {page_num} von {total_pages}",
+    )
     canvas.restoreState()
 
 

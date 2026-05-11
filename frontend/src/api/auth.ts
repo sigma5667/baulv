@@ -125,9 +125,50 @@ export async function fetchMe(): Promise<User> {
 export async function updateProfile(data: {
   full_name?: string;
   company_name?: string;
+  /** v24.3 — Funktion/Rolle des Erstellers im
+   * Mengenermittlungs-PDF (z.B. "Bauträger", "Architekt"). */
+  role?: string;
 }): Promise<User> {
   const res = await api.put("/auth/me", data);
   return res.data;
+}
+
+// ---------------------------------------------------------------------------
+// v24.3 — Logo upload / delete for PDF branding
+// ---------------------------------------------------------------------------
+
+/** Upload a company logo (PNG or JPG, max 2 MB). Replaces any
+ *  previously uploaded logo. Returns the refreshed user record so
+ *  the SPA can flip ``has_logo`` and re-render the preview without
+ *  an extra ``/me`` round-trip.
+ *
+ *  The backend re-validates both the MIME type and the magic
+ *  bytes; an upload that survives the client check but fails the
+ *  server check returns a 400 with a German message that we
+ *  surface verbatim. */
+export async function uploadLogo(file: File): Promise<User> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const res = await api.post("/auth/me/logo", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return res.data;
+}
+
+/** Remove the user's logo. Idempotent on the backend — calling
+ *  this without a stored logo is a no-op success. */
+export async function deleteLogo(): Promise<User> {
+  const res = await api.delete("/auth/me/logo");
+  return res.data;
+}
+
+/** URL for the in-browser logo preview. The endpoint streams the
+ *  binary directly; ``<img src=...>`` consumers don't need an
+ *  axios call. Appending a cache-buster query param is the
+ *  caller's responsibility when they need to bypass the browser
+ *  cache after an upload. */
+export function logoPreviewUrl(): string {
+  return "/api/auth/me/logo";
 }
 
 export async function fetchFeatures(): Promise<FeatureMatrix> {

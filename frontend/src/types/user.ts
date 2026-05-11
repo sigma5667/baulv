@@ -3,6 +3,14 @@ export interface User {
   email: string;
   full_name: string;
   company_name: string | null;
+  /** v24.3 — User-Profil-Branding fuer das Mengenermittlungs-PDF.
+   * ``role`` ist die freie Funktionsbezeichnung ("Bautraeger",
+   * "Architekt"); ``has_logo`` wird vom Backend aus dem nullable
+   * Logo-Pfad abgeleitet (der Pfad selbst bleibt server-only).
+   * Die ProfilePage fragt den Logo-Inhalt ueber
+   * ``GET /auth/me/logo`` ab. */
+  role: string | null;
+  has_logo: boolean;
   subscription_plan: "basis" | "pro" | "enterprise";
   stripe_customer_id: string | null;
   marketing_email_opt_in: boolean;

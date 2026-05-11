@@ -250,47 +250,74 @@ export function ProjectDetailPage() {
         </Link>
       </div>
 
-      {/* v23.9 — Mengenermittlung-PDF-Download. Unter den Plan-/LV-/
-          Strukturkarten platziert (Spec: "Button im Projekt-Dashboard
-          unter Plan-Cards") damit der User nach dem Plan-Upload und
-          der Strukturpflege ein druckbares Cover-Dokument für die
-          Vorabkalkulation erzeugen kann. Verfügbar auch ohne Räume
-          — der Backend-Renderer produziert dann ein Cover-only-PDF
-          mit dem Vermerk "Noch keine Räume erfasst". */}
-      <div className="rounded-lg border border-dashed bg-muted/30 p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+      {/* v23.9 / v24.3 — Mengenermittlung-PDF-Download.
+          Pre-v24.3 war der Button immer aktiv; das Backend
+          produzierte für leere Projekte ein Cover-only-PDF. Profi-
+          Feedback hat das als Anti-Funktion identifiziert (ein
+          Subunternehmer könnte das versehentlich erhalten und als
+          Mengen-Nachweis missbrauchen). v24.3: kein PDF ohne Räume.
+
+            * 0 Räume → Hinweis-Karte statt Button.
+            * ≥ 1 Raum → vollwertiger "Mengenermittlung drucken"-Button.
+
+          Der Backend-Endpoint hat seinen eigenen 400-Guard;
+          dieser hier ist die UX-Schiene, kein Sicherheits-Layer. */}
+      {rooms.length === 0 ? (
+        <div className="rounded-lg border border-dashed bg-muted/30 p-4">
           <div className="flex items-start gap-3">
-            <div className="rounded-lg bg-primary/10 p-2">
-              <FileDown className="h-5 w-5 text-primary" />
+            <div className="rounded-lg bg-muted p-2">
+              <FileDown className="h-5 w-5 text-muted-foreground" />
             </div>
-            <div>
-              <p className="font-medium">Mengenermittlung als PDF</p>
-              <p className="text-sm text-muted-foreground">
-                Druckbare Übersicht aller Räume mit Berechnungs-
-                Nachweisen für die Vorabkalkulation.
+            <div className="flex-1">
+              <p className="font-medium text-muted-foreground">
+                Mengenermittlung verfügbar nach Räume-Erfassung
+              </p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Sobald Räume im Projekt erfasst sind, können Sie die
+                Mengenermittlung als druckbares PDF exportieren.
+                Bitte erst einen Plan hochladen und die KI-Analyse
+                starten — oder die Gebäudestruktur manuell pflegen.
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => downloadPdfMutation.mutate()}
-            disabled={downloadPdfMutation.isPending}
-            className="flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {downloadPdfMutation.isPending ? (
-              <>
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                Erstelle PDF…
-              </>
-            ) : (
-              <>
-                <FileDown className="h-3.5 w-3.5" />
-                📄 Mengenermittlung drucken
-              </>
-            )}
-          </button>
         </div>
-      </div>
+      ) : (
+        <div className="rounded-lg border border-dashed bg-muted/30 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <div className="rounded-lg bg-primary/10 p-2">
+                <FileDown className="h-5 w-5 text-primary" />
+              </div>
+              <div>
+                <p className="font-medium">Mengenermittlung als PDF</p>
+                <p className="text-sm text-muted-foreground">
+                  Druckbare Übersicht aller Räume mit Berechnungs-
+                  Nachweisen für die Vorabkalkulation.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => downloadPdfMutation.mutate()}
+              disabled={downloadPdfMutation.isPending}
+              title="Mengenermittlung als PDF drucken"
+              className="flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {downloadPdfMutation.isPending ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Erstelle PDF…
+                </>
+              ) : (
+                <>
+                  <FileDown className="h-3.5 w-3.5" />
+                  📄 Mengenermittlung drucken
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

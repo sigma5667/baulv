@@ -1,8 +1,22 @@
+import io
 import json
+import logging
+import shutil
 from datetime import datetime, timedelta, timezone
-from uuid import UUID
+from pathlib import Path
+from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select, update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -83,7 +97,23 @@ from app.legal_versions import (
 from app.config import settings
 from app.subscriptions import BETA_PROJECT_LIMIT_SENTINEL, get_feature_matrix
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+
+# v24.3 — Profil-Branding: zulaessige Logo-MIME-Types + Max-Size.
+# Bewusst eng gehalten — PNG/JPG decken jeden Bauunternehmer-Fall ab,
+# WebP/SVG sind Footguns (SVG = XSS-Vektor in einem PDF-Renderer,
+# WebP-Decoder hatte 2023 mehrere CVEs). Limit 2 MB folgt der Spec.
+_LOGO_ALLOWED_MIMES: frozenset[str] = frozenset(
+    {"image/png", "image/jpeg"}
+)
+_LOGO_ALLOWED_MAGIC: tuple[bytes, ...] = (
+    b"\x89PNG\r\n\x1a\n",  # PNG signature
+    b"\xff\xd8\xff",        # JPEG SOI marker
+)
+_LOGO_MAX_BYTES = 2 * 1024 * 1024
 
 
 # Literal confirmation string the client must echo back when deleting an
@@ -108,6 +138,11 @@ def _user_response(user: User) -> UserResponse:
         email=user.email,
         full_name=user.full_name,
         company_name=user.company_name,
+        # v24.3 — Profil-Branding. ``has_logo`` aus dem nullable
+        # ``logo_path`` abgeleitet, damit die Settings-Seite nicht
+        # den Server-Pfad sehen muss (Pfad bleibt serverseitig).
+        role=user.role,
+        has_logo=user.logo_path is not None,
         subscription_plan=user.subscription_plan,
         stripe_customer_id=user.stripe_customer_id,
         marketing_email_opt_in=user.marketing_email_opt_in,
@@ -311,9 +346,192 @@ async def update_me(
     if data.full_name is not None:
         user.full_name = data.full_name
     if data.company_name is not None:
-        user.company_name = data.company_name
+        # Treat empty string as explicit clear — the field is
+        # nullable on the model so the user can wipe a previously
+        # set company without having to send NULL through Pydantic.
+        user.company_name = data.company_name or None
+    if data.role is not None:
+        user.role = data.role or None
     await db.flush()
     await db.refresh(user)
+    return _user_response(user)
+
+
+# ---------------------------------------------------------------------------
+# v24.3 — Logo upload / preview / delete
+# ---------------------------------------------------------------------------
+#
+# Logos werden unter ``{upload_path}/logos/{user_id}/`` abgelegt, mit
+# einem UUID-Suffix vorne damit Re-Uploads dieselben Dateinamens nicht
+# kollidieren. ``users.logo_path`` haelt den absoluten Pfad — beim
+# Loeschen oder Re-Upload wird die alte Datei best-effort entfernt
+# (filesystem-leak haengt nie die DB-Transaktion auf).
+
+
+def _logo_dir_for(user_id: UUID) -> Path:
+    """Return (and create) the per-user logo dir on disk."""
+    path = settings.upload_path / "logos" / str(user_id)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+@router.post("/me/logo", response_model=UserResponse)
+async def upload_my_logo(
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload a company logo for the user's PDF branding.
+
+    Accepts PNG or JPEG up to 2 MB. The previous logo (if any) is
+    deleted on success. Validation order:
+
+      1. Content-Type whitelist (``image/png`` or ``image/jpeg``).
+      2. Magic-byte check — the authoritative verdict. A renamed
+         ``virus.exe.png`` would pass step 1 and die here.
+      3. Size cap. Checked twice — pre-read via ``UploadFile.size``
+         when the browser provides it, post-write via ``stat()``.
+
+    Returns the updated ``UserResponse`` so the SPA can re-render
+    the profile card without an extra ``/me`` round-trip.
+    """
+    if not file.filename:
+        raise HTTPException(400, "Keine Datei angegeben.")
+
+    NOT_AN_IMAGE = (
+        "Nur PNG- oder JPG-Dateien sind erlaubt. Bitte konvertieren "
+        "Sie Ihr Logo in eines der beiden Formate."
+    )
+
+    ct = (file.content_type or "").lower()
+    if ct not in _LOGO_ALLOWED_MIMES:
+        raise HTTPException(400, NOT_AN_IMAGE)
+
+    if file.size is not None and file.size > _LOGO_MAX_BYTES:
+        raise HTTPException(
+            413,
+            f"Die Logo-Datei ist zu groß ({file.size // (1024 * 1024)} MB). "
+            f"Maximal 2 MB erlaubt.",
+        )
+
+    # Magic-byte check — authoritative. PNG starts with the 8-byte
+    # signature; JPEG starts with FF D8 FF (SOI + first APP marker).
+    header = file.file.read(16)
+    try:
+        file.file.seek(0)
+    except (AttributeError, OSError):
+        logger.warning("Logo upload stream not seekable; rejecting upload.")
+        raise HTTPException(400, NOT_AN_IMAGE)
+    if not any(header.startswith(sig) for sig in _LOGO_ALLOWED_MAGIC):
+        logger.info(
+            "Logo upload rejected as non-image: filename=%s ct=%s magic=%r",
+            file.filename, ct, header[:8],
+        )
+        raise HTTPException(400, NOT_AN_IMAGE)
+
+    # Persist. Filename suffix derived from content-type so the
+    # PDF renderer can pick the right reportlab Image kind.
+    suffix = ".png" if ct == "image/png" else ".jpg"
+    logo_dir = _logo_dir_for(user.id)
+    stored_name = f"{uuid4().hex[:8]}_logo{suffix}"
+    file_path = logo_dir / stored_name
+
+    try:
+        with open(file_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+    except OSError as e:
+        logger.exception("Failed to write logo upload to %s: %s", file_path, e)
+        raise HTTPException(
+            500, "Logo konnte nicht gespeichert werden. Bitte erneut versuchen."
+        )
+
+    # Post-write size check (covers the case where file.size was None).
+    actual_size = file_path.stat().st_size
+    if actual_size > _LOGO_MAX_BYTES:
+        try:
+            file_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise HTTPException(
+            413,
+            f"Die Logo-Datei ist zu groß ({actual_size // (1024 * 1024)} MB). "
+            f"Maximal 2 MB erlaubt.",
+        )
+
+    # Swap in: delete the previous logo (best-effort) and pin the
+    # new path. The order matters — only after the new file is
+    # safely on disk do we drop the reference to the old one, so
+    # a partial failure never leaves the user without any logo
+    # but with ``logo_path`` claiming there is one.
+    old_path = user.logo_path
+    user.logo_path = str(file_path)
+    await db.flush()
+    await db.refresh(user)
+
+    if old_path:
+        try:
+            Path(old_path).unlink(missing_ok=True)
+        except OSError as e:
+            logger.warning("Old logo unlink failed: %s err=%s", old_path, e)
+
+    return _user_response(user)
+
+
+@router.get("/me/logo")
+async def get_my_logo(
+    user: User = Depends(get_current_user),
+):
+    """Stream the user's current logo bytes for an in-browser preview.
+
+    404 when no logo is set. Cache-Control: private, max-age=60 so a
+    short logo-preview reload from the settings page doesn't re-hit
+    disk every time the React Query cache refreshes.
+    """
+    if not user.logo_path:
+        raise HTTPException(404, "Kein Logo hinterlegt.")
+    path = Path(user.logo_path)
+    if not path.is_file():
+        # DB row out of sync with disk — clear the pointer so the
+        # SPA stops asking. Don't raise; just hide the gap.
+        logger.warning(
+            "User logo file missing on disk path=%s user=%s",
+            path, user.id,
+        )
+        raise HTTPException(404, "Kein Logo hinterlegt.")
+
+    suffix = path.suffix.lower()
+    media_type = "image/png" if suffix == ".png" else "image/jpeg"
+    try:
+        data = path.read_bytes()
+    except OSError as e:
+        logger.exception("Logo read failed path=%s err=%s", path, e)
+        raise HTTPException(
+            500, "Logo konnte nicht geladen werden. Bitte erneut versuchen."
+        )
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type=media_type,
+        headers={"Cache-Control": "private, max-age=60"},
+    )
+
+
+@router.delete("/me/logo", response_model=UserResponse)
+async def delete_my_logo(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove the user's logo. Idempotent — succeeds even if no
+    logo was set (no-op in that case)."""
+    if user.logo_path:
+        try:
+            Path(user.logo_path).unlink(missing_ok=True)
+        except OSError as e:
+            logger.warning(
+                "Logo unlink failed path=%s err=%s", user.logo_path, e
+            )
+        user.logo_path = None
+        await db.flush()
+        await db.refresh(user)
     return _user_response(user)
 
 

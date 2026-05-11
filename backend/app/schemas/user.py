@@ -54,6 +54,11 @@ class UserLogin(BaseModel):
 class UserUpdate(BaseModel):
     full_name: str | None = None
     company_name: str | None = None
+    # v24.3 — Profil-Branding fuer das Mengenermittlungs-PDF.
+    # Optional; ``None`` heisst "Feld nicht geaendert", explizit
+    # leerer String ``""`` heisst "Feld leeren" — die Route
+    # behandelt beide Faelle.
+    role: str | None = None
 
 
 class UserResponse(BaseModel):
@@ -61,6 +66,13 @@ class UserResponse(BaseModel):
     email: str
     full_name: str
     company_name: str | None
+    # v24.3 — Profil-Branding. ``role`` ist die freie Funktions-
+    # bezeichnung; ``has_logo`` ist ein abgeleiteter Bool den die
+    # Settings-Seite verwendet, um zwischen "Logo hochladen" und
+    # "Logo ersetzen" zu unterscheiden ohne den eigentlichen Pfad
+    # ausspielen zu muessen.
+    role: str | None = None
+    has_logo: bool = False
     subscription_plan: str
     stripe_customer_id: str | None
     marketing_email_opt_in: bool

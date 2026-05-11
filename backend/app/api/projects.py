@@ -8,7 +8,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
-from app.db.models.project import Project
+from app.db.models.project import Building, Floor, Project, Room, Unit
 from app.db.models.user import User
 from app.schemas.project import ProjectCreate, ProjectUpdate, ProjectResponse
 from app.auth import get_current_user
@@ -121,21 +121,44 @@ async def export_project_mengenermittlung(
 ):
     """Stream a printable A4 Mengenermittlung PDF for the project.
 
-    Available to every authenticated user (no Pro-Gate). Empty
-    projects (no rooms yet) still produce a valid PDF — the cover
-    sheet plus a "Noch keine Räume erfasst" note. That's a
-    deliberate UX choice so the user can save a cover-only PDF
-    while still populating the project; refusing with a 400 would
-    be more annoying than helpful.
+    Available to every authenticated user (no Pro-Gate). Tenancy
+    check first — a non-owner gets 403 before reportlab is even
+    imported.
 
-    Tenancy: ownership check before the heavyweight render. A
-    non-owner gets 403 before reportlab is even imported.
+    v24.3 — empty-project guard. Profi-Feedback identifizierte das
+    pre-v24.3-Verhalten (Cover-only-PDF mit "Noch keine Raeume
+    erfasst") als Anti-Funktion: ein Subunternehmer koennte das
+    PDF versehentlich erhalten und gegen den Bautraeger als
+    Mengen-Nachweis verwenden. Wir verweigern jetzt mit 400 und
+    bitten den User, erst Raeume zu erfassen.
     """
     project = await db.get(Project, project_id)
     if project is None:
         raise HTTPException(404, "Projekt nicht gefunden")
     if project.user_id != user.id:
         raise HTTPException(403, "Zugriff verweigert")
+
+    # v24.3 — Empty-project guard. Cheap COUNT-only query through
+    # Building → Floor → Unit → Room; doesn't load any rooms into
+    # memory. Done before render-prep so the user gets the 400
+    # before any reportlab import cost.
+    room_count_stmt = (
+        select(func.count(Room.id))
+        .join(Unit, Room.unit_id == Unit.id)
+        .join(Floor, Unit.floor_id == Floor.id)
+        .join(Building, Floor.building_id == Building.id)
+        .where(Building.project_id == project_id)
+    )
+    room_count = int(
+        (await db.execute(room_count_stmt)).scalar_one() or 0
+    )
+    if room_count == 0:
+        raise HTTPException(
+            400,
+            "Bitte erst Räume hinzufügen bevor Sie die Mengenermittlung "
+            "exportieren. Sie können entweder einen Plan hochladen und "
+            "die KI-Analyse starten oder die Gebäudestruktur manuell pflegen.",
+        )
 
     try:
         pdf_bytes = await export_mengenermittlung_pdf(

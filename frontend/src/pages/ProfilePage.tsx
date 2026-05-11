@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   User as UserIcon,
@@ -12,6 +12,9 @@ import {
   FileClock,
   Bot,
   LogOut,
+  Upload,
+  Image as ImageIcon,
+  X,
 } from "lucide-react";
 import { useAuth } from "../hooks/useAuth";
 import {
@@ -24,6 +27,9 @@ import {
   revokeSession,
   revokeOtherSessions,
   fetchAuditLog,
+  uploadLogo,
+  deleteLogo,
+  logoPreviewUrl,
 } from "../api/auth";
 import type { AuditLogEntry, UserSessionSummary } from "../types/user";
 
@@ -35,6 +41,10 @@ export function ProfilePage() {
   const [form, setForm] = useState({
     full_name: user?.full_name ?? "",
     company_name: user?.company_name ?? "",
+    // v24.3 — Funktion/Rolle wird ins Mengenermittlungs-PDF
+    // ueberommen (z.B. "Bautraeger", "Architekt"). Optional;
+    // leerer String wird vom Backend als "Feld leeren" verstanden.
+    role: user?.role ?? "",
   });
   const [success, setSuccess] = useState(false);
 
@@ -98,6 +108,21 @@ export function ProfilePage() {
               className="w-full rounded-md border px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
             />
           </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium">
+              Funktion / Rolle
+            </label>
+            <input
+              value={form.role}
+              onChange={(e) => setForm({ ...form, role: e.target.value })}
+              placeholder="z.B. Bauträger, Architekt, Planverfasser"
+              className="w-full rounded-md border px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              Wird im Header des Mengenermittlungs-PDF neben Ihrem Namen
+              ausgegeben.
+            </p>
+          </div>
 
           {success && (
             <div className="rounded-md bg-green-50 px-4 py-3 text-sm text-green-700">
@@ -130,12 +155,167 @@ export function ProfilePage() {
         </div>
       </div>
 
+      <LogoCard />
       <PasswordChangeCard />
       <PrivacySettingsCard />
       <SessionsCard />
       <AuditLogCard />
       <DataExportCard />
       <DangerZoneCard onDeleted={logout} />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// v24.3 — Firmenlogo für das Mengenermittlungs-PDF
+// ---------------------------------------------------------------------------
+//
+// PNG / JPG, max 2 MB. Beim Upload wird das vorherige Logo
+// serverseitig durch das neue ersetzt; ein "Logo entfernen"-Button
+// setzt ``has_logo`` zurück und löscht die Datei.
+//
+// Validation strategy mirrors the backend's: MIME-check first
+// (cheap), then size cap. The magic-byte check is server-only
+// because reading the first few bytes in the browser would force
+// us to slurp the file twice; relying on a single round-trip with
+// a friendly 400 is fine.
+
+function LogoCard() {
+  const { user, refreshUser } = useAuth();
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  // Cache-buster: bumped after each successful upload/delete so the
+  // <img> reload bypasses the browser cache without polluting the
+  // logo URL with a stale ID. ``has_logo`` itself is the source of
+  // truth for "does a logo exist".
+  const [previewVersion, setPreviewVersion] = useState(0);
+
+  const uploadMut = useMutation({
+    mutationFn: (file: File) => uploadLogo(file),
+    onSuccess: () => {
+      setError(null);
+      setPreviewVersion((v) => v + 1);
+      refreshUser();
+    },
+    onError: (e: unknown) => {
+      const msg =
+        (e as { response?: { data?: { detail?: string } } })?.response?.data
+          ?.detail ?? "Logo konnte nicht hochgeladen werden.";
+      setError(msg);
+    },
+  });
+
+  const deleteMut = useMutation({
+    mutationFn: () => deleteLogo(),
+    onSuccess: () => {
+      setError(null);
+      setPreviewVersion((v) => v + 1);
+      refreshUser();
+    },
+    onError: () => {
+      setError("Logo konnte nicht entfernt werden.");
+    },
+  });
+
+  const validateAndUpload = (file: File) => {
+    setError(null);
+    // Both checks mirror the backend gate exactly. Done client-side
+    // for fast feedback; the server re-validates so a bypassed
+    // client check still gets a 400.
+    if (!["image/png", "image/jpeg"].includes(file.type)) {
+      setError("Bitte eine PNG- oder JPG-Datei auswählen.");
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setError(
+        `Die Datei ist ${Math.round(file.size / (1024 * 1024))} MB groß — ` +
+          "maximal 2 MB pro Logo erlaubt.",
+      );
+      return;
+    }
+    uploadMut.mutate(file);
+  };
+
+  const onFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) validateAndUpload(file);
+    // Reset the input so re-selecting the same file fires onChange again.
+    e.target.value = "";
+  };
+
+  const previewSrc = user?.has_logo
+    ? `${logoPreviewUrl()}?v=${previewVersion}`
+    : null;
+
+  return (
+    <div className="rounded-lg border bg-card p-6">
+      <div className="mb-4 flex items-center gap-2">
+        <ImageIcon className="h-5 w-5 text-primary" />
+        <h2 className="text-lg font-semibold">Firmenlogo</h2>
+      </div>
+      <p className="mb-4 text-sm text-muted-foreground">
+        Ihr Logo erscheint oben links im Mengenermittlungs-PDF.
+        PNG oder JPG, maximal 2 MB.
+      </p>
+
+      <div className="flex items-start gap-4">
+        <div className="flex h-24 w-40 shrink-0 items-center justify-center rounded-md border bg-muted/30 p-2">
+          {previewSrc ? (
+            <img
+              src={previewSrc}
+              alt="Firmenlogo Vorschau"
+              className="max-h-full max-w-full object-contain"
+            />
+          ) : (
+            <span className="text-xs text-muted-foreground">
+              Kein Logo hinterlegt
+            </span>
+          )}
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploadMut.isPending}
+            className="flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            <Upload className="h-4 w-4" />
+            {user?.has_logo
+              ? uploadMut.isPending
+                ? "Lädt hoch…"
+                : "Logo ersetzen"
+              : uploadMut.isPending
+                ? "Lädt hoch…"
+                : "Logo hochladen"}
+          </button>
+          {user?.has_logo && (
+            <button
+              type="button"
+              onClick={() => deleteMut.mutate()}
+              disabled={deleteMut.isPending}
+              className="flex items-center gap-2 rounded-md border border-destructive/40 px-3 py-1.5 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+            >
+              <X className="h-4 w-4" />
+              {deleteMut.isPending ? "Entferne…" : "Logo entfernen"}
+            </button>
+          )}
+        </div>
+      </div>
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/png,image/jpeg"
+        className="hidden"
+        onChange={onFileSelect}
+      />
+
+      {error && (
+        <div className="mt-3 rounded-md bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          {error}
+        </div>
+      )}
     </div>
   );
 }
