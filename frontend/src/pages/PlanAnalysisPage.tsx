@@ -2356,35 +2356,33 @@ function WallCalculationTable({
                     />
                   </td>
                   <td className="px-3 py-2 text-right">
-                    {/* Deckenhöhe — three states.
-                        - height_m IS NULL AND source != 'default'
-                          → red "Bitte eintragen" (genuinely missing —
-                          neither user nor calc has touched this row).
-                        - height_m IS NULL AND source == 'default'
-                          → defensive fallback display: show 2,50 m
-                          with the same amber Info-icon hint we use
-                          for the explicit-2,50 case. The backend
-                          recalc writes the resolved height back, so
-                          this branch shouldn't trigger after a
-                          deploy of v22.2+, but leaving the
-                          fallback in place keeps the table
-                          coherent if any data inconsistency slips
-                          through.
-                        - height_m present (default or measured) →
-                          vanilla value cell. Subtle hint when
-                          source is 'default'. */}
+                    {/* Deckenhöhe — zwei Zustände (v24.3.1).
+                        - height_m IS NULL → red "Bitte eintragen".
+                          Vor v24.3.1 hatte die KI-Pipeline einen
+                          Bug der NULL stehen liess obwohl die
+                          Wand-Calc-Cache mit 2,50 m gerechnet hatte.
+                          Migration 024 backfillt Bestandsdaten;
+                          v24.3.1 fixt die Pipeline; jetzt ist NULL
+                          immer "der User hat es bewusst geleert"
+                          oder ein manueller Raum ohne Hoehe.
+                        - height_m present → vanilla value cell.
+                          Subtler Hint mit Info-Icon wenn die Quelle
+                          "default" ist (Standard-2,50, bitte
+                          pruefen).
+
+                        WICHTIG: Pre-v24.3.1 zeigte diese Zelle einen
+                        Display-Override (NULL+default → 2,5), was
+                        in Kombination mit dem ``InlineNumericEdit``-
+                        "Same value → skip"-Guard dazu fuehrte, dass
+                        die manuelle Bestaetigung des 2,50-Werts den
+                        Save verschluckte (parsed=2.5 === value=2.5
+                        vom Override → silent no-op). Resultat: PDF
+                        zeigte "—". Override entfernt, UI ist
+                        ehrlich. */}
                     <InlineNumericEdit
-                      value={
-                        room.height_m === null && isDefault
-                          ? 2.5
-                          : room.height_m
-                      }
+                      value={room.height_m}
                       unit=""
-                      state={
-                        room.height_m === null && !isDefault
-                          ? "missing"
-                          : "ok"
-                      }
+                      state={room.height_m === null ? "missing" : "ok"}
                       missingLabel="Bitte eintragen"
                       warningLabel=""
                       hint={
@@ -2393,7 +2391,7 @@ function WallCalculationTable({
                           : undefined
                       }
                       tooltip={
-                        room.height_m === null && !isDefault
+                        room.height_m === null
                           ? "Raumhöhe fehlt — bitte aus Plan oder Schnitt messen"
                           : isDefault
                             ? "Standardwert 2,50 m — bitte aus Schnittplan prüfen falls anders"

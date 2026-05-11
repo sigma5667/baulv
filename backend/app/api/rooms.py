@@ -154,17 +154,23 @@ async def create_room(
     payload = data.model_dump(exclude={"openings"})
 
     # ----------------------------------------------------------------
-    # ceiling_height_source — three branches.
+    # ceiling_height_source — three branches (v24.3.1).
     #
     # 1. Caller passed a source string explicitly → honour it (after
     #    normalisation against the canonical set).
-    # 2. No source, no height (or height == 2.50, the Austrian
-    #    residential standard fallback) → ``default``. Treating an
-    #    explicit 2.50 the same as null protects against frontend
-    #    regressions that pre-fill the field with the placeholder
-    #    default and submit it untouched.
-    # 3. No source, height ≠ 2.50 → ``manual``. The user typed a
+    # 2. No source, no height → ``default``. The recalc fallback
+    #    fills 2,50 m in and tags the row as a placeholder for the
+    #    user to confirm.
+    # 3. No source, height supplied → ``manual``. The user typed a
     #    real measurement.
+    #
+    # Pre-v24.3.1 hatte Zweig 2 eine Spezialregel "height == 2.50
+    # → default" — gedacht als Schutz gegen einen alten Frontend-
+    # Bug, der den 2,50-Placeholder unveraendert submittete. Der
+    # FE-Bug ist seit v22.x gefixt; die Heuristik hatte aber den
+    # False-Positive, dass echte 2,50-Eingaben als "default"
+    # markiert wurden. v24.3.1 entfernt sie: was der User eintippt
+    # ist ``manual``.
     # ----------------------------------------------------------------
     provided_source = payload.get("ceiling_height_source")
     provided_height = payload.get("height_m")
@@ -172,7 +178,7 @@ async def create_room(
         payload["ceiling_height_source"] = _normalise_ceiling_source(
             provided_source
         )
-    elif provided_height is None or float(provided_height) == 2.5:
+    elif provided_height is None:
         payload["ceiling_height_source"] = "default"
     else:
         payload["ceiling_height_source"] = "manual"

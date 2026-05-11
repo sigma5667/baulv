@@ -449,6 +449,125 @@ async def test_footer_renders_seite_x_von_n(db_session: AsyncSession):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# 9. v24.3.1 — missing-height hint replaces silent skip in detail block
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_detail_block_renders_hint_when_height_missing(
+    db_session: AsyncSession,
+):
+    """A room with ``perimeter_m`` set but ``height_m=None`` used to
+    have its Wandfläche-brutto formula silently dropped from the
+    detail block — leaving only "Boden-/Deckenfläche = X m²" and no
+    indication why nothing else was computed. v24.3.1 renders an
+    explicit hint instead.
+
+    Vater-Feedback was the trigger for this fix; a follow-up to the
+    pipeline writeback so that even projects that somehow end up
+    with a NULL height (manual rooms, legacy data not yet backfilled)
+    show the user WHY the calc is incomplete.
+    """
+    user = await _seed_user(db_session)
+    # Project with one Room: perimeter set, height NULL.
+    project = Project(id=uuid.uuid4(), user_id=user.id, name="Test")
+    db_session.add(project)
+    await db_session.flush()
+    building = Building(id=uuid.uuid4(), project_id=project.id, name="H")
+    db_session.add(building)
+    await db_session.flush()
+    floor = Floor(
+        id=uuid.uuid4(), building_id=building.id, name="EG", level_number=0
+    )
+    db_session.add(floor)
+    await db_session.flush()
+    unit = Unit(id=uuid.uuid4(), floor_id=floor.id, name="T1")
+    db_session.add(unit)
+    await db_session.flush()
+    db_session.add(
+        Room(
+            id=uuid.uuid4(),
+            unit_id=unit.id,
+            name="Wohnzimmer",
+            area_m2=Decimal("24.50"),
+            perimeter_m=Decimal("20.00"),
+            height_m=None,  # the failure-mode case
+        )
+    )
+    await db_session.commit()
+
+    pdf_bytes = await export_mengenermittlung_pdf(
+        project_id=project.id, db=db_session, creator=user,
+    )
+
+    # The new explicit hint phrase. We search for the German stem
+    # "Raumh" which catches both the umlauted and the encoded form
+    # in the PDF byte stream — and "fehlt" to lock the wording so a
+    # future copy edit doesn't drift away from the contract.
+    assert b"Raumh" in pdf_bytes
+    assert b"fehlt" in pdf_bytes
+
+
+# ---------------------------------------------------------------------------
+# 10. v24.3.1 — create_room: explicit 2.50 is "manual", not "default"
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_room_tags_explicit_2_50_as_manual(
+    db_session: AsyncSession,
+):
+    """Pre-v24.3.1 ``create_room`` had a heuristic that marked any
+    ``height_m == 2.50`` as ``ceiling_height_source = "default"``,
+    even when the user explicitly typed it. The protection was for
+    an old frontend bug that pre-filled the field; the FE bug is
+    fixed since v22.x and the heuristic was a false-positive.
+
+    v24.3.1 removed the special case. Locking that down so a future
+    'defensive' refactor doesn't re-introduce it.
+    """
+    from uuid import uuid4 as _uuid4
+
+    from app.api.rooms import create_room
+    from app.schemas.room import RoomCreate
+
+    user = await _seed_user(db_session)
+    project = Project(id=_uuid4(), user_id=user.id, name="P")
+    db_session.add(project)
+    await db_session.flush()
+    building = Building(id=_uuid4(), project_id=project.id, name="H")
+    db_session.add(building)
+    await db_session.flush()
+    floor = Floor(id=_uuid4(), building_id=building.id, name="EG", level_number=0)
+    db_session.add(floor)
+    await db_session.flush()
+    unit = Unit(id=_uuid4(), floor_id=floor.id, name="T1")
+    db_session.add(unit)
+    await db_session.commit()
+
+    # Build the RoomCreate payload — explicit 2.50 m, no source.
+    payload = RoomCreate(
+        name="Wohnzimmer",
+        area_m2=20.0,
+        perimeter_m=18.0,
+        height_m=2.50,
+    )
+    room = await create_room(
+        unit_id=unit.id, data=payload, user=user, db=db_session,
+    )
+    await db_session.commit()
+
+    # Both halves of the contract.
+    assert room.height_m is not None
+    assert abs(float(room.height_m) - 2.5) < 1e-6
+    # The headline: source is "manual", not "default".
+    assert room.ceiling_height_source == "manual", (
+        f"Explicit 2.50 m tagged as {room.ceiling_height_source!r} — "
+        f"v24.3.1 removed the special-case heuristic, this regressed."
+    )
+
+
 @pytest.mark.asyncio
 async def test_no_debug_version_markers_in_pdf(db_session: AsyncSession):
     """The footer + PDF metadata must not leak internal version

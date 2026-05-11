@@ -860,6 +860,31 @@ def _build_formulas(room: Room, styles) -> list:
                 styles["MEFormula"],
             )
         )
+    elif p is not None and h is None:
+        # v24.3.1 — sichtbarer Hinweis statt stillem Skip.
+        # Pre-v24.3.1 entfiel die Brutto-Formel kommentarlos wenn
+        # ``height_m`` NULL war — der Leser sah eine Boden-/Decken-
+        # flaeche und sonst nichts und musste raten, ob das
+        # gewollt war. Jetzt rendert eine kursive Notiz, dass die
+        # Berechnung uebersprungen wurde und welcher Eingabewert
+        # fehlt.
+        out.append(
+            Paragraph(
+                "<i>Wandfläche brutto = Umfang × Höhe — "
+                "<b>Raumhöhe fehlt</b>; bitte ergänzen, damit der "
+                "Nachweis berechnet werden kann.</i>",
+                styles["MEFormulaLabel"],
+            )
+        )
+    elif p is None and h is not None:
+        out.append(
+            Paragraph(
+                "<i>Wandfläche brutto = Umfang × Höhe — "
+                "<b>Umfang fehlt</b>; bitte ergänzen, damit der "
+                "Nachweis berechnet werden kann.</i>",
+                styles["MEFormulaLabel"],
+            )
+        )
 
     deductions = _deductions(room)
     if deductions["entries"]:

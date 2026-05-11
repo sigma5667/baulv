@@ -1149,18 +1149,17 @@ function RoomNode({
             <span className="inline-flex items-center gap-1">
               Raumhöhe:
               <InlineNumericEdit
-                // Same three-state shape as the wall-calc table.
-                // null + default-source falls back to the 2,50 m
-                // display so the user sees the value the calc
-                // actually used; null + no-default-source remains
-                // the genuine "missing" badge.
-                value={
-                  room.height_m === null && ceilingWarn ? 2.5 : room.height_m
-                }
+                // v24.3.1 — ehrlicher Wert ohne Display-Override.
+                // Pre-v24.3.1 zeigte diese Zelle 2,5 als Fake-Wert,
+                // wenn ``height_m=NULL && source="default"`` — was
+                // mit dem InlineNumericEdit-Same-Value-Skip eine
+                // manuelle 2,50-Bestaetigung verschluckte und das
+                // PDF "—" rendern liess. Migration 024 backfillt
+                // alte NULL-Werte, Pipeline schreibt Default-Hoehe
+                // jetzt zurueck — Anzeige hier kann ehrlich sein.
+                value={room.height_m}
                 unit="m"
-                state={
-                  room.height_m === null && !ceilingWarn ? "missing" : "ok"
-                }
+                state={room.height_m === null ? "missing" : "ok"}
                 missingLabel="Bitte eintragen"
                 warningLabel=""
                 hint={
@@ -1169,7 +1168,7 @@ function RoomNode({
                     : undefined
                 }
                 tooltip={
-                  room.height_m === null && !ceilingWarn
+                  room.height_m === null
                     ? "Raumhöhe fehlt — bitte aus Plan oder Schnitt messen"
                     : ceilingWarn
                       ? "Standardwert 2,50 m — bitte aus Schnittplan prüfen falls anders"

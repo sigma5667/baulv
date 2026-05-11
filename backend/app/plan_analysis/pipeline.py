@@ -1025,6 +1025,24 @@ async def _store_extraction_result(
             # calculate_wall_areas may downgrade the source to
             # "default" if the height fell back — keep the DB in sync.
             room.ceiling_height_source = calc.ceiling_height_source
+            # v24.3.1 — default-height writeback. Pre-v24.3.1 the
+            # pipeline persisted ``height_m=None`` whenever Vision
+            # didn't extract a height (typical on Grundriss-only
+            # uploads — heights live in Schnitt-Pläne). The wall-
+            # calc table then displayed a fake "2,50 (Standard)"
+            # via the frontend's display-override, and the
+            # Mengenermittlungs-PDF rendered "—" because it reads
+            # the honest DB value. By writing the 2,50 fallback
+            # back here we keep the DB internally consistent: a
+            # row whose wall-calc cache claims 2,50 also has
+            # ``height_m=2.50`` on disk. ``ceiling_height_source``
+            # stays ``"default"`` so the UI's Standard-Pille
+            # remains accurate and the user is still prompted to
+            # confirm — the value is just a non-null placeholder.
+            # Mirrors the equivalent writeback in
+            # ``_recalculate_walls_and_persist`` (rooms.py).
+            if room.height_m is None:
+                room.height_m = calc.height_used_m
 
             rooms_created += 1
 
