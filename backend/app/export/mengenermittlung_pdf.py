@@ -653,6 +653,51 @@ def _append_overview_table(
     story.append(Spacer(1, 4 * mm))
     story.append(Paragraph("Übersicht aller Räume", styles["MESection"]))
 
+    # v24.3.1 — Aggregierter Hinweis wenn mindestens ein Raum
+    # unvollständig ist (Fläche oder Umfang fehlt). Pre-v24.3.1
+    # zeigte die Tabelle Em-Dashes in den betroffenen Spalten
+    # ohne Erklärung, was Leser (Profi-Feedback Vater, 2026-05-11)
+    # als "Höhen fehlen" missdeuten konnten — weil die fehlenden
+    # Eingangsgrößen die Brutto-Formel mit der Höhe verschwinden
+    # liessen.
+    #
+    # Visuelle Gewichtung: gerahmter Callout-Block mit amber
+    # Hintergrund + Border, gleicher Bauart wie die Disclaimer-
+    # Box auf Seite 1 (siehe ``_append_disclaimer_box``). Bewusst
+    # auffällig genug damit der Bauträger den Mängelstand nicht
+    # auf der vollen Tabelle daneben übersieht — die hellgraue
+    # Em-Dash-Spalte zieht sonst zu wenig Blick auf sich. Nur
+    # einmal pro PDF (ganz oben über der Übersicht), nicht pro
+    # Raum, deshalb kann der Stil hier stärker sein als der
+    # Detail-Block-Hinweis unten.
+    incomplete_count = sum(
+        1 for room, _, _ in rooms_with_context
+        if room.area_m2 is None or room.perimeter_m is None
+    )
+    if incomplete_count:
+        total = len(rooms_with_context)
+        hint = Paragraph(
+            f"<b>Hinweis:</b> {incomplete_count} von {total} "
+            f"Räumen unvollständig — Fläche oder Umfang fehlt. "
+            f"Details siehe Berechnungs-Nachweise unten.",
+            styles["MEDisclaimer"],
+        )
+        box = Table([[hint]], colWidths=[165 * mm])
+        box.setStyle(
+            TableStyle(
+                [
+                    ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#b45309")),
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fef3c7")),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4 * mm),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4 * mm),
+                    ("TOPPADDING", (0, 0), (-1, -1), 2.5 * mm),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5 * mm),
+                ]
+            )
+        )
+        story.append(box)
+        story.append(Spacer(1, 3 * mm))
+
     header = [
         "Raum",
         "Geschoss",
@@ -837,8 +882,47 @@ def _build_formulas(room: Room, styles) -> list:
       3. Abzüge: Σ openings ≥ minimum-area
       4. Wand netto = brutto − Σ Abzüge × applied_factor
       5. Raum-Volumen = area × height
+
+    v24.3.1 — Wenn mindestens eines der drei Kernmaße (Fläche,
+    Umfang, Höhe) fehlt, wird der Block oben mit einer kursiven
+    Notiz geöffnet, die explizit benennt was fehlt. Profi-Feedback
+    (Vater, 2026-05-11): pre-v24.3.1 entfielen die abhängigen
+    Formel-Zeilen kommentarlos — der Leser sah z.B. nur
+    "Boden-/Deckenfläche = 24,50 m²" und kein Wort dazu, warum die
+    Wandfläche-brutto-Zeile mit der Höhe fehlt. Empirisch trifft
+    das bei 22 von 71 Räumen in seinem Projekt (Vision konnte die
+    Maße für Balkone, Stiegenhäuser und Bäder nicht extrahieren —
+    confidence durchgehend ≤ 0,6). Diese Räume bekommen jetzt
+    eine klare Zeile, was nachzupflegen ist.
     """
     out: list = []
+
+    # v24.3.1 — incomplete-input notice. Voran-Block damit der
+    # Leser den Mängelstatus sofort sieht, bevor die Formeln
+    # darunter rendern was sie können.
+    #
+    # Visuelle Gewichtung: amber-700 (#b45309) als Inline-Font-
+    # Farbe + MEMeta-Style (9pt Helvetica) statt MEFormulaLabel
+    # (8pt grau). Das hebt die Notiz deutlich von den gleichmäßig
+    # grauen Formel-Zeilen darunter ab, ohne so laut zu sein wie
+    # ein eigener Kasten — angemessen für die Detail-Ebene, in
+    # der bis zu 22 dieser Notizen hintereinander stehen können.
+    missing: list[str] = []
+    if room.area_m2 is None:
+        missing.append("Fläche")
+    if room.perimeter_m is None:
+        missing.append("Umfang")
+    if room.height_m is None:
+        missing.append("Raumhöhe")
+    if missing:
+        out.append(
+            Paragraph(
+                f"<font color='#b45309'><b>Eingaben unvollständig:</b> "
+                f"{' / '.join(missing)} fehlt — bitte in der App "
+                f"ergänzen, damit die Berechnung vollständig läuft.</font>",
+                styles["MEMeta"],
+            )
+        )
 
     if room.area_m2 is not None:
         out.append(

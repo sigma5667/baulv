@@ -43,6 +43,7 @@ from decimal import Decimal
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.projects import export_project_mengenermittlung
@@ -445,7 +446,109 @@ async def test_footer_renders_seite_x_von_n(db_session: AsyncSession):
 
 
 # ---------------------------------------------------------------------------
-# 8. v24.3 — no internal version markers (debug-artifact audit)
+# 8. v24.3.1 — incomplete-rooms notices (Vater-Bug)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_detail_block_renders_incomplete_notice_when_area_missing(
+    db_session: AsyncSession,
+):
+    """Ein Raum mit ``area_m2=None`` aber gesetzter ``height_m`` muss
+    im Detail-Nachweis-Block eine kursive ``Eingaben unvollständig:
+    Fläche fehlt``-Notiz tragen.
+
+    Vater-Bug (2026-05-11): Vision konnte bei Balkonen, Stiegenhäusern
+    und Bädern weder area noch perimeter extrahieren — die Räume
+    landeten mit beidem NULL in der DB. Pre-v24.3.1 entfielen die
+    abhängigen Formel-Zeilen kommentarlos, der Detail-Block wirkte
+    leer und der Leser missdeutete das als "Höhen fehlen". Die
+    Notiz schliesst die Lücke."""
+    user = await _seed_user(db_session)
+    project = Project(id=uuid.uuid4(), user_id=user.id, name="Test")
+    db_session.add(project)
+    await db_session.flush()
+    building = Building(id=uuid.uuid4(), project_id=project.id, name="H")
+    db_session.add(building)
+    await db_session.flush()
+    floor = Floor(
+        id=uuid.uuid4(), building_id=building.id, name="OG", level_number=1,
+    )
+    db_session.add(floor)
+    await db_session.flush()
+    unit = Unit(id=uuid.uuid4(), floor_id=floor.id, name="T1")
+    db_session.add(unit)
+    await db_session.flush()
+    db_session.add(
+        Room(
+            id=uuid.uuid4(),
+            unit_id=unit.id,
+            name="Balkon W58",
+            area_m2=None,            # the Vater-Bug trigger
+            perimeter_m=None,
+            height_m=Decimal("2.50"),
+        )
+    )
+    await db_session.commit()
+
+    pdf_bytes = await export_mengenermittlung_pdf(
+        project_id=project.id, db=db_session, creator=user,
+    )
+
+    assert pdf_bytes.startswith(b"%PDF-")
+    # Headline assertion: the new "Eingaben unvollständig" prefix
+    # must appear. We search for the umlaut-stable stem so the
+    # encoding pathway doesn't matter for the test.
+    assert b"Eingaben unvoll" in pdf_bytes, (
+        "Detail-Block muss den 'Eingaben unvollständig'-Hinweis tragen "
+        "wenn ein Kernmaß fehlt."
+    )
+    # And both missing fields are named explicitly (Fläche / Umfang).
+    # "Fl" + "che" stem is robust to whatever bytes reportlab emits.
+    assert b"Fl" in pdf_bytes
+    assert b"Umfang" in pdf_bytes
+
+
+@pytest.mark.asyncio
+async def test_overview_section_renders_aggregate_incomplete_hint(
+    db_session: AsyncSession,
+):
+    """Mindestens 1 Raum unvollständig → vor der Übersichtstabelle
+    erscheint ein Zähler-Hinweis 'N von M Räumen unvollständig'.
+
+    Lockt das aggregate-Sichtbarkeits-Versprechen von v24.3.1: der
+    Leser sieht den Mängelstand auf der ersten Seite, ohne durch
+    die Detail-Nachweise scrollen zu müssen."""
+    user = await _seed_user(db_session)
+    project = await _seed_three_room_project(db_session, user=user)
+
+    # Einen der drei Räume entkernen — area + perimeter leeren so
+    # dass er als "unvollständig" zählt. Die anderen zwei bleiben
+    # vollwertig; das ergibt einen sauberen "1 von 3"-Wortlaut.
+    rooms = (
+        await db_session.execute(select(Room).order_by(Room.name))
+    ).scalars().all()
+    rooms[0].area_m2 = None
+    rooms[0].perimeter_m = None
+    await db_session.commit()
+
+    pdf_bytes = await export_mengenermittlung_pdf(
+        project_id=project.id, db=db_session, creator=user,
+    )
+
+    assert pdf_bytes.startswith(b"%PDF-")
+    # Konkreter Wortlaut der Zähler-Zeile. ASCII-only, daher direkt
+    # als Bytes-Substring suchbar.
+    assert b"1 von 3" in pdf_bytes, (
+        "Übersichtstabelle muss den Hinweis '1 von 3 Räumen unvollständig' "
+        "tragen wenn genau ein Raum unvollständig ist."
+    )
+    # Und das Vokabel selbst (Stem 'unvoll' für umlaut-stabilen Match).
+    assert b"unvoll" in pdf_bytes
+
+
+# ---------------------------------------------------------------------------
+# 9. v24.3 — no internal version markers (debug-artifact audit)
 # ---------------------------------------------------------------------------
 
 
