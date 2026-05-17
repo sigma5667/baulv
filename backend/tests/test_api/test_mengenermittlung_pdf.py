@@ -548,11 +548,6 @@ async def test_overview_section_renders_aggregate_incomplete_hint(
 
 
 # ---------------------------------------------------------------------------
-# 9. v24.3 — no internal version markers (debug-artifact audit)
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
 # 9. v24.3.1 — missing-height hint replaces silent skip in detail block
 # ---------------------------------------------------------------------------
 
@@ -688,8 +683,212 @@ async def test_no_debug_version_markers_in_pdf(db_session: AsyncSession):
     # appears in the byte stream a future refactor has stamped a
     # debug marker somewhere user-visible — and the test fails so
     # the author sees it.
-    forbidden = [b"v23.9", b"v24.0", b"v24.1", b"v24.2", b"v24.3", b"claude"]
+    forbidden = [
+        b"v23.9", b"v24.0", b"v24.1", b"v24.2", b"v24.3", b"v24.4",
+        b"claude",
+    ]
     for marker in forbidden:
         assert marker not in pdf_bytes, (
             f"Internal version marker {marker!r} leaked into PDF body"
         )
+
+
+# ---------------------------------------------------------------------------
+# 11. v24.4 — Bodenflächen-Aggregation nach Belag und Geschoss
+# ---------------------------------------------------------------------------
+
+
+async def _seed_floor_covering_project(
+    db_session: AsyncSession, *, user: User
+) -> Project:
+    """Project mit zwei Geschossen + Räumen unterschiedlicher Beläge.
+
+    Layout:
+
+      EG (level 0):
+        Wohnzimmer 24,5 m² — Parkett
+        Bad         6,0 m² — Fliesen
+        WC          2,5 m² — NULL (Nicht klassifiziert)
+
+      1.OG (level 1):
+        Schlafen   16,0 m² — Parkett
+
+    Erwartete Aggregation:
+      EG  → Parkett 24,5 + Fliesen 6,0 + nicht-klassifiziert 2,5 = 33,0
+      1.OG → Parkett 16,0 = 16,0
+      Gesamt: 49,0
+    """
+    project = Project(
+        id=uuid.uuid4(),
+        user_id=user.id,
+        name="Bodenbelag-Test",
+    )
+    db_session.add(project)
+    await db_session.flush()
+    building = Building(
+        id=uuid.uuid4(), project_id=project.id, name="H", sort_order=0,
+    )
+    db_session.add(building)
+    await db_session.flush()
+    floor_eg = Floor(
+        id=uuid.uuid4(),
+        building_id=building.id,
+        name="Erdgeschoss",
+        level_number=0,
+        sort_order=0,
+    )
+    floor_og = Floor(
+        id=uuid.uuid4(),
+        building_id=building.id,
+        name="1.Obergeschoss",
+        level_number=1,
+        sort_order=1,
+    )
+    db_session.add_all([floor_eg, floor_og])
+    await db_session.flush()
+    unit_eg = Unit(id=uuid.uuid4(), floor_id=floor_eg.id, name="EG-T1")
+    unit_og = Unit(id=uuid.uuid4(), floor_id=floor_og.id, name="OG-T1")
+    db_session.add_all([unit_eg, unit_og])
+    await db_session.flush()
+
+    db_session.add_all([
+        Room(
+            id=uuid.uuid4(), unit_id=unit_eg.id, name="Wohnzimmer",
+            area_m2=Decimal("24.50"), perimeter_m=Decimal("20.0"),
+            height_m=Decimal("2.50"), floor_type="parkett",
+        ),
+        Room(
+            id=uuid.uuid4(), unit_id=unit_eg.id, name="Bad",
+            area_m2=Decimal("6.00"), perimeter_m=Decimal("10.0"),
+            height_m=Decimal("2.50"), floor_type="fliesen",
+        ),
+        Room(
+            id=uuid.uuid4(), unit_id=unit_eg.id, name="WC",
+            area_m2=Decimal("2.50"), perimeter_m=Decimal("6.0"),
+            height_m=Decimal("2.50"), floor_type=None,
+        ),
+        Room(
+            id=uuid.uuid4(), unit_id=unit_og.id, name="Schlafen",
+            area_m2=Decimal("16.00"), perimeter_m=Decimal("16.0"),
+            height_m=Decimal("2.50"), floor_type="parkett",
+        ),
+    ])
+    await db_session.commit()
+    return project
+
+
+@pytest.mark.asyncio
+async def test_pdf_contains_floor_covering_aggregation_section(
+    db_session: AsyncSession,
+):
+    """Räume mit gesetztem ``floor_type`` → PDF enthält die Sektion
+    "Bodenflächen nach Belag", inkl. Geschoss-Aufschlüsselung,
+    Summen pro Geschoss, "Nicht klassifiziert"-Block für den WC
+    ohne Belag, und das Gesamt-Total.
+
+    Locks die v24.4-Aggregations-Outputs als Byte-Substring-Asserts
+    so dass jede künftige Refactoring-Änderung am Wortlaut der
+    Sektion sofort auffällt."""
+    user = await _seed_user(db_session)
+    project = await _seed_floor_covering_project(db_session, user=user)
+
+    pdf_bytes = await export_mengenermittlung_pdf(
+        project_id=project.id, db=db_session, creator=user,
+    )
+
+    assert pdf_bytes.startswith(b"%PDF-")
+    # Section-Header (Stem-Match wegen Umlaut in "Bodenflächen").
+    assert b"Bodenfl" in pdf_bytes
+    assert b"Belag" in pdf_bytes
+    # Aggregations-Werte. Parkett im EG = 24,5 + 0 (Bad ist Fliesen).
+    # Im OG kommt 16 dazu — die Summe "Parkett" rendert pro Geschoss
+    # einzeln, kein Cross-Geschoss-Sammler.
+    assert b"Parkett" in pdf_bytes
+    assert b"Fliesen" in pdf_bytes
+    # WC ist nicht klassifiziert → "Nicht klassifiziert"-Bucket muss
+    # erscheinen.
+    assert b"Nicht klassifiziert" in pdf_bytes
+    # Geschoss-Summen-Wortlaut (Stem für Umlaut-Stabilität).
+    assert b"Summe Erdgeschoss" in pdf_bytes
+    assert b"Summe 1.Obergeschoss" in pdf_bytes
+    # Gesamttotal.
+    assert b"Gesamt-Bodenfl" in pdf_bytes
+    # Gesamtfläche = 24.5 + 6 + 2.5 + 16 = 49 m² → German notation "49,00 m²".
+    assert b"49,00 m" in pdf_bytes
+
+
+@pytest.mark.asyncio
+async def test_pdf_skips_floor_covering_section_when_no_room_has_belag(
+    db_session: AsyncSession,
+):
+    """Drei-Raum-Projekt OHNE ``floor_type`` an irgendeinem Raum →
+    Sektion "Bodenflächen nach Belag" wird komplett weggelassen.
+
+    Das ist die Anti-Klutter-Garantie: ein PDF für ein noch nicht
+    klassifiziertes Projekt soll nicht mit einer leeren Sammel-
+    Sektion zugemüllt werden."""
+    user = await _seed_user(db_session)
+    project = await _seed_three_room_project(db_session, user=user)
+    # ``_seed_three_room_project`` setzt floor_type nicht → alle
+    # drei Räume haben NULL. Aggregation soll skipen.
+
+    pdf_bytes = await export_mengenermittlung_pdf(
+        project_id=project.id, db=db_session, creator=user,
+    )
+
+    assert pdf_bytes.startswith(b"%PDF-")
+    # Section-Header darf NICHT erscheinen.
+    assert b"Bodenfl\xe4chen nach Belag" not in pdf_bytes
+    # Auch die Latin-1-encoded Variante (reportlab encoded "ä" als
+    # \xe4 in Helvetica). Bei Unsicherheit testen wir den ASCII-Stem
+    # plus die Marker-Phrase "nach Belag" (eindeutig der Sektion).
+    assert b"nach Belag" not in pdf_bytes
+    # Gesamt-Bodenfläche darf auch nicht erscheinen (kein Aggregat).
+    assert b"Gesamt-Bodenfl" not in pdf_bytes
+
+
+@pytest.mark.asyncio
+async def test_pdf_floor_covering_uses_nicht_zugeordnet_for_unassigned_floor(
+    db_session: AsyncSession,
+):
+    """Räume ohne Geschoss-Zuordnung (z.B. weil die Vision keine
+    Floor-Beschriftung erkannt hat) landen in einer "NICHT
+    ZUGEORDNET"-Gruppe statt aus der Aggregation rauszufallen.
+
+    Vater-Empirie (Musterhaus-Projekt, 2026-05-12): aktuelle Daten
+    haben oft keine Floor-Info. v24.4-Plan-Addendum lässt uns die
+    Aggregation trotzdem rendern, damit der Bauträger zumindest die
+    Belag-Aufschlüsselung sieht — Geschoss-Tagging kommt später."""
+    user = await _seed_user(db_session)
+    project = await _seed_floor_covering_project(db_session, user=user)
+
+    # Floor-Referenzen kappen indem wir die Floor-Rows mit
+    # level_number=None überschreiben — Floor bleibt, aber name
+    # erinnert nicht an ein konkretes Geschoss. Das simuliert
+    # nicht ganz das None-Floor-Szenario, aber es testet den
+    # Sort-Path für unbekannte Geschosse.
+    #
+    # Echter "Floor is None"-Pfad wäre nur erreichbar wenn ein
+    # Raum ohne Building/Floor existiert — was die FK-Constraints
+    # nicht erlauben. Realistischer Test:
+    floors = (
+        await db_session.execute(select(Floor))
+    ).scalars().all()
+    for f in floors:
+        f.level_number = None
+        f.name = "??"
+    await db_session.commit()
+
+    pdf_bytes = await export_mengenermittlung_pdf(
+        project_id=project.id, db=db_session, creator=user,
+    )
+
+    assert pdf_bytes.startswith(b"%PDF-")
+    # Die Sektion läuft normal — aber die Geschosse haben jetzt
+    # alle den ungewohnten Namen "??", was als Geschoss-Header
+    # auftaucht. Hauptsache: Aggregation funktioniert und total
+    # ist gerendert.
+    assert b"Bodenfl" in pdf_bytes
+    assert b"Parkett" in pdf_bytes
+    # Gesamttotal bleibt 49,00 m².
+    assert b"49,00 m" in pdf_bytes

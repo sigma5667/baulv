@@ -73,6 +73,10 @@ from app.db.models.project import (
     Unit,
 )
 from app.db.models.user import User
+from app.services.floor_covering import (
+    display_label as _floor_covering_label,
+    normalise_floor_covering,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -225,6 +229,12 @@ async def export_mengenermittlung_pdf(
 
     if rooms_with_context:
         _append_overview_table(story, rooms_with_context, styles)
+        # v24.4 — Bodenflächen-Aggregation nach Belag und Geschoss.
+        # Steht zwischen Übersichtstabelle und Detail-Nachweisen
+        # (so wie im Plan zugesagt). Funktion selbst entscheidet ob
+        # die Sektion gerendert wird (skippt nur wenn KEIN Raum
+        # einen Belag hat).
+        _append_floor_covering_section(story, rooms_with_context, styles)
         _append_room_details(story, rooms_with_context, styles)
         _append_summary(story, rooms_with_context, styles)
 
@@ -739,6 +749,213 @@ def _append_overview_table(
     )
     table.setStyle(_overview_table_style())
     story.append(table)
+
+
+# ---------------------------------------------------------------------------
+# v24.4 — Bodenflächen-Aggregation nach Belag und Geschoss
+# ---------------------------------------------------------------------------
+#
+# Profi-Feedback (Vater, HS Baumanagement, 2026-05-12): die
+# Mengenermittlung braucht eine Aufschlüsselung der Bodenflächen pro
+# Belag und Geschoss als Grundlage für die Belag-Mengenermittlung
+# in der Vorabkalkulation. Pre-v24.4 gab es eine "Bodenbelag"-Spalte
+# in der Übersichtstabelle aber keine Aggregation — der Bauträger
+# musste Excel öffnen.
+#
+# Aggregations-Regeln (aus dem v24.4-Plan, Tobi-Entscheidungen):
+#
+#   * Belag-Sortierung: nach Fläche absteigend (größte Posten zuerst).
+#   * Geschoss-Sortierung: ``level_number`` aufsteigend (KG → EG →
+#     1.OG → DG). Räume ohne erkennbares Geschoss landen in einer
+#     Sondergruppe "Nicht zugeordnet" (kommt am Ende). Wichtige
+#     Empirie aus dem Musterhaus-Projekt: Vaters Räume haben aktuell
+#     keine Geschoss-Info; wir wollen die Aggregation trotzdem
+#     sichtbar machen, deshalb existiert der Fallback.
+#   * "Nicht klassifiziert": Räume mit area_m2 gesetzt aber
+#     floor_type NULL — separat ausgewiesen pro Geschoss + im
+#     Gesamttotal mit drin. So weiß der User wie viel m² aktuell
+#     ungetaggt sind.
+#   * "Räume ohne Fläche" (area_m2 NULL): KOMPLETT aus der
+#     Aggregation raus — die sind bereits durch die v24.3.2-
+#     Mängelbanner-Sektion ausgewiesen, in einer Belag-Aggregation
+#     mit area NULL würden sie nur als 0-Beiträge mitlaufen.
+#   * Sektion wird ÜBERHAUPT NICHT gerendert wenn keiner der Räume
+#     einen ``floor_type`` hat — dann ist die Aggregation per
+#     Definition leer und ein leerer "Nicht klassifiziert"-Block
+#     würde nur verwirren.
+
+
+def _append_floor_covering_section(
+    story: list,
+    rooms_with_context: list[tuple[Room, Floor | None, Unit | None]],
+    styles,
+) -> None:
+    """Render the "Bodenflächen nach Belag (pro Geschoss)" section.
+
+    Skipped entirely (no headline, no spacer) when no room in the
+    project carries a ``floor_type`` value — see module docstring
+    for the rationale.
+    """
+    # Step 1 — collect rooms that contribute to the aggregation.
+    # area_m2 NULL is dropped (already flagged via incomplete-rooms
+    # banner in v24.3.2; including them would add 0-area entries).
+    contributing = [
+        (room, floor)
+        for room, floor, _unit in rooms_with_context
+        if room.area_m2 is not None
+    ]
+
+    if not any(r.floor_type for r, _ in contributing):
+        # Skip the whole section — see docstring.
+        return
+
+    # Step 2 — group by floor. ``None`` (legacy / unassigned) lives
+    # under the sentinel key ``__unassigned__`` and renders as the
+    # "Nicht zugeordnet"-bucket at the end of the section.
+    floor_groups: dict[str, dict] = {}
+    for room, floor in contributing:
+        if floor is None:
+            floor_key = "__unassigned__"
+            floor_label = "Nicht zugeordnet"
+            sort_key: tuple[int, int] = (1, 0)
+        else:
+            floor_key = str(floor.id)
+            floor_label = _floor_label(floor)
+            # Primary sort priority: known-floor (0) before
+            # unassigned (1). Secondary: ``level_number`` ascending,
+            # NULL last.
+            lvl = floor.level_number
+            sort_key = (0, lvl if lvl is not None else 9999)
+
+        group = floor_groups.setdefault(
+            floor_key,
+            {"label": floor_label, "sort_key": sort_key, "by_covering": {}},
+        )
+
+        # Belag-Slug → Display-Label + akkumulierte Fläche. Slug
+        # ``None`` (NULL floor_type) wird zum "Nicht klassifiziert"-
+        # Sentinel.
+        slug = (
+            normalise_floor_covering(room.floor_type)
+            if room.floor_type
+            else None
+        )
+        covering_key = slug or "__none__"
+        covering_label = _floor_covering_label(slug) if slug else "Nicht klassifiziert"
+        entry = group["by_covering"].setdefault(
+            covering_key,
+            {"label": covering_label, "area": 0.0},
+        )
+        entry["area"] += float(room.area_m2 or 0)
+
+    # Step 3 — render. Section-Header + dezenter Untertitel.
+    story.append(Spacer(1, 6 * mm))
+    story.append(
+        Paragraph(
+            "Bodenflächen nach Belag (pro Geschoss)", styles["MESection"]
+        )
+    )
+    story.append(
+        Paragraph(
+            "Aufschlüsselung der Bodenflächen nach Belagsart und "
+            "Geschoss — Grundlage für die Belag-Mengenermittlung.",
+            styles["MEMeta"],
+        )
+    )
+    story.append(Spacer(1, 3 * mm))
+
+    grand_total = 0.0
+
+    # Step 4 — Geschoss-Sortierung. Bekannte Geschosse zuerst (sort
+    # priority 0), Nicht-zugeordnete zum Schluss (priority 1).
+    sorted_groups = sorted(
+        floor_groups.values(), key=lambda g: g["sort_key"]
+    )
+
+    for group in sorted_groups:
+        # Geschoss-Header in kleinerer Section-Style.
+        story.append(
+            Paragraph(
+                f"<b>{_safe(group['label']).upper()}</b>",
+                styles["MERoomTitle"],
+            )
+        )
+
+        # Belag-Reihen, sortiert nach Fläche absteigend. "Nicht
+        # klassifiziert" wird ans Ende der Geschoss-Gruppe gesetzt
+        # damit die "echten" Beläge oben stehen.
+        rows: list[list[str]] = []
+        coverings = list(group["by_covering"].values())
+        # Pull "Nicht klassifiziert" aus der Sortier-Logik raus,
+        # damit es zuletzt gerendert wird.
+        regular = [c for c in coverings if c["label"] != "Nicht klassifiziert"]
+        unclassified = [c for c in coverings if c["label"] == "Nicht klassifiziert"]
+        regular.sort(key=lambda c: c["area"], reverse=True)
+        ordered = regular + unclassified
+
+        floor_total = 0.0
+        for entry in ordered:
+            rows.append([_safe(entry["label"]), f"{_fmt(entry['area'], 2)} m²"])
+            floor_total += entry["area"]
+
+        # Trennlinie + Geschoss-Summe.
+        rows.append([f"Summe {group['label']}", f"{_fmt(floor_total, 2)} m²"])
+
+        table = Table(rows, colWidths=[110 * mm, 35 * mm])
+        # Style: vanilla für die Belag-Zeilen, Trennstrich + bold
+        # für die letzte (Summen-)Zeile.
+        ts = [
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+            ("FONTNAME", (1, 0), (1, -1), "Courier"),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("LINEABOVE", (0, -1), (-1, -1), 0.4, colors.HexColor("#9ca3af")),
+            ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+            ("FONTNAME", (1, -1), (1, -1), "Courier-Bold"),
+        ]
+        # Wenn ein "Nicht klassifiziert"-Eintrag existiert, dezent
+        # amber unterlegen damit der Bauträger den Reststapel sieht.
+        if unclassified:
+            unclass_row_idx = len(regular)  # 0-basiert
+            ts.append(
+                ("BACKGROUND", (0, unclass_row_idx), (-1, unclass_row_idx),
+                 colors.HexColor("#fef3c7"))
+            )
+            ts.append(
+                ("TEXTCOLOR", (0, unclass_row_idx), (-1, unclass_row_idx),
+                 colors.HexColor("#92400e"))
+            )
+
+        table.setStyle(TableStyle(ts))
+        story.append(table)
+        story.append(Spacer(1, 4 * mm))
+        grand_total += floor_total
+
+    # Step 5 — Gesamttotal über alle Geschosse + Beläge inkl.
+    # "Nicht klassifiziert". Visuell kräftiger als die Geschoss-
+    # Summen, damit der Leser einen Verankerungs-Wert hat.
+    total_row = Table(
+        [["Gesamt-Bodenfläche", f"{_fmt(grand_total, 2)} m²"]],
+        colWidths=[110 * mm, 35 * mm],
+    )
+    total_row.setStyle(
+        TableStyle(
+            [
+                ("FONTSIZE", (0, 0), (-1, -1), 10),
+                ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+                ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
+                ("FONTNAME", (1, 0), (1, -1), "Courier-Bold"),
+                ("LINEABOVE", (0, 0), (-1, 0), 0.75, colors.HexColor("#1f2937")),
+                ("LINEBELOW", (0, 0), (-1, 0), 0.75, colors.HexColor("#1f2937")),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+    story.append(total_row)
 
 
 # ---------------------------------------------------------------------------

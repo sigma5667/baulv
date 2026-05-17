@@ -13,6 +13,7 @@ from app.schemas.room import (
     OpeningCreate, OpeningUpdate, OpeningResponse,
     WallCalculationResponse, BulkWallCalculationResponse,
 )
+from app.services.floor_covering import normalise_floor_covering
 from app.services.wall_calculator import (
     calculate_wall_areas,
     estimate_perimeter_from_area,
@@ -215,6 +216,14 @@ async def create_room(
             payload["perimeter_source"] = "estimated"
         # else: both stay null → empty-state badge in the UI.
 
+    # v24.4 — Floor-Belag normalisieren (Free-Text / Vision-Großschrift
+    # → kanonischer Slug). Unbekannte Werte (z.B. "Designboden Marke X"
+    # aus dem Sonstiges-Freitext-Pfad) bleiben backward-compat stehen.
+    if "floor_type" in payload:
+        payload["floor_type"] = normalise_floor_covering(
+            payload.get("floor_type")
+        )
+
     room = Room(
         unit_id=unit_id,
         source="manual",
@@ -332,6 +341,14 @@ async def update_room(
     elif "perimeter_m" in updates:
         updates["perimeter_source"] = (
             "manual" if updates["perimeter_m"] is not None else None
+        )
+
+    # v24.4 — Floor-Belag normalisieren bei Inline-Edit (Dropdown
+    # liefert Slugs, Freitext-Pfad liefert Custom-Strings). Konsistent
+    # mit ``create_room``-Logik oben.
+    if "floor_type" in updates:
+        updates["floor_type"] = normalise_floor_covering(
+            updates["floor_type"]
         )
 
     for key, value in updates.items():

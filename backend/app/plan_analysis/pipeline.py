@@ -47,6 +47,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db.models.plan import Plan
 from app.db.models.project import Building, Floor, Opening, Room, Unit
+from app.services.floor_covering import normalise_floor_covering
 from app.services.wall_calculator import (
     OpeningInput,
     calculate_wall_areas,
@@ -965,7 +966,14 @@ async def _store_extraction_result(
                 perimeter_source=perimeter_source,
                 height_m=room_data.get("height_m"),
                 ceiling_height_source=ceiling_source,
-                floor_type=room_data.get("floor_type"),
+                # v24.4 — Vision liefert idealerweise schon einen
+                # Slug aus der erweiterten Prompt-Liste, schickt aber
+                # gelegentlich Großschreibungen oder Free-Text. Der
+                # Normalizer fängt beides auf einen kanonischen Slug
+                # (oder lässt unbekannte Free-Texte stehen).
+                floor_type=normalise_floor_covering(
+                    room_data.get("floor_type")
+                ),
                 is_wet_room=bool(room_data.get("is_wet_room", False)),
                 has_dachschraege=bool(room_data.get("has_dachschraege", False)),
                 is_staircase=bool(room_data.get("is_staircase", False)),

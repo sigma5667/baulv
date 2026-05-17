@@ -43,6 +43,11 @@ import {
   type NormalizedError,
 } from "../lib/errors";
 import { InlineNumericEdit } from "../components/room/InlineNumericEdit";
+import {
+  FloorCoveringSelect,
+  floorCoveringLabel,
+  COVERING_OPTIONS,
+} from "../components/room/FloorCoveringSelect";
 import { perimeterAnnotation } from "../lib/roomHints";
 import { pushDiagnostic } from "../lib/diagnostics";
 import { useToast } from "../components/Toast";
@@ -1448,6 +1453,13 @@ function RoomTable({
   // numeric cell's save spinner would fire whenever ANY row was
   // saving (because mutation state is shared).
   const [inlineSavingId, setInlineSavingId] = useState<string | null>(null);
+  // v24.4 — separater State für den Floor-Covering-Inline-Edit-Pfad.
+  // ``null`` = kein Cell offen; sonst die ``room.id`` der gerade
+  // editierten Zeile. Klick auf die Bodenbelag-Zelle öffnet das
+  // ``FloorCoveringSelect``-Dropdown für genau diesen Raum.
+  const [editingFloorTypeId, setEditingFloorTypeId] = useState<
+    string | null
+  >(null);
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ["rooms", projectId] });
@@ -1459,6 +1471,7 @@ function RoomTable({
       setEditingId(null);
       setNamingRowId(null);
       setInlineSavingId(null);
+      setEditingFloorTypeId(null);
       invalidate();
       // v23.7 (Bug 3) — toast feedback consistent with v23.6 toast
       // system for position-edit. Surfaces the changed field so the
@@ -1732,8 +1745,44 @@ function RoomTable({
                       }}
                     />
                   </td>
-                  <td className="px-4 py-2 text-muted-foreground">
-                    {room.floor_type ?? "-"}
+                  <td className="px-4 py-2">
+                    {/* v24.4 — Click-to-Edit für Bodenbelag.
+                        Anzeigewert über ``floorCoveringLabel`` (mappt
+                        Slug zu deutschem Label, lässt Free-Text durch,
+                        rendert Em-Dash für NULL). Klick öffnet das
+                        ``FloorCoveringSelect``-Dropdown inline. */}
+                    {editingFloorTypeId === room.id ? (
+                      <FloorCoveringSelect
+                        value={room.floor_type}
+                        isSaving={
+                          updateMutation.isPending &&
+                          inlineSavingId === room.id
+                        }
+                        onSave={(next) => {
+                          setInlineSavingId(room.id);
+                          updateMutation.mutate({
+                            id: room.id,
+                            updates: { floor_type: next },
+                          });
+                        }}
+                        onCancel={() => setEditingFloorTypeId(null)}
+                        ariaLabel={`Bodenbelag von ${room.name} bearbeiten`}
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setEditingFloorTypeId(room.id)}
+                        title="Klicken zum Bearbeiten"
+                        className={
+                          "rounded px-1 text-left transition-colors hover:bg-accent " +
+                          (room.floor_type
+                            ? "text-foreground"
+                            : "text-muted-foreground")
+                        }
+                      >
+                        {floorCoveringLabel(room.floor_type)}
+                      </button>
+                    )}
                   </td>
                   <td className="px-4 py-2 text-center">
                     {room.is_wet_room ? (
@@ -1987,15 +2036,64 @@ function RoomEditRow({
           />
         </td>
         <td className="px-2 py-2">
-          <input
-            type="text"
-            value={draft.floor_type}
-            onChange={(e) =>
-              setDraft({ ...draft, floor_type: e.target.value })
-            }
-            className="w-full rounded border bg-background px-2 py-1 text-sm"
-            aria-label="Bodentyp"
-          />
+          {/* v24.4 — Dropdown + Freitext-Fallback. Slug-Wert wird
+              gespeichert; Free-Text-Bestandsdaten (z.B. "Designboden
+              Marke X" oder Vision-Großschrift) bleiben im Draft als
+              Sonstiges-Freitext erhalten. Kanonische Slug-Liste ist
+              ``COVERING_OPTIONS`` aus FloorCoveringSelect. */}
+          {(() => {
+            const isKnown = COVERING_OPTIONS.some(
+              (o) => o.slug === draft.floor_type,
+            );
+            const isFreetext =
+              draft.floor_type !== "" && !isKnown;
+            return (
+              <div className="flex flex-col gap-1">
+                <select
+                  value={isFreetext ? "__sonstiges__" : draft.floor_type}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === "__sonstiges__") {
+                      // Behalte etwaigen vorhandenen Free-Text; falls
+                      // leer, klappt jetzt das Textfeld auf damit der
+                      // User tippen kann.
+                      setDraft({
+                        ...draft,
+                        floor_type: draft.floor_type || " ",
+                      });
+                    } else {
+                      setDraft({ ...draft, floor_type: v });
+                    }
+                  }}
+                  className="w-full rounded border bg-background px-2 py-1 text-sm"
+                  aria-label="Bodentyp"
+                >
+                  <option value="">— Kein Belag —</option>
+                  {COVERING_OPTIONS.map((o) => (
+                    <option key={o.slug} value={o.slug}>
+                      {o.label}
+                    </option>
+                  ))}
+                  <option value="__sonstiges__">
+                    Sonstiges (Freitext)…
+                  </option>
+                </select>
+                {(isFreetext || draft.floor_type === " ") && (
+                  <input
+                    type="text"
+                    value={draft.floor_type.trim()}
+                    onChange={(e) =>
+                      setDraft({ ...draft, floor_type: e.target.value })
+                    }
+                    placeholder="z.B. Designboden Marke X"
+                    maxLength={100}
+                    className="w-full rounded border bg-background px-2 py-1 text-xs"
+                    aria-label="Freitext-Bodenbelag"
+                  />
+                )}
+              </div>
+            );
+          })()}
         </td>
         <td className="px-2 py-2 text-center">
           <input
@@ -2233,9 +2331,29 @@ function WallCalculationTable({
 
   const bulkError = bulkMutation.error ? normalizeError(bulkMutation.error) : null;
 
+  // v24.3.2 — Vater-Bug Aufräum-UI. Räume bei denen Fläche oder
+  // Umfang fehlen erscheinen im Mengenermittlungs-PDF mit Em-
+  // Dashes statt Werten. Wir filtern sie aus der DB-Liste und
+  // bieten dem User einen One-Click-Toggle "nur Mängelliste"
+  // damit er gezielt nachpflegen kann, ohne durch 71 Räume zu
+  // scrollen. Filter ist objektiv (area OR perimeter NULL) —
+  // ai_confidence ist parallel als Spalte sichtbar, dient aber
+  // nicht als Filter (kann false-positive sein: high-confidence-
+  // Räume können trotzdem area-NULL haben).
+  const incompleteRooms = useMemo(
+    () => rooms.filter(
+      (r) => r.area_m2 === null || r.perimeter_m === null,
+    ),
+    [rooms],
+  );
+  const [showOnlyIncomplete, setShowOnlyIncomplete] = useState(false);
+  const visibleRooms = showOnlyIncomplete ? incompleteRooms : rooms;
+
   // Totals row — handy for the estimator to sanity-check the whole
   // project at a glance. Sum over net because that's what flows into
-  // the LV; nulls collapse to 0.
+  // the LV; nulls collapse to 0. v24.3.2: bewusst auf ``rooms``
+  // (alle Räume), nicht ``visibleRooms`` — die Summe ist die
+  // Projekt-Gesamtsumme, nicht die Filter-Summe.
   const totalNet = rooms.reduce(
     (acc, r) => acc + (r.wall_area_net_m2 ?? 0),
     0
@@ -2281,6 +2399,39 @@ function WallCalculationTable({
         </div>
       )}
 
+      {/* v24.3.2 — Mängelbanner. Erscheint nur wenn mind. 1 Raum
+          unvollständig ist (Fläche oder Umfang NULL). Spiegelt das
+          PDF-Callout-Verhalten in die Live-UI und gibt dem User
+          einen One-Click-Filter um direkt zur Mängelliste zu
+          springen — ohne durch 70+ Räume scrollen zu müssen. */}
+      {incompleteRooms.length > 0 && (
+        <div className="mb-3 rounded-md border border-amber-400 bg-amber-50 px-4 py-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="flex-1">
+              <p className="text-sm font-medium text-amber-900">
+                {incompleteRooms.length}{" "}
+                {incompleteRooms.length === 1 ? "Raum" : "Räume"}{" "}
+                unvollständig — Fläche oder Umfang fehlt.
+              </p>
+              <p className="mt-1 text-xs text-amber-800">
+                Diese Räume erscheinen in der Mengenermittlung ohne
+                Wandflächen-Werte. Bitte Fläche eintragen — der Umfang
+                wird automatisch geschätzt.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowOnlyIncomplete((s) => !s)}
+              className="shrink-0 rounded-md border border-amber-500 bg-amber-100 px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-200"
+            >
+              {showOnlyIncomplete
+                ? "Alle Räume zeigen"
+                : "Nur unvollständige zeigen"}
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="overflow-x-auto rounded-lg border">
         <table className="w-full text-sm">
           <thead className="bg-muted/50">
@@ -2302,10 +2453,20 @@ function WallCalculationTable({
               <th className="px-3 py-2 text-right font-medium">Netto m²</th>
               <th className="px-3 py-2 text-left font-medium">Raumtyp</th>
               <th className="px-3 py-2 text-right font-medium">Faktor</th>
+              {/* v24.3.2 — KI-Konfidenz-Spalte. Zeigt für KI-
+                  extrahierte Räume (source="ai") wie sicher sich
+                  Vision bei diesem Raum war. Konfidenz < 0.7 wird
+                  amber dargestellt — typisch für Balkone /
+                  Stiegenhäuser / Bäder wo Vision die Maße nicht
+                  zuverlässig findet. Manuell angelegte Räume
+                  haben kein KI-Konfidenz-Datum und zeigen "—". */}
+              <th className="px-3 py-2 text-right font-medium">
+                KI-Konfidenz
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y">
-            {rooms.map((room) => {
+            {visibleRooms.map((room) => {
               const isDefault = room.ceiling_height_source === "default";
               const perimeterHint = perimeterAnnotation(room);
               return (
@@ -2462,6 +2623,33 @@ function WallCalculationTable({
                   <td className="px-3 py-2 text-right font-mono text-xs">
                     {fmtFactor(room.applied_factor)}
                   </td>
+                  <td className="px-3 py-2 text-right">
+                    {/* v24.3.2 — KI-Konfidenz-Pille. Schwellwert 0.7
+                        nach Anthropic-Empfehlung für Tool-Use-Trust;
+                        unter 0.7 wird die Pille amber gefärbt, damit
+                        Bauträger gezielt drüber schauen. Nur sichtbar
+                        für KI-Räume — manuell angelegte Räume haben
+                        kein Konfidenz-Datum (zeigt "—"). */}
+                    {room.source === "ai" && room.ai_confidence !== null ? (
+                      <span
+                        className={
+                          "inline-flex items-center rounded px-1.5 py-0.5 font-mono text-xs " +
+                          (room.ai_confidence < 0.7
+                            ? "bg-amber-100 text-amber-800"
+                            : "bg-green-50 text-green-700")
+                        }
+                        title={
+                          room.ai_confidence < 0.7
+                            ? "Vision war unsicher bei diesem Raum — Maße bitte prüfen."
+                            : "Vision-Extraktion mit hoher Konfidenz."
+                        }
+                      >
+                        {(room.ai_confidence * 100).toFixed(0)}%
+                      </span>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
+                  </td>
                 </tr>
               );
             })}
@@ -2469,7 +2657,10 @@ function WallCalculationTable({
           <tfoot className="bg-muted/30">
             <tr className="font-medium">
               {/* v24.0 — Spans über die ersten 4 (oder 5 mit Plan-
-                  Spalte) Spalten bis zur Brutto-m²-Zelle. */}
+                  Spalte) Spalten bis zur Brutto-m²-Zelle.
+                  v24.3.2 — letzter Trailing-colSpan ist 3 (statt 2),
+                  weil eine KI-Konfidenz-Spalte rechts dazugekommen
+                  ist (Raumtyp + Faktor + KI-Konfidenz). */}
               <td className="px-3 py-2" colSpan={showPlanColumn ? 5 : 4}>
                 Summe über {rooms.length}{" "}
                 {rooms.length === 1 ? "Raum" : "Räume"}
@@ -2481,7 +2672,7 @@ function WallCalculationTable({
               <td className="px-3 py-2 text-right font-mono">
                 {fmt2(totalNet)}
               </td>
-              <td className="px-3 py-2" colSpan={2} />
+              <td className="px-3 py-2" colSpan={3} />
             </tr>
           </tfoot>
         </table>

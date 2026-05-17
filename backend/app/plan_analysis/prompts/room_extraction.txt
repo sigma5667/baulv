@@ -8,6 +8,10 @@ In jedem Raum steht meist ein 3- bis 4-zeiliger Beschriftungsblock:
 
   Zeile 1: Raumname           z.B. "WOHNEN / KOCHEN", "BAD"
   Zeile 2: Bodenbelag         z.B. "PARKETT", "FEINSTEINZEUG"
+                              → siehe ``floor_type``-Sektion weiter
+                                unten für die Slug-Liste der zu
+                                liefernden Werte ("parkett",
+                                "fliesen", …).
   Zeile 3: Fläche  m²         z.B. "32,84 m²"   (mit ²)
   Zeile 4: WANDUMFANG  m      z.B. "24,32 m"    (ohne ²)
 
@@ -116,9 +120,31 @@ FELDER PRO RAUM
     "grundriss" — im Grundriss beschriftet (z.B. RH=2,50)
     "default"   — nicht erkennbar; height_m ist dann null
   Setze diesen Marker für JEDEN Raum.
-- floor_type: Bodenbelag falls angegeben (z.B. "PARKETT",
-  "FEINSTEINZEUG", "FLIESEN", "VINYL", "HOLZ"). Steht typischerweise
-  in Zeile 2 des Beschriftungsblocks.
+- floor_type: Bodenbelag aus Zeile 2 des Beschriftungs-Blocks im
+  Raumstempel (siehe oben). Verwende einen der folgenden Slugs in
+  Kleinbuchstaben:
+
+      "parkett"     — Parkett, Dielen, Holzboden, Eichen-Parkett etc.
+      "fliesen"     — Fliesen, Feinsteinzeug, Keramikfliesen, Kacheln
+      "laminat"     — Laminat
+      "vinyl"       — Vinyl, PVC, Designboden
+      "teppich"     — Teppich, Teppichboden
+      "linoleum"    — Linoleum
+      "naturstein"  — Naturstein, Marmor, Granit, Schiefer
+      "beton"       — Sichtbeton, Beton, Industrieboden
+      "estrich"     — sichtbarer Estrich (geschliffen / versiegelt,
+                      nicht der Unterboden)
+
+  Wenn der Stempel einen Belag nennt der zu keinem dieser Slugs
+  passt: gib den Belag als Free-Text-String zurück, so wie er im
+  Plan steht ("Designboden Marke X" o.ä.). Das Backend normalisiert
+  bekannte Synonyme zur Laufzeit; unbekannte Free-Text-Werte bleiben
+  stehen.
+
+  Wenn der Raumstempel keine Bodenbelag-Zeile hat: setze floor_type
+  auf null. Vermute NICHT — eine ehrliche Lücke ist besser als ein
+  geratener Belag, der direkt in die Bodenflächen-Aggregation der
+  Mengenermittlung einfließt.
 - is_wet_room: true für Bad, WC, Dusche.
 - has_dachschraege: true wenn Dachschrägen erkennbar.
 - is_staircase: true NUR für Stiegenhäuser/Treppenhäuser mit
@@ -211,7 +237,7 @@ Objekt:
           "perimeter_source": "labeled",
           "height_m": null,
           "ceiling_height_source": "default",
-          "floor_type": "PARKETT",
+          "floor_type": "parkett",
           "is_wet_room": false,
           "has_dachschraege": false,
           "is_staircase": false,
