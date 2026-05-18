@@ -36,6 +36,20 @@ class Settings(BaseSettings):
 
     # CORS
     frontend_url: str = "http://localhost:5173"
+    # v24.4.1+ — Environment-Toggle für CORS-Policy. ``development``
+    # erlaubt zusätzlich ``http://localhost:5173`` und
+    # ``http://localhost:3000`` als Origin. ``production`` nimmt
+    # ausschließlich ``frontend_url`` + die ``allowed_origins``-Liste
+    # — Localhost-Origins werden gestrichen, damit kein lokal laufender
+    # Browser-Code auf den Prod-Backend zugreifen kann.
+    environment: str = "development"
+    # Comma-separated extra Origins die im production-Mode erlaubt
+    # werden (z.B. "https://baulv.at,https://www.baulv.at"). Leer
+    # bedeutet: nur ``frontend_url``. Das ist das safe default —
+    # wenn die ENV-Variable in production nicht gesetzt ist und
+    # ``frontend_url`` zufällig leer wäre, lässt CORS überhaupt keine
+    # Origin durch (lieber broken-Frontend als wide-open Backend).
+    allowed_origins: str = ""
 
     # JWT Auth
     jwt_secret: str = "change-me-in-production-baulv-secret-2026"

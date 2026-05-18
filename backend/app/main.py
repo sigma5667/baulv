@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from app.config import settings
 from app.api.router import api_router
 from app.mcp import build_mcp_app
+from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.rate_limit import select_backend_at_boot as _select_rate_limit_backend
 from app.services.audit_cleanup import run_all_cleanups
 
@@ -190,12 +191,40 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # CORS — allow frontend origin (dev) and Railway domain
-    origins = [
-        settings.frontend_url,
-        "http://localhost:5173",
-        "http://localhost:3000",
-    ]
+    # CORS — Environment-abhängig.
+    #
+    # ``development``: Frontend-URL + localhost-Origins. Bequem für
+    # ``npm run dev`` + Vite-Proxies.
+    #
+    # ``production``: NUR ``frontend_url`` + die explizit in
+    # ``ALLOWED_ORIGINS``-ENV gesetzten Origins. Localhost ist hier
+    # gesperrt damit Attack-Vektoren wie "Browser-Plugin macht
+    # POST von localhost auf Prod-Backend" nicht funktionieren.
+    # Wenn beide Quellen leer wären, ist die Origin-Liste leer und
+    # CORS lässt nichts durch — das ist absichtlich (broken-Frontend
+    # ist besser als wide-open Backend).
+    origins: list[str] = []
+    if settings.frontend_url:
+        origins.append(settings.frontend_url)
+    # Extra Production-Origins (comma-separated) anfügen.
+    if settings.allowed_origins:
+        origins.extend(
+            o.strip()
+            for o in settings.allowed_origins.split(",")
+            if o.strip()
+        )
+    # Nur in development localhost-Origins dazumixen.
+    if settings.environment.lower() == "development":
+        origins.append("http://localhost:5173")
+        origins.append("http://localhost:3000")
+    # Deduplizieren während die Reihenfolge erhalten bleibt.
+    seen: set[str] = set()
+    origins = [o for o in origins if not (o in seen or seen.add(o))]
+    logger.info(
+        "startup.cors environment=%s origins_count=%d",
+        settings.environment,
+        len(origins),
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
@@ -203,6 +232,12 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # v24.4.1+ — Security-Header auf jede Response.
+    # HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy,
+    # Content-Security-Policy. Siehe ``security_headers.py`` für die
+    # Werte und Begründung.
+    app.add_middleware(SecurityHeadersMiddleware)
 
     # Health check endpoint (used by Railway)
     @app.get("/api/health")

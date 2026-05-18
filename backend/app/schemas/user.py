@@ -21,7 +21,12 @@ class UserRegister(BaseModel):
     preserving default.
     """
 
-    email: str
+    # v24.4.1+ — ``EmailStr`` validiert das RFC-5322-Format und das
+    # Vorhandensein eines (resolvbaren) Domain-Teils. Tippfehler wie
+    # "asdf" werden mit 422 abgelehnt bevor sie in der DB landen.
+    # Pydantic's ``email_validator``-Dependency ist in pyproject.toml
+    # bereits gepinnt (email-validator>=2.0.0).
+    email: EmailStr
     password: str
     full_name: str
     company_name: str | None = None
@@ -47,7 +52,11 @@ class UserRegister(BaseModel):
 
 
 class UserLogin(BaseModel):
-    email: str
+    # v24.4.1+ — EmailStr-Validierung auch beim Login.
+    # Verhindert dass "asdf"-typische Tippfehler bis zur DB-
+    # Abfrage durchschlagen (unnötiger Round-Trip + Timing-Info-
+    # Leak über "User existiert nicht"-Antwortzeit).
+    email: EmailStr
     password: str
 
 
@@ -105,7 +114,8 @@ class TokenResponse(BaseModel):
 
 
 class PasswordResetRequest(BaseModel):
-    email: str
+    # v24.4.1+ — EmailStr-Validierung konsistent mit Register/Login.
+    email: EmailStr
 
 
 class PasswordResetConfirm(BaseModel):

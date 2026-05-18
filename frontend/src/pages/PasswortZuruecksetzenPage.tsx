@@ -13,7 +13,7 @@
  * with a "Neue E-Mail anfordern" link that bounces back to
  * `/passwort-vergessen` so the user has a way out.
  *
- * Password-min-length is checked client-side (8 chars) for instant
+ * Password-min-length is checked client-side (10 chars) for instant
  * feedback, but the server enforces it independently — never trust
  * the client to gate-keep an auth-relevant invariant.
  *
@@ -62,8 +62,8 @@ export function PasswortZuruecksetzenPage() {
     e.preventDefault();
     setError("");
 
-    if (password.length < 8) {
-      setError("Das Passwort muss mindestens 8 Zeichen lang sein.");
+    if (password.length < 10) {
+      setError("Das Passwort muss mindestens 10 Zeichen lang sein.");
       return;
     }
     if (password !== confirm) {
@@ -163,7 +163,7 @@ export function PasswortZuruecksetzenPage() {
                 type={showPassword ? "text" : "password"}
                 required
                 autoComplete="new-password"
-                minLength={8}
+                minLength={10}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className="w-full rounded-md border px-3 py-2 pr-10 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
@@ -200,7 +200,7 @@ export function PasswortZuruecksetzenPage() {
               type={showPassword ? "text" : "password"}
               required
               autoComplete="new-password"
-              minLength={8}
+              minLength={10}
               value={confirm}
               onChange={(e) => setConfirm(e.target.value)}
               className="w-full rounded-md border px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"

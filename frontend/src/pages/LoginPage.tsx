@@ -90,13 +90,21 @@ export function LoginPage() {
             </div>
           </div>
 
-          <div className="flex items-center justify-between text-sm">
-            <Link
-              to="/passwort-vergessen"
-              className="text-primary hover:underline"
-            >
-              Passwort vergessen?
-            </Link>
+          {/* v24.4.1+ — Self-Service Passwort-Reset ist derzeit
+              nicht aktiv. Bis dahin: User wenden sich per Email an
+              den Support. Backend-Endpoint bleibt funktional und kann
+              jederzeit wieder freigeschaltet werden indem hier auf
+              ``/passwort-vergessen`` zurückgewechselt wird. */}
+          <div className="flex items-center justify-between text-sm text-muted-foreground">
+            <span>
+              Passwort vergessen? Funktion nicht aktiv —{" "}
+              <a
+                href="mailto:kontakt@baulv.at"
+                className="text-primary hover:underline"
+              >
+                kontakt@baulv.at
+              </a>
+            </span>
           </div>
 
           <button

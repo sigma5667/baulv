@@ -137,11 +137,23 @@ async def send_message(
             raise HTTPException(500, "Antwort des KI-Beraters konnte nicht gespeichert werden.")
         return reply
     except ValueError as e:
-        raise HTTPException(404, str(e))
+        # v24.4.1+ — Backend trägt die volle Exception ins Log; User
+        # bekommt generischen Hinweis. Pre-v24.4.1 leakte
+        # ``str(e)`` direkt an die UI und konnte interne Pfade /
+        # Variablen offenbaren ("file ... not found", Stack-Frames).
+        logger.warning("chat_with_assistant value_error: %s", e)
+        raise HTTPException(404, "Chat-Anfrage fehlgeschlagen.")
     except ChatConfigurationError as e:
-        # Surfaced plain-German to the frontend so the UI can display
-        # it verbatim — this is the signal "set ANTHROPIC_API_KEY".
-        raise HTTPException(503, str(e))
+        # v24.4.1+ — auch hier keine str(e)-Leakage mehr. Die
+        # Konfigurations-Fehlermeldung (z.B. "ANTHROPIC_API_KEY
+        # nicht gesetzt") ist für Operator gedacht, nicht für den
+        # End-User. Operator sieht's im Railway-Log.
+        logger.error("chat_with_assistant config_error: %s", e)
+        raise HTTPException(
+            503,
+            "Der KI-Berater ist derzeit nicht erreichbar. Bitte "
+            "versuchen Sie es in ein paar Minuten erneut.",
+        )
     except ChatAnthropicError:
         # The assistant already logged the SDK exception class and
         # message to Railway. User-facing message stays generic.

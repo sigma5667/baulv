@@ -353,8 +353,8 @@ function PasswordChangeCard() {
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    if (next.length < 8) {
-      setError("Neues Passwort muss mindestens 8 Zeichen lang sein.");
+    if (next.length < 10) {
+      setError("Neues Passwort muss mindestens 10 Zeichen lang sein.");
       return;
     }
     if (next !== confirm) {
@@ -382,7 +382,7 @@ function PasswordChangeCard() {
         />
         <input
           type="password"
-          placeholder="Neues Passwort (mind. 8 Zeichen)"
+          placeholder="Neues Passwort (mind. 10 Zeichen)"
           autoComplete="new-password"
           value={next}
           onChange={(e) => setNext(e.target.value)}

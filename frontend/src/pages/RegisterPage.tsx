@@ -67,8 +67,13 @@ export function RegisterPage() {
     e.preventDefault();
     setError("");
 
-    if (form.password.length < 8) {
-      setError("Das Passwort muss mindestens 8 Zeichen lang sein.");
+    // v24.4.1+ — Mindestlänge auf 10 erhöht (NIST-Empfehlung für
+    // nicht-MFA-Accounts). Backend-Validierung in
+    // ``auth.py:_validate_password_strength`` ist die maßgebliche
+    // Quelle; dieser Client-Check fängt nur den ersten Tippfehler ab
+    // und vermeidet einen unnötigen Round-Trip.
+    if (form.password.length < 10) {
+      setError("Das Passwort muss mindestens 10 Zeichen lang sein.");
       return;
     }
     if (form.password !== form.confirmPassword) {

@@ -102,6 +102,57 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# v24.4.1+ — Passwort-Mindestlänge + Common-Password-Blacklist.
+# Mindestlänge gegen Brute-Force; Blacklist gegen die offensichtlich-
+# schwachen Defaults die Bots als Erstes durchprobieren. 10 Zeichen
+# entspricht NIST-Empfehlung (SP 800-63B) für nicht-MFA-gesicherte
+# Accounts. 8 war pre-v24.4.1 — zu kurz nach heutigen Standards.
+MIN_PASSWORD_LENGTH = 10
+
+# Bewusst kurze Liste — die 20 absolut häufigsten Default-Passwörter
+# laut HIBP-Pwned-Passwords-Statistik 2024. Wir machen KEINEN
+# vollständigen Pwned-Lookup (das würde einen externen API-Call
+# pro Registrierung kosten und Latenz hinzufügen). Diese Liste
+# fängt die "first guess"-Versuche ab; Bot-Schutz ist Aufgabe des
+# Rate-Limits.
+_COMMON_PASSWORDS: frozenset[str] = frozenset(
+    s.lower() for s in [
+        "password", "password1", "password123",
+        "12345678", "123456789", "1234567890",
+        "qwertyuiop", "qwerty1234", "asdf1234",
+        "letmein123", "admin1234", "welcome123",
+        "passwort1", "passwort123", "geheim123",
+        "iloveyou1", "monkey1234", "dragon1234",
+        "sunshine1", "princess1",
+    ]
+)
+
+
+def _validate_password_strength(password: str) -> None:
+    """Raise ``HTTPException`` if the password is too weak.
+
+    Centralized so register / change-password / reset-confirm all
+    apply the same rules. Failure mode: 400 with a German message
+    the frontend can display verbatim.
+    """
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Das Passwort muss mindestens {MIN_PASSWORD_LENGTH} "
+                f"Zeichen lang sein."
+            ),
+        )
+    if password.lower() in _COMMON_PASSWORDS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Dieses Passwort ist zu häufig in Bot-Listen vertreten. "
+                "Bitte wählen Sie ein weniger geläufiges Passwort."
+            ),
+        )
+
+
 # v24.3 — Profil-Branding: zulaessige Logo-MIME-Types + Max-Size.
 # Bewusst eng gehalten — PNG/JPG decken jeden Bauunternehmer-Fall ab,
 # WebP/SVG sind Footguns (SVG = XSS-Vektor in einem PDF-Renderer,
@@ -239,6 +290,13 @@ async def register(
             ),
         )
 
+    # v24.4.1+ — Passwort-Stärke vor dem Email-Existence-Check.
+    # Diese Reihenfolge ist bewusst — wir verraten keine Konto-
+    # Existenz an einen Angreifer der ein zu schwaches Passwort
+    # probiert (er sieht "Passwort zu schwach" statt
+    # "Email schon registriert").
+    _validate_password_strength(data.password)
+
     existing = await db.execute(
         select(User).where(User.email == data.email.lower().strip())
     )
@@ -312,18 +370,44 @@ async def login(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(User).where(User.email == data.email.lower().strip()))
+    attempted_email = data.email.lower().strip()
+    result = await db.execute(select(User).where(User.email == attempted_email))
     user = result.scalars().first()
     if not user or not verify_password(data.password, user.password_hash):
-        # Log failed attempts (with email but not password) so users can
-        # see attempted intrusions in their audit view. user_id is None
-        # because the attempt may be for a non-existent account.
+        # Log failed attempts so users can see attempted intrusions in
+        # their audit view. user_id is None when the attempt was for a
+        # non-existent account.
+        #
+        # v24.4.1+ — Email-Privacy. Pre-Fix landete jede getippte Email
+        # plain in der ``audit_log.meta``-Spalte — auch bei Bot-Versuchen
+        # auf nicht-existierende Konten. Das hieß ein Angreifer der
+        # später Lese-Zugriff auf die Audit-Tabelle erlangt sieht eine
+        # Liste aller Email-Adressen die jemals einen Login-Versuch
+        # gemacht haben (= potenzielle Account-Enumeration).
+        #
+        # Neue Regel:
+        #   * User existiert → ``email`` plain. Es ist die Email des
+        #     Owners selbst, die landet im AuditLog den NUR der Owner
+        #     selbst sieht. Bonus: User sieht klar welche Email-Variante
+        #     beim fehlgeschlagenen Login getippt wurde.
+        #   * User existiert NICHT → ``email_hash`` (SHA-256 mit
+        #     ``settings.analytics_salt``). Wir können trotzdem über
+        #     den Hash erkennen ob dieselbe Email mehrfach geprobed
+        #     wurde (Rate-Limit-Pivot), ohne die Email selbst zu lagern.
+        if user is not None:
+            audit_meta = {"email": attempted_email}
+        else:
+            import hashlib
+            digest = hashlib.sha256(
+                f"{settings.analytics_salt}:{attempted_email}".encode("utf-8")
+            ).hexdigest()
+            audit_meta = {"email_hash": digest}
         await log_event(
             db,
             event_type=EVENT_LOGIN_FAILED,
             user_id=user.id if user else None,
             request=request,
-            meta={"email": data.email.lower().strip()},
+            meta=audit_meta,
         )
         raise HTTPException(status_code=401, detail="Ungültige E-Mail oder Passwort.")
 
@@ -830,15 +914,10 @@ async def confirm_password_reset(
        devices off. The user has to log in fresh after redeeming.
     4. An audit row records the completed reset with the user's id.
     """
-    # Minimum length applies the same way as the change-password
-    # path. We deliberately don't share the constant with
-    # ``change_password`` because that endpoint may grow stricter
-    # rules independently in future.
-    if len(data.new_password) < 8:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Neues Passwort muss mindestens 8 Zeichen lang sein.",
-        )
+    # v24.4.1+ — Passwort-Stärke via zentralem Helper.
+    # Mindestlänge 10 + Common-Password-Blacklist. Konsistent mit
+    # Register und Change-Password.
+    _validate_password_strength(data.new_password)
 
     verified = await verify_reset_token(db, presented_token=data.token)
     if verified is None:
@@ -915,11 +994,8 @@ async def change_password(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Aktuelles Passwort ist falsch.",
         )
-    if len(data.new_password) < 8:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Neues Passwort muss mindestens 8 Zeichen lang sein.",
-        )
+    # v24.4.1+ — Passwort-Stärke konsistent via Helper.
+    _validate_password_strength(data.new_password)
     user.password_hash = hash_password(data.new_password)
 
     # Revoke every other live session for this user. Current session

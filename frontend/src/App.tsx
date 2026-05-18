@@ -3,7 +3,6 @@ import { useAuth } from "./hooks/useAuth";
 import { AppShell } from "./components/layout/AppShell";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import { PWAInstallPrompt } from "./components/PWAInstallPrompt";
-import { CookieBanner } from "./components/CookieBanner";
 import { ErrorOverlay, RootErrorBoundary } from "./components/ErrorOverlay";
 import { LandingPage } from "./pages/LandingPage";
 import { LoginPage } from "./pages/LoginPage";
@@ -68,9 +67,14 @@ export default function App() {
 
   return (
     <RootErrorBoundary>
+    {/* v24.4.1+ — CookieBanner entfernt. BauLV setzt keine Tracking-
+        oder Analytics-Cookies ohne expliziten User-Consent (Analytics
+        ist opt-in über die Datenschutz-Einstellungs-Seite, nicht
+        cookie-basiert). Damit entfällt die Cookie-Consent-Pflicht
+        nach ePrivacy/DSGVO. Session-Cookies sind technisch
+        notwendig und brauchen kein Banner. */}
     <ErrorOverlay />
     <PWAInstallPrompt />
-    <CookieBanner />
     <Routes>
       {/* Public routes */}
       <Route
