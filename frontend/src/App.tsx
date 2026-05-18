@@ -2,6 +2,7 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import { useAuth } from "./hooks/useAuth";
 import { AppShell } from "./components/layout/AppShell";
 import { ProtectedRoute } from "./components/ProtectedRoute";
+import { PublicWithGate } from "./components/PublicWithGate";
 import { PWAInstallPrompt } from "./components/PWAInstallPrompt";
 import { ErrorOverlay, RootErrorBoundary } from "./components/ErrorOverlay";
 import { LandingPage } from "./pages/LandingPage";
@@ -76,7 +77,19 @@ export default function App() {
     <ErrorOverlay />
     <PWAInstallPrompt />
     <Routes>
-      {/* Public routes */}
+      {/* Public routes.
+       *
+       * v24.4.2 — Beta-Gate: alle "publicly-reachable"-Seiten außer
+       * Impressum / Datenschutz / AGB werden mit ``<PublicWithGate>``
+       * umhüllt. Während der geschlossenen Beta-Phase blendet das
+       * Wrapper bei Besuchern ohne JWT-Login und ohne gültiges
+       * Beta-Session-Token die Coming-Soon-Seite ein.
+       *
+       * Legal-Routes (Impressum, Datenschutz, AGB) bleiben
+       * absichtlich AUSSERHALB des Gates — Pflichtseiten nach ECG
+       * §5 müssen für jeden Besucher erreichbar sein, auch ohne
+       * Code-Eingabe, sonst Abmahn-Risiko.
+       */}
       <Route
         path="/"
         element={
@@ -87,35 +100,97 @@ export default function App() {
           ) : user ? (
             <Navigate to="/app" replace />
           ) : (
-            <LandingPage />
+            <PublicWithGate>
+              <LandingPage />
+            </PublicWithGate>
           )
         }
       />
-      <Route path="/login" element={user && !isLoading ? <Navigate to="/app" replace /> : <LoginPage />} />
-      <Route path="/register" element={user && !isLoading ? <Navigate to="/app" replace /> : <RegisterPage />} />
+      <Route
+        path="/login"
+        element={
+          user && !isLoading ? (
+            <Navigate to="/app" replace />
+          ) : (
+            <PublicWithGate>
+              <LoginPage />
+            </PublicWithGate>
+          )
+        }
+      />
+      <Route
+        path="/register"
+        element={
+          user && !isLoading ? (
+            <Navigate to="/app" replace />
+          ) : (
+            <PublicWithGate>
+              <RegisterPage />
+            </PublicWithGate>
+          )
+        }
+      />
       {/* Old English route — kept for backward compatibility with
           any external link or bookmark from before v23.4. New flow
           is at /passwort-vergessen + /passwort-zuruecksetzen. */}
-      <Route path="/password-reset" element={<PasswordResetPage />} />
+      <Route
+        path="/password-reset"
+        element={
+          <PublicWithGate>
+            <PasswordResetPage />
+          </PublicWithGate>
+        }
+      />
       {/* DS-3 (v23.4) — functional password-reset flow. */}
-      <Route path="/passwort-vergessen" element={<PasswortVergessenPage />} />
+      <Route
+        path="/passwort-vergessen"
+        element={
+          <PublicWithGate>
+            <PasswortVergessenPage />
+          </PublicWithGate>
+        }
+      />
       <Route
         path="/passwort-zuruecksetzen"
-        element={<PasswortZuruecksetzenPage />}
+        element={
+          <PublicWithGate>
+            <PasswortZuruecksetzenPage />
+          </PublicWithGate>
+        }
       />
 
-      {/* Legal pages — always publicly reachable, regardless of auth state. */}
+      {/* Legal pages — always publicly reachable, regardless of auth
+          state OR beta-gate state. NICHT mit ``PublicWithGate``
+          umhüllen — sonst wäre das Impressum hinter dem Gate
+          versteckt und das wäre ein Verstoß gegen ECG §5
+          (Impressumpflicht). */}
       <Route path="/impressum" element={<ImpressumPage />} />
       <Route path="/datenschutz" element={<DatenschutzPage />} />
       <Route path="/agb" element={<AGBPage />} />
 
       {/* v23.7 — public marketing + technical landing pages for the
-          MCP API. Both are reachable without authentication; the
-          tier CTAs link into the existing /app/api-keys flow when
-          the user is logged in, and the ProtectedRoute bounces them
-          to /login otherwise. */}
-      <Route path="/api-pricing" element={<ApiPricingPage />} />
-      <Route path="/developers" element={<DevelopersPage />} />
+          MCP API. Auch in der Beta-Phase hinter dem Gate, damit
+          keine Werbe-Aussagen ohne vollständiges Impressum/AGB
+          öffentlich sichtbar sind. Tier-CTAs verlinken auf
+          /app/api-keys — eingeloggte User sehen die Seiten normal,
+          ProtectedRoute bouncet Logged-Out auf /login (= ebenfalls
+          hinter Gate). */}
+      <Route
+        path="/api-pricing"
+        element={
+          <PublicWithGate>
+            <ApiPricingPage />
+          </PublicWithGate>
+        }
+      />
+      <Route
+        path="/developers"
+        element={
+          <PublicWithGate>
+            <DevelopersPage />
+          </PublicWithGate>
+        }
+      />
 
       {/* Protected app routes */}
       <Route path="/app/*" element={<AuthenticatedApp />} />

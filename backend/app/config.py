@@ -71,6 +71,18 @@ class Settings(BaseSettings):
     # feature matrix from /auth/me/features instead.
     beta_unlock_all_features: bool = False
 
+    # v24.4.2 — Coming-Soon-Gate vor der öffentlichen Marketing-
+    # Oberfläche. Solange baulv.at in der geschlossenen Test-Phase
+    # läuft, fragt das Frontend an dieser Stelle einen geteilten
+    # Beta-Code ab. Bei Match liefert ``POST /api/beta/verify`` ein
+    # HMAC-signiertes Token (30 Tage TTL) zurück, das die SPA in
+    # ``localStorage`` ablegt. Leer-Default ist *fail-safe*: ohne
+    # gesetzte ENV-Variable lehnt der Gate jeden Code ab — niemand
+    # kommt rein. Rotation: Wert in Railway ändern → alle aktiven
+    # Token werden beim nächsten ``GET /api/beta/status`` ungültig
+    # (HMAC-Signatur enthält den Code, siehe ``app/api/beta_gate.py``).
+    beta_access_code: str = ""
+
     # Optional Redis URL (e.g. ``redis://default:pwd@host:6379/0``) used
     # by the MCP per-key rate-limiter. When **set**, the limiter uses
     # Redis token-bucket counters (correct under multi-worker / multi-
