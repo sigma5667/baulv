@@ -708,7 +708,7 @@ async def _seed_floor_covering_project(
       EG (level 0):
         Wohnzimmer 24,5 m² — Parkett
         Bad         6,0 m² — Fliesen
-        WC          2,5 m² — NULL (Nicht klassifiziert)
+        WC          2,5 m² — NULL (Räume ohne Belag-Angabe)
 
       1.OG (level 1):
         Schlafen   16,0 m² — Parkett
@@ -783,7 +783,7 @@ async def test_pdf_contains_floor_covering_aggregation_section(
 ):
     """Räume mit gesetztem ``floor_type`` → PDF enthält die Sektion
     "Bodenflächen nach Belag", inkl. Geschoss-Aufschlüsselung,
-    Summen pro Geschoss, "Nicht klassifiziert"-Block für den WC
+    Summen pro Geschoss, "Räume ohne Belag-Angabe"-Block für den WC
     ohne Belag, und das Gesamt-Total.
 
     Locks die v24.4-Aggregations-Outputs als Byte-Substring-Asserts
@@ -805,9 +805,12 @@ async def test_pdf_contains_floor_covering_aggregation_section(
     # einzeln, kein Cross-Geschoss-Sammler.
     assert b"Parkett" in pdf_bytes
     assert b"Fliesen" in pdf_bytes
-    # WC ist nicht klassifiziert → "Nicht klassifiziert"-Bucket muss
-    # erscheinen.
-    assert b"Nicht klassifiziert" in pdf_bytes
+    # WC ist nicht klassifiziert → "Räume ohne Belag-Angabe"-Bucket
+    # muss erscheinen (v24.4.1 — Wortlaut umbenannt).
+    assert b"R\xe4ume ohne Belag-Angabe" in pdf_bytes or b"ume ohne Belag" in pdf_bytes
+    # Plus die Raum-Anzahl in Klammern: "(1 Raum)" weil nur das WC
+    # ohne Belag ist.
+    assert b"(1 Raum)" in pdf_bytes
     # Geschoss-Summen-Wortlaut (Stem für Umlaut-Stabilität).
     assert b"Summe Erdgeschoss" in pdf_bytes
     assert b"Summe 1.Obergeschoss" in pdf_bytes
@@ -818,32 +821,83 @@ async def test_pdf_contains_floor_covering_aggregation_section(
 
 
 @pytest.mark.asyncio
-async def test_pdf_skips_floor_covering_section_when_no_room_has_belag(
+async def test_pdf_renders_section_with_only_unclassified_rooms(
     db_session: AsyncSession,
 ):
-    """Drei-Raum-Projekt OHNE ``floor_type`` an irgendeinem Raum →
-    Sektion "Bodenflächen nach Belag" wird komplett weggelassen.
+    """v24.4.1 — Verhalten umgekehrt gegenüber v24.4.
 
-    Das ist die Anti-Klutter-Garantie: ein PDF für ein noch nicht
-    klassifiziertes Projekt soll nicht mit einer leeren Sammel-
-    Sektion zugemüllt werden."""
+    Drei-Raum-Projekt OHNE ``floor_type`` an irgendeinem Raum: die
+    Sektion "Bodenflächen nach Belag" wird jetzt TROTZDEM gerendert
+    und enthält **ausschliesslich** den "Räume ohne Belag-Angabe"-
+    Bucket. Damit sieht der Bauträger (Vater-Feedback, 2026-05-12),
+    dass er noch keine Beläge klassifiziert hat — statt dass die
+    ganze Sektion unsichtbar verschluckt wird.
+
+    Anti-Klutter-Garantie greift jetzt enger: Sektion nur skipen
+    wenn KEIN Raum überhaupt area > 0 hat. Drei Räume mit Fläche
+    aber ohne Belag = legitimer Use-Case → Sektion rendert."""
     user = await _seed_user(db_session)
     project = await _seed_three_room_project(db_session, user=user)
     # ``_seed_three_room_project`` setzt floor_type nicht → alle
-    # drei Räume haben NULL. Aggregation soll skipen.
+    # drei Räume haben NULL aber area_m2 ist gesetzt.
 
     pdf_bytes = await export_mengenermittlung_pdf(
         project_id=project.id, db=db_session, creator=user,
     )
 
     assert pdf_bytes.startswith(b"%PDF-")
-    # Section-Header darf NICHT erscheinen.
-    assert b"Bodenfl\xe4chen nach Belag" not in pdf_bytes
-    # Auch die Latin-1-encoded Variante (reportlab encoded "ä" als
-    # \xe4 in Helvetica). Bei Unsicherheit testen wir den ASCII-Stem
-    # plus die Marker-Phrase "nach Belag" (eindeutig der Sektion).
+    # Sektion-Header rendert.
+    assert b"Bodenfl" in pdf_bytes
+    assert b"nach Belag" in pdf_bytes
+    # Bucket-Label + Raum-Anzahl: 3 Räume sind ohne Belag.
+    assert b"ume ohne Belag" in pdf_bytes  # Stem-Match wegen "Räume"
+    assert b"(3 R" in pdf_bytes  # "(3 Räume)"
+    # Geschoss-Summe + Gesamt-Total laufen auch durch.
+    assert b"Gesamt-Bodenfl" in pdf_bytes
+    # 24.5 + 12.0 + 6.0 = 42.5 m² Gesamtfläche.
+    assert b"42,50 m" in pdf_bytes
+
+
+@pytest.mark.asyncio
+async def test_pdf_skips_floor_covering_section_when_no_room_has_area(
+    db_session: AsyncSession,
+):
+    """v24.4.1 — der eigentliche Skip-Fall ist enger als pre-v24.4.1.
+
+    Wenn KEIN Raum eine area_m2 hat, gibt es nichts zu aggregieren →
+    Sektion wird weggelassen. Das ist die letzte verbliebene Anti-
+    Klutter-Garantie, wesentlich enger als der pre-v24.4.1-Skip
+    "kein Raum hat floor_type"."""
+    user = await _seed_user(db_session)
+    project = Project(id=uuid.uuid4(), user_id=user.id, name="Leer")
+    db_session.add(project)
+    await db_session.flush()
+    building = Building(id=uuid.uuid4(), project_id=project.id, name="H")
+    db_session.add(building)
+    await db_session.flush()
+    floor = Floor(
+        id=uuid.uuid4(), building_id=building.id, name="EG", level_number=0,
+    )
+    db_session.add(floor)
+    await db_session.flush()
+    unit = Unit(id=uuid.uuid4(), floor_id=floor.id, name="T1")
+    db_session.add(unit)
+    await db_session.flush()
+    # Ein Raum mit area_m2=NULL UND floor_type=NULL.
+    db_session.add(Room(
+        id=uuid.uuid4(), unit_id=unit.id, name="Skizze",
+        area_m2=None, perimeter_m=None, height_m=Decimal("2.50"),
+    ))
+    await db_session.commit()
+
+    pdf_bytes = await export_mengenermittlung_pdf(
+        project_id=project.id, db=db_session, creator=user,
+    )
+
+    assert pdf_bytes.startswith(b"%PDF-")
+    # Section-Header darf NICHT erscheinen, weil null area_m2 zu
+    # aggregieren ist sinnlos.
     assert b"nach Belag" not in pdf_bytes
-    # Gesamt-Bodenfläche darf auch nicht erscheinen (kein Aggregat).
     assert b"Gesamt-Bodenfl" not in pdf_bytes
 
 

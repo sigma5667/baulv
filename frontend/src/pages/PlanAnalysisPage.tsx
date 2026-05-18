@@ -1591,7 +1591,7 @@ function RoomTable({
               <th className="px-4 py-2 text-right font-medium">Fläche m²</th>
               <th className="px-4 py-2 text-right font-medium">Umfang m</th>
               <th className="px-4 py-2 text-right font-medium">RH m</th>
-              <th className="px-4 py-2 text-left font-medium">Boden</th>
+              <th className="px-4 py-2 text-left font-medium">Bodenbelag</th>
               <th className="px-4 py-2 text-center font-medium">Nassraum</th>
               <th className="px-4 py-2 text-center font-medium">Quelle</th>
               <th className="px-4 py-2 text-right font-medium">Konfidenz</th>

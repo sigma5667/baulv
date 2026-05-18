@@ -112,11 +112,18 @@ _SYNONYM_TO_SLUG: dict[str, str] = {
     "holz": "parkett",
     # Laminat
     "laminat": "laminat",
-    # Vinyl / PVC / Designboden — wir folgen Tobis Entscheidung
-    # "Vinyl ist der Anzeigewert", PVC und Designboden mappen darauf.
+    # Vinyl / PVC — chemisch identisches Material, PVC ist nur das
+    # Roh-Polymer. v24.4.1 — Designboden wurde aus dieser Mapping-
+    # Gruppe entfernt (war in v24.4 fälschlich auf "vinyl" gemapped).
+    # Begründung: "Designboden" ist ein eigenständiger Branchenbegriff
+    # für mehrschichtige Click-Bodensysteme und meint nicht zwingend
+    # Vinyl — Architekten verwenden den Begriff auch für Linoleum-
+    # oder HDF-basierte Konstruktionen. User die "Designboden" via
+    # Sonstiges-Freitext eintragen wollen das als eigene Kategorie
+    # in der Mengenermittlungs-Aggregation sehen, nicht zu Vinyl
+    # zusammengeworfen.
     "vinyl": "vinyl",
     "pvc": "vinyl",
-    "designboden": "vinyl",
     # Teppich
     "teppich": "teppich",
     "teppichboden": "teppich",
@@ -196,9 +203,12 @@ def display_label(slug_or_freetext: str | None) -> str:
     * Free-text fallback (anything not in the slug set) → return as-is
       so legacy ``"Designboden Marke X"``-style values still render
       readably in the PDF and the UI.
-    * ``None`` / empty → ``"Nicht klassifiziert"``.
+    * ``None`` / empty → ``"Räume ohne Belag-Angabe"``.
+      v24.4.1 — vorher ``"Nicht klassifiziert"``; umbenannt damit der
+      Wortlaut konsistent mit den anderen Lücken-Hinweisen im PDF
+      ist und Vater nicht raten muss was die Pille meint.
     """
     if slug_or_freetext is None or not str(slug_or_freetext).strip():
-        return "Nicht klassifiziert"
+        return "Räume ohne Belag-Angabe"
     s = str(slug_or_freetext).strip()
     return FLOOR_COVERING_LABELS.get(s, s)

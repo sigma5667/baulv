@@ -805,9 +805,20 @@ def _append_floor_covering_section(
         if room.area_m2 is not None
     ]
 
-    if not any(r.floor_type for r, _ in contributing):
-        # Skip the whole section — see docstring.
+    if not contributing:
+        # Kein einziger Raum hat Fläche → keine Aggregation möglich.
+        # In dem Fall wäre die Sektion komplett leer und ein leerer
+        # Block würde nur verwirren.
         return
+
+    # v24.4.1 — Sektion rendert auch wenn NUR unklassifizierte Räume
+    # da sind. Pre-v24.4.1-Verhalten ("skip wenn kein Raum einen
+    # floor_type hat") hat verhindert, dass der User in seiner
+    # bestehenden Datenlage (Vater-Musterhaus: 0 klassifizierte Räume)
+    # die Aggregation und den "ohne Belag-Angabe"-Bucket überhaupt
+    # sah. Jetzt: Bucket "Räume ohne Belag-Angabe" wird sichtbar
+    # sobald mindestens 1 Raum area>0 hat — der User sieht klar
+    # was zu pflegen ist.
 
     # Step 2 — group by floor. ``None`` (legacy / unassigned) lives
     # under the sentinel key ``__unassigned__`` and renders as the
@@ -832,21 +843,27 @@ def _append_floor_covering_section(
             {"label": floor_label, "sort_key": sort_key, "by_covering": {}},
         )
 
-        # Belag-Slug → Display-Label + akkumulierte Fläche. Slug
-        # ``None`` (NULL floor_type) wird zum "Nicht klassifiziert"-
-        # Sentinel.
+        # Belag-Slug → Display-Label + akkumulierte Fläche + Raum-
+        # Zähler. Slug ``None`` (NULL floor_type) wird zum
+        # "Räume ohne Belag-Angabe"-Sentinel (v24.4.1, vorher
+        # "Nicht klassifiziert" — auf User-Feedback umbenannt
+        # damit der Wortlaut konsistent mit den anderen Lücken-
+        # Hinweisen im PDF ist).
         slug = (
             normalise_floor_covering(room.floor_type)
             if room.floor_type
             else None
         )
-        covering_key = slug or "__none__"
-        covering_label = _floor_covering_label(slug) if slug else "Nicht klassifiziert"
+        covering_key = slug or "__unclassified__"
+        covering_label = (
+            _floor_covering_label(slug) if slug else "Räume ohne Belag-Angabe"
+        )
         entry = group["by_covering"].setdefault(
             covering_key,
-            {"label": covering_label, "area": 0.0},
+            {"label": covering_label, "area": 0.0, "count": 0},
         )
         entry["area"] += float(room.area_m2 or 0)
+        entry["count"] += 1
 
     # Step 3 — render. Section-Header + dezenter Untertitel.
     story.append(Spacer(1, 6 * mm))
@@ -881,21 +898,40 @@ def _append_floor_covering_section(
             )
         )
 
-        # Belag-Reihen, sortiert nach Fläche absteigend. "Nicht
-        # klassifiziert" wird ans Ende der Geschoss-Gruppe gesetzt
+        # Belag-Reihen, sortiert nach Fläche absteigend. "Räume ohne
+        # Belag-Angabe" wird ans Ende der Geschoss-Gruppe gesetzt
         # damit die "echten" Beläge oben stehen.
         rows: list[list[str]] = []
         coverings = list(group["by_covering"].values())
-        # Pull "Nicht klassifiziert" aus der Sortier-Logik raus,
-        # damit es zuletzt gerendert wird.
-        regular = [c for c in coverings if c["label"] != "Nicht klassifiziert"]
-        unclassified = [c for c in coverings if c["label"] == "Nicht klassifiziert"]
+        # v24.4.1 — Separation per Label-String. "Räume ohne Belag-
+        # Angabe" trägt das fix verdrahtete Label; alle Slug-basierten
+        # Beläge bekommen ihr Display-Label via ``_floor_covering_label``.
+        regular = [
+            c for c in coverings
+            if c["label"] != "Räume ohne Belag-Angabe"
+        ]
+        unclassified = [
+            c for c in coverings
+            if c["label"] == "Räume ohne Belag-Angabe"
+        ]
         regular.sort(key=lambda c: c["area"], reverse=True)
         ordered = regular + unclassified
 
         floor_total = 0.0
         for entry in ordered:
-            rows.append([_safe(entry["label"]), f"{_fmt(entry['area'], 2)} m²"])
+            # v24.4.1 — Beim "Räume ohne Belag-Angabe"-Bucket Raum-
+            # Anzahl mit ans Label hängen ("Räume ohne Belag-Angabe
+            # (5 Räume)"), damit der User sieht wie viel manuelles
+            # Nachpflegen ansteht.
+            if entry["label"] == "Räume ohne Belag-Angabe":
+                cnt = entry["count"]
+                label_text = (
+                    f"{entry['label']} "
+                    f"({cnt} {'Raum' if cnt == 1 else 'Räume'})"
+                )
+            else:
+                label_text = entry["label"]
+            rows.append([_safe(label_text), f"{_fmt(entry['area'], 2)} m²"])
             floor_total += entry["area"]
 
         # Trennlinie + Geschoss-Summe.

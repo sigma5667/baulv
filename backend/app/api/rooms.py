@@ -13,7 +13,6 @@ from app.schemas.room import (
     OpeningCreate, OpeningUpdate, OpeningResponse,
     WallCalculationResponse, BulkWallCalculationResponse,
 )
-from app.services.floor_covering import normalise_floor_covering
 from app.services.wall_calculator import (
     calculate_wall_areas,
     estimate_perimeter_from_area,
@@ -216,13 +215,15 @@ async def create_room(
             payload["perimeter_source"] = "estimated"
         # else: both stay null → empty-state badge in the UI.
 
-    # v24.4 — Floor-Belag normalisieren (Free-Text / Vision-Großschrift
-    # → kanonischer Slug). Unbekannte Werte (z.B. "Designboden Marke X"
-    # aus dem Sonstiges-Freitext-Pfad) bleiben backward-compat stehen.
-    if "floor_type" in payload:
-        payload["floor_type"] = normalise_floor_covering(
-            payload.get("floor_type")
-        )
+    # v24.4.1 — Backend trusst den Frontend-Wert literal. Pre-v24.4.1
+    # lief hier ein ``normalise_floor_covering``-Call, der user-getipte
+    # Sonstiges-Freitext-Werte ("Designboden") auf Synonym-Slugs
+    # ("vinyl") umbiegen konnte — was ungewollt war. Frontend sendet
+    # entweder einen sauberen Slug (Dropdown-Pfad) oder den literalen
+    # Freitext (Sonstiges-Pfad); beides wird hier 1:1 gespeichert.
+    # Vision-Output wird weiterhin im Pipeline-Pfad normalisiert
+    # (siehe ``pipeline.py:_store_extraction_result``); das ist der
+    # richtige Ort für Großschrift→Slug-Mapping.
 
     room = Room(
         unit_id=unit_id,
@@ -343,13 +344,9 @@ async def update_room(
             "manual" if updates["perimeter_m"] is not None else None
         )
 
-    # v24.4 — Floor-Belag normalisieren bei Inline-Edit (Dropdown
-    # liefert Slugs, Freitext-Pfad liefert Custom-Strings). Konsistent
-    # mit ``create_room``-Logik oben.
-    if "floor_type" in updates:
-        updates["floor_type"] = normalise_floor_covering(
-            updates["floor_type"]
-        )
+    # v24.4.1 — KEIN Normalize-Override mehr beim Inline-Edit. Siehe
+    # Begründung in ``create_room`` oben: Backend speichert was das
+    # Frontend schickt. Sonstiges-Freitext bleibt literal erhalten.
 
     for key, value in updates.items():
         setattr(room, key, value)

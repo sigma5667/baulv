@@ -67,9 +67,10 @@ def test_slugs_and_labels_are_consistent():
         ("Sichtbeton", "beton"),
         ("Marmor", "naturstein"),
         ("Granit", "naturstein"),
-        # PVC → Vinyl (Tobi-Entscheidung: Vinyl ist der kanonische Anzeigewert)
+        # PVC → Vinyl (chemisch identisches Material).
         ("PVC", "vinyl"),
-        ("Designboden", "vinyl"),
+        # NB: "Designboden" wurde in v24.4.1 aus der Synonym-Map
+        # entfernt — siehe ``test_designboden_stays_freetext`` unten.
     ],
 )
 def test_known_synonyms_map_to_canonical_slugs(raw, expected):
@@ -111,6 +112,23 @@ def test_unknown_string_returns_cleaned_original():
     assert normalise_floor_covering("  Custom-Belag  ") == "Custom-Belag"
 
 
+def test_designboden_stays_freetext():
+    """v24.4.1 — Bug-Fix-Regression-Test.
+
+    Pre-v24.4.1 hatte die Synonym-Map "designboden" → "vinyl"
+    enthalten. Effekt: User tippt im Sonstiges-Freitext-Pfad
+    "Designboden" → Backend normalisiert zu "vinyl" → PDF gruppiert
+    den Raum als Vinyl statt als eigene Kategorie. Vater meldete
+    das als kritisch ("Feature ist sonst unbrauchbar").
+
+    Der Fix entfernt "designboden" aus der Synonym-Map. Locking
+    den Zustand so dass eine künftige "defensive Re-Addition"
+    sofort rot wird."""
+    assert normalise_floor_covering("Designboden") == "Designboden"
+    assert normalise_floor_covering("designboden") == "designboden"
+    assert normalise_floor_covering("DESIGNBODEN") == "DESIGNBODEN"
+
+
 # ---------------------------------------------------------------------------
 # Null und Leer-Werte
 # ---------------------------------------------------------------------------
@@ -141,7 +159,10 @@ def test_display_label_for_freetext_passes_through():
     assert display_label("Designboden Marke X") == "Designboden Marke X"
 
 
-def test_display_label_for_none_is_nicht_klassifiziert():
-    assert display_label(None) == "Nicht klassifiziert"
-    assert display_label("") == "Nicht klassifiziert"
-    assert display_label("   ") == "Nicht klassifiziert"
+def test_display_label_for_none_is_raeume_ohne_belag_angabe():
+    """v24.4.1 — Wortlaut umgestellt von "Nicht klassifiziert" auf
+    "Räume ohne Belag-Angabe", damit der PDF-Hinweistext konsistent
+    mit den anderen Mängel-Buckets bleibt."""
+    assert display_label(None) == "Räume ohne Belag-Angabe"
+    assert display_label("") == "Räume ohne Belag-Angabe"
+    assert display_label("   ") == "Räume ohne Belag-Angabe"
