@@ -31,11 +31,19 @@ the SPA's ``ConsentRefreshModal`` triggers on next login.
 from __future__ import annotations
 
 # Datenschutzerklärung (Privacy Policy)
+# v1.2 (2026-05-18) — section 6 "Speicherdauer" rewritten as an
+# explicit per-category breakdown. The previous text claimed
+# "Log-Daten in der Regel nach 30 Tagen gelöscht" which contradicted
+# AUDIT_LOG_RETENTION_DAYS = 730 (24 months) in app/dsgvo_retention.py
+# and was a hard Art. 13(2)(a) DSGVO transparency violation. The
+# fix names every retention window the code actually implements
+# (audit log, MCP log, consent snapshots, server logs) with their
+# Art. 6 legal bases. Existing users get the ConsentRefreshModal
+# on next login because privacy_version moves 1.1 → 1.2.
 # v1.1 (2026-05-05) — section "Anonymisierte Nutzungsdaten" added
-# alongside the v23.8 analytics opt-in. Existing users see the
-# ConsentRefreshModal on next login and have to re-accept.
-PRIVACY_POLICY_VERSION: str = "1.1"
-PRIVACY_POLICY_DATE: str = "2026-05-05"
+# alongside the v23.8 analytics opt-in.
+PRIVACY_POLICY_VERSION: str = "1.2"
+PRIVACY_POLICY_DATE: str = "2026-05-18"
 
 # Allgemeine Geschäftsbedingungen (Terms of Service)
 TERMS_VERSION: str = "1.0"

@@ -308,13 +308,67 @@ export function DatenschutzPage() {
 
           <div>
             <h2 className="mb-2 text-lg font-semibold">6. Speicherdauer</h2>
-            <p>
+            <p className="mb-2">
               Wir speichern personenbezogene Daten nur so lange, wie es für den
-              jeweiligen Zweck erforderlich ist. Kontodaten werden bis zur
-              Löschung Ihres Kontos aufbewahrt. Rechnungsdaten werden gemäß
-              § 132 BAO für sieben Jahre aufbewahrt. Log-Daten werden in der
-              Regel nach 30 Tagen gelöscht.
+              jeweiligen Zweck erforderlich ist. Im Einzelnen gelten folgende
+              Aufbewahrungsfristen (Art. 13 Abs. 2 lit. a DSGVO):
             </p>
+            <ul className="ml-5 list-disc space-y-2">
+              <li>
+                <strong>Kontodaten</strong> (Name, E-Mail, Firma):
+                bis zur Löschung Ihres Kontos durch Sie selbst. Nach
+                Löschung verbleiben nur die unten genannten gesetzlich
+                vorgeschriebenen Rechnungsdaten.
+              </li>
+              <li>
+                <strong>Projekt- und Plandaten</strong> (hochgeladene
+                Pläne, Räume, Leistungsverzeichnisse): bis zur Löschung
+                des jeweiligen Projekts oder Ihres Kontos.
+              </li>
+              <li>
+                <strong>Rechnungsdaten:</strong> sieben Jahre gemäß
+                § 132 BAO. Rechtsgrundlage: Art. 6 Abs. 1 lit. c
+                DSGVO (rechtliche Verpflichtung) i.&nbsp;V.&nbsp;m.
+                § 132 BAO.
+              </li>
+              <li>
+                <strong>Audit-Log</strong> (Anmelde-Versuche, Account-
+                und Passwort-Änderungen, Daten-Export, Account-Löschung,
+                Privacy-Einstellungs-Updates): <strong>24 Monate</strong>.
+                Die längere Aufbewahrung dient der Sicherheits-Analyse
+                bei verdächtigen Anmelde-Mustern und der Nachvollziehbarkeit
+                eigener Konto-Aktivitäten bei späteren Beschwerden.
+                Rechtsgrundlage: Art. 6 Abs. 1 lit. f DSGVO (berechtigtes
+                Interesse an IT-Sicherheit und Beweissicherung). Die Frist
+                gilt als verhältnismäßig kurz im Vergleich zur 30-jährigen
+                Verjährungsfrist für Schadenersatzansprüche aus
+                Bauverträgen.
+              </li>
+              <li>
+                <strong>MCP-/API-Aufruf-Protokolle</strong> (bei Nutzung
+                der programmatischen Schnittstelle mit einem persönlichen
+                Access-Token): <strong>24 Monate</strong>. Gleiche
+                Rechtsgrundlage und gleicher Zweck wie das Audit-Log.
+              </li>
+              <li>
+                <strong>Einwilligungs-Nachweise</strong> (Snapshots zu
+                Datenschutz-, AGB- und Marketing-Einwilligung): solange
+                die jeweilige Einwilligung Wirkung entfalten kann bzw.
+                Verjährungsfristen für etwaige Ansprüche laufen. Eine
+                vorzeitige Löschung würde uns daran hindern, Ihre
+                Einwilligung nach Art. 7 Abs. 1 DSGVO nachweisen zu
+                können — die Nachweispflicht überlagert in diesem
+                Punkt die Speicherbegrenzung nach Art. 5 Abs. 1 lit. e
+                DSGVO.
+              </li>
+              <li>
+                <strong>Server-Logs</strong> (technische Webserver-
+                Zugriffe zur Aufrechterhaltung des Betriebs): maximal
+                30 Tage, danach automatische Löschung oder
+                Anonymisierung. Rechtsgrundlage: Art. 6 Abs. 1 lit. f
+                DSGVO.
+              </li>
+            </ul>
           </div>
 
           <div>
@@ -481,9 +535,14 @@ export function DatenschutzPage() {
           <div>
             <h2 className="mb-2 text-lg font-semibold">Stand</h2>
             <p>
-              Version 1.1 — gültig ab 5. Mai 2026. Geändert gegenüber
-              v1.0 (April 2026): Sektion „Anonymisierte Nutzungsdaten"
-              ergänzt.
+              Version 1.2 — gültig ab 18. Mai 2026. Geändert gegenüber
+              v1.1 (Mai 2026): Abschnitt 6 „Speicherdauer" detailliert
+              je Daten-Kategorie aufgeschlüsselt und die Aufbewahrung
+              des Audit-Logs korrekt mit 24 Monaten ausgewiesen (zuvor
+              pauschal und unzutreffend mit „30 Tagen" beschrieben);
+              MCP-Aufruf-Protokolle, Einwilligungs-Nachweise und
+              Server-Logs als eigene Punkte ergänzt; Rechtsgrundlagen
+              je Kategorie benannt.
             </p>
           </div>
         </section>
