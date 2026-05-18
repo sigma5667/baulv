@@ -647,19 +647,49 @@ function PrivacySettingsCard() {
           <p className="mb-1 font-medium text-foreground">
             Hinweis zur KI-Verarbeitung
           </p>
+          {/* v24.4.1+ — Konsistent mit der ausführlichen
+              Anthropic-Sektion in DatenschutzPage.tsx (Abschnitt 5a).
+              Kurzfassung hier nennt die KI-Funktionen + die wichtigsten
+              Datenkategorien je nach Funktion, plus den Verweis auf
+              die ausführliche Aufschlüsselung. */}
           <p>
             BauLV nutzt die Claude API von Anthropic (PBC, San Francisco,
-            USA) für die Analyse von Bauplänen, die Erstellung von
-            LV-Positionstexten und den Chat-Assistenten. Dabei werden
-            relevante Inhalte Ihrer Projekte an Anthropic übermittelt.
+            USA) für vier KI-Funktionen: Plananalyse, KI-Berater (Chat),
+            LV-Langtext-Generator und den Support-Chat auf der
+            Landing-Page. Je nach genutzter Funktion werden
+            unterschiedliche Daten an Anthropic übertragen:
+          </p>
+          <ul className="mt-2 ml-5 list-disc space-y-1">
+            <li>
+              <strong>Plananalyse:</strong> nur der Bauplan als Bild
+            </li>
+            <li>
+              <strong>KI-Berater:</strong> Projektname, Adresse, alle
+              Räume mit Maßen, die gesamte Chat-Historie
+            </li>
+            <li>
+              <strong>LV-Langtext:</strong> Gewerk + Positionsdaten
+              (Nummer, Kurztext, Einheit, Menge)
+            </li>
+            <li>
+              <strong>Support-Chat:</strong> nur die Nachrichten, die
+              Sie ins Widget tippen
+            </li>
+          </ul>
+          <p className="mt-2">
             Daten werden in den USA verarbeitet. Anthropic ist im
             EU-US Data Privacy Framework gelistet und verwendet die
-            Daten ausschließlich zur Erbringung der Dienstleistung —
-            es erfolgt <strong>kein Training</strong> der Modelle auf
-            Ihren Daten.
-            Details finden Sie in der{" "}
+            Daten nach Anthropic's Angaben nicht standardmäßig zum
+            Modelltraining.
+            E-Mail-Adresse, IP-Adresse und Zahlungsdaten werden NICHT
+            an Anthropic übertragen. Die manuelle Nutzung von BauLV
+            (Räume manuell anlegen, LV manuell erstellen) sendet
+            ebenfalls KEINE Daten an Anthropic.
+          </p>
+          <p className="mt-2">
+            Vollständige Aufschlüsselung pro KI-Funktion in der{" "}
             <a href="/datenschutz" className="underline hover:text-foreground">
-              Datenschutzerklärung
+              Datenschutzerklärung (Abschnitt 5a)
             </a>
             .
           </p>

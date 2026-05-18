@@ -155,15 +155,10 @@ export function DatenschutzPage() {
               </li>
               <li>
                 <strong>KI-Verarbeitung — Anthropic PBC (USA):</strong>{" "}
-                Ausschließlich für die vom Nutzer ausgelöste Plan-Analyse,
-                LV-Textgenerierung und Chat-Funktion. Übermittelt werden nur
-                die zur Anfrage notwendigen Inhalte (z.&nbsp;B. Bauplan-Bild,
-                Positionsbeschreibung). Daten werden in den USA verarbeitet.
-                Anthropic verwendet laut eigener Zusicherung API-Daten nicht
-                zum Modelltraining.
-                Datenübermittlung in die USA auf Grundlage der EU-Standard-
-                vertragsklauseln (SCCs); Anthropic ist im EU-US Data Privacy
-                Framework gelistet.{" "}
+                Wir nutzen die Claude-API für vier KI-Funktionen. Welche
+                Daten dabei konkret übertragen werden, hängt von der jeweils
+                ausgelösten Funktion ab. Siehe Abschnitt&nbsp;5a unten für
+                die vollständige Aufschlüsselung.{" "}
                 <a
                   href="https://www.anthropic.com/legal/privacy"
                   target="_blank"
@@ -175,6 +170,140 @@ export function DatenschutzPage() {
                 .
               </li>
             </ul>
+          </div>
+
+          {/* v24.4.1+ — Ausführliche Anthropic-Datenfluss-Sektion. Die
+              Bullet-Liste oben hatte vorher den ganzen Sachverhalt in
+              vier Sätzen abgehandelt, was den tatsächlichen Datenfluss
+              irreführend verkürzt hat (Vorlage suggerierte: "nur das
+              Nötige", tatsächlich gehen z.B. im Chat die ganze Raum-
+              Liste + Chat-Historie raus). DSGVO Art. 13 verlangt
+              vollständige Transparenz, daher hier explizit pro
+              KI-Endpoint aufgelistet. */}
+          <div>
+            <h2 className="mb-2 text-lg font-semibold">
+              5a. Datenübertragung an Anthropic — Detail pro KI-Funktion
+            </h2>
+            <p className="mb-3">
+              BauLV nutzt die Claude-API von <strong>Anthropic PBC</strong>{" "}
+              (San Francisco, USA) für insgesamt vier KI-Funktionen. Je
+              nach Funktion werden unterschiedliche Daten an Anthropic
+              übertragen — dieser Abschnitt listet sie vollständig auf.
+            </p>
+
+            <h3 className="mt-4 mb-1 text-base font-semibold">
+              Bei KI-Plananalyse (Plan-Upload)
+            </h3>
+            <ul className="ml-5 list-disc space-y-1">
+              <li>
+                Der hochgeladene Bauplan als Bild (PDF-Seiten werden im
+                Backend zu PNG/JPEG gerendert, eine Anfrage pro Seite)
+              </li>
+              <li>
+                Keine weiteren Daten — kein Projektname, keine Adresse,
+                keine Konto-Daten werden mitgesendet
+              </li>
+            </ul>
+
+            <h3 className="mt-4 mb-1 text-base font-semibold">
+              Bei KI-Berater (Chat)
+            </h3>
+            <ul className="ml-5 list-disc space-y-1">
+              <li>
+                <strong>Projektkontext:</strong> Name des Projekts,
+                Adresse des Projekts (falls hinterlegt), Liste aller
+                Räume des Projekts mit ihren Maßen (Fläche, Umfang,
+                Raumhöhe, Bodenbelag), Geschoss- und Einheits-Bezeichnungen
+              </li>
+              <li>
+                <strong>Ihre Chat-Nachrichten</strong> und die gesamte
+                Chat-Historie der aktuellen Session
+              </li>
+              <li>
+                <em>Hinweis:</em> Wenn Sie in einer Chat-Nachricht
+                zusätzliche Informationen eingeben (z.&nbsp;B. Namen
+                Ihrer Kunden, Adressen Dritter), werden auch diese mit
+                jeder Folge-Antwort erneut mitübertragen.
+              </li>
+            </ul>
+
+            <h3 className="mt-4 mb-1 text-base font-semibold">
+              Bei KI-Langtext-Generator (LV-Texte automatisch erstellen)
+            </h3>
+            <ul className="ml-5 list-disc space-y-1">
+              <li>Bezeichnung des Gewerks (z.&nbsp;B. „Malerarbeiten")</li>
+              <li>
+                Pro LV-Position: Positionsnummer, Kurztext (wie von Ihnen
+                eingegeben oder aus Vorlage übernommen), Einheit, Menge,
+                Leistungsgruppe
+              </li>
+            </ul>
+
+            <h3 className="mt-4 mb-1 text-base font-semibold">
+              Beim Support-Chat (Landing-Page)
+            </h3>
+            <ul className="ml-5 list-disc space-y-1">
+              <li>
+                Nur die Nachrichten, die Sie in das Support-Chat-Widget
+                unten rechts auf der Landing-Page tippen
+              </li>
+              <li>Dieser Pfad funktioniert auch ohne Login</li>
+            </ul>
+
+            <h3 className="mt-4 mb-1 text-base font-semibold">
+              Was NICHT an Anthropic übertragen wird
+            </h3>
+            <ul className="ml-5 list-disc space-y-1">
+              <li>Ihre E-Mail-Adresse</li>
+              <li>Ihr Name und Firmenname</li>
+              <li>Ihre IP-Adresse</li>
+              <li>Zahlungsdaten / Stripe-Daten</li>
+              <li>Login-Sessions oder Tokens</li>
+              <li>Plan-Dateinamen oder Datei-Metadaten (nur der Bild-Inhalt)</li>
+            </ul>
+
+            <h3 className="mt-4 mb-1 text-base font-semibold">
+              Rechtsgrundlage und Drittlands-Übertragung
+            </h3>
+            <p className="mb-2">
+              Art.&nbsp;6 Abs.&nbsp;1 lit.&nbsp;b DSGVO
+              (Vertragserfüllung — die KI-Funktion ist Teil der gebuchten
+              Leistung) und Art.&nbsp;6 Abs.&nbsp;1 lit.&nbsp;a DSGVO
+              (Einwilligung durch die aktive Auslösung der jeweiligen
+              Funktion).
+            </p>
+            <p className="mb-2">
+              Datenübermittlung in die USA auf Grundlage der
+              EU-Standardvertragsklauseln (SCCs). Anthropic ist im
+              EU-US&nbsp;Data&nbsp;Privacy&nbsp;Framework gelistet
+              {" "}
+              (<a
+                href="https://www.dataprivacyframework.gov"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-primary hover:underline"
+              >
+                dataprivacyframework.gov
+              </a>
+              ).
+            </p>
+            <p className="mb-2">
+              Nach Anthropic's Angaben werden API-Daten nicht
+              standardmäßig zum Modelltraining verwendet.
+            </p>
+
+            <h3 className="mt-4 mb-1 text-base font-semibold">
+              Widerspruch / Verzicht auf KI-Funktionen
+            </h3>
+            <p>
+              Sie können der Übertragung an Anthropic jederzeit
+              widersprechen, indem Sie die KI-Funktionen nicht nutzen.
+              BauLV bleibt vollständig manuell nutzbar: Räume manuell
+              anlegen, LV-Positionen manuell schreiben, Berechnungen mit
+              der eingebauten deterministischen Berechnungs-Engine (ohne
+              KI) durchführen. Die manuelle Nutzung sendet KEINE Daten
+              an Anthropic.
+            </p>
           </div>
 
           <div>
