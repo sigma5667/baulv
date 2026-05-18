@@ -209,8 +209,8 @@ export function DevelopersPage() {
             </span>
           </h1>
           <p className="mt-5 max-w-2xl text-lg text-slate-300">
-            MCP-Standard, 15 Tools, Personal Access Tokens. EU-gehostet,
-            DSGVO-konform, jederzeit kündbar.
+            MCP-Standard, 15 Tools, Personal Access Tokens. EU-gehostet.
+            Jederzeit kündbar.
           </p>
           <div className="mt-8 flex flex-wrap gap-3">
             <Link

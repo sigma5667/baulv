@@ -34,7 +34,7 @@ export function ComingSoonModal({
   body = (
     "Die Online-Buchung der API-Tarife (Bezahlung über Stripe) ist " +
     "in Vorbereitung. Bis dahin: schreibe uns für Early-Access — wir " +
-    "antworten persönlich innerhalb von 24 Stunden und schalten dir " +
+    "antworten so bald wie möglich und schalten dir " +
     "deinen API-Key manuell frei."
   ),
   mailSubject = "BauLV API — Early-Access-Anfrage",
@@ -93,7 +93,7 @@ export function ComingSoonModal({
         </a>
 
         <p className="mt-3 text-center text-xs text-muted-foreground">
-          Wir setzen uns innerhalb von 24 Stunden mit dir in Verbindung.
+          Wir melden uns so bald wie möglich.
         </p>
       </div>
     </div>

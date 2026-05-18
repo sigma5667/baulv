@@ -1,4 +1,4 @@
-"""DSGVO-konforme Nutzungs-Analytics (v23.8).
+"""Nutzungs-Analytics (mit DSGVO-Anforderungen kompatibel) — v23.8.
 
 Append-only event ledger that powers the future analytics features
 (usage statistics, benchmarks, KI-training corpus). The whole

@@ -158,10 +158,12 @@ export function DatenschutzPage() {
                 Ausschließlich für die vom Nutzer ausgelöste Plan-Analyse,
                 LV-Textgenerierung und Chat-Funktion. Übermittelt werden nur
                 die zur Anfrage notwendigen Inhalte (z.&nbsp;B. Bauplan-Bild,
-                Positionsbeschreibung). Anthropic verwendet laut eigener
-                Zusicherung API-Daten nicht zum Modelltraining.
-                Datenübermittlung in die USA auf Grundlage der SCCs und des
-                EU-US Data Privacy Framework.{" "}
+                Positionsbeschreibung). Daten werden in den USA verarbeitet.
+                Anthropic verwendet laut eigener Zusicherung API-Daten nicht
+                zum Modelltraining.
+                Datenübermittlung in die USA auf Grundlage der EU-Standard-
+                vertragsklauseln (SCCs); Anthropic ist im EU-US Data Privacy
+                Framework gelistet.{" "}
                 <a
                   href="https://www.anthropic.com/legal/privacy"
                   target="_blank"

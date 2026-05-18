@@ -652,10 +652,11 @@ function PrivacySettingsCard() {
             USA) für die Analyse von Bauplänen, die Erstellung von
             LV-Positionstexten und den Chat-Assistenten. Dabei werden
             relevante Inhalte Ihrer Projekte an Anthropic übermittelt.
-            Anthropic ist nach dem EU-US Data Privacy Framework
-            zertifiziert und verwendet die Daten ausschließlich zur
-            Erbringung der Dienstleistung — es erfolgt{" "}
-            <strong>kein Training</strong> der Modelle auf Ihren Daten.
+            Daten werden in den USA verarbeitet. Anthropic ist im
+            EU-US Data Privacy Framework gelistet und verwendet die
+            Daten ausschließlich zur Erbringung der Dienstleistung —
+            es erfolgt <strong>kein Training</strong> der Modelle auf
+            Ihren Daten.
             Details finden Sie in der{" "}
             <a href="/datenschutz" className="underline hover:text-foreground">
               Datenschutzerklärung
@@ -872,7 +873,7 @@ function AuditLogCard() {
       </p>
       <p className="mb-4 text-xs text-muted-foreground italic">
         Audit-Einträge werden nach 24 Monaten automatisch gelöscht
-        (DSGVO-konform, Art. 5 Abs. 1 lit. e).
+        (begrenzte Speicherdauer nach Art. 5 Abs. 1 lit. e DSGVO).
       </p>
 
       {expanded && (

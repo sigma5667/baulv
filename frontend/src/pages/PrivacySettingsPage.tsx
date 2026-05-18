@@ -110,8 +110,9 @@ export function PrivacySettingsPage() {
       </div>
 
       <p className="mb-8 max-w-3xl text-sm text-muted-foreground">
-        BauLV verarbeitet Ihre Daten DSGVO-konform. Diese Seite
-        steuert die <strong>optionale</strong> Erhebung anonymisierter
+        Diese Seite zeigt welche Daten BauLV von Ihnen speichert und
+        wie Sie sie kontrollieren können. Sie steuert die{" "}
+        <strong>optionale</strong> Erhebung anonymisierter
         Nutzungsdaten zur Produkt-Verbesserung und zeigt, welche
         Daten zu Ihrem pseudonymisierten Profil gespeichert sind.
         Details siehe{" "}

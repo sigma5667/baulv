@@ -158,7 +158,7 @@ Daher: beide Strings synchron, im selben Commit.
 
 ## Resend-Setup (Passwort-Reset, ab v23.4)
 
-Der DSGVO-konforme Passwort-Reset-Flow (DS-3) verschickt die
+Der Passwort-Reset-Flow (DS-3, mit DSGVO-Anforderungen kompatibel) verschickt die
 Reset-Mail über [Resend](https://resend.com). Ohne korrekt gesetzte
 Env-Variablen geht **keine** Mail raus — der Endpoint
 ``POST /api/auth/password-reset`` antwortet weiterhin mit dem

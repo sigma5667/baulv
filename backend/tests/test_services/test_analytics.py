@@ -1,4 +1,4 @@
-"""Tests for the v23.8 DSGVO-konforme analytics pipeline.
+"""Tests for the v23.8 analytics pipeline (mit DSGVO-Anforderungen kompatibel).
 
 Coverage matches the 5-case spec:
 

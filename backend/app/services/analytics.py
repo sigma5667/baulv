@@ -1,4 +1,4 @@
-"""DSGVO-konforme Nutzungs-Analytics — record_event service.
+"""Nutzungs-Analytics (mit DSGVO-Anforderungen kompatibel) — record_event service.
 
 Single public entry point: ``record_event(event_type, event_data,
 user, db)``. Every other module in the codebase that wants to

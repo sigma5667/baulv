@@ -45,17 +45,17 @@ const FEATURES = [
 const PLANS = [
   {
     name: "Basis",
-    price: "49",
-    interval: "/Monat",
+    price: "Auf Anfrage",
+    interval: "",
     features: ["3 aktive Projekte", "Manueller LV-Editor", "PDF-Export"],
-    cta: "14 Tage kostenlos testen",
-    href: "/register",
+    cta: "Kontakt aufnehmen",
+    href: "mailto:kontakt@baulv.at",
     popular: false,
   },
   {
     name: "Pro",
-    price: "149",
-    interval: "/Monat",
+    price: "Auf Anfrage",
+    interval: "",
     features: [
       "Unbegrenzte Projekte",
       "KI-Plananalyse",
@@ -64,8 +64,8 @@ const PLANS = [
       "Excel + PDF Export",
       "Prioritäts-Support",
     ],
-    cta: "14 Tage kostenlos testen",
-    href: "/register",
+    cta: "Kontakt aufnehmen",
+    href: "mailto:kontakt@baulv.at",
     popular: true,
   },
   {
@@ -165,9 +165,8 @@ export function LandingPage() {
               für den Bau
             </h1>
             <p className="mt-6 text-lg text-muted-foreground md:text-xl">
-              Von der Plananalyse zum fertigen Leistungsverzeichnis — automatisch, nachvollziehbar
-              und nach österreichischen Baustandards. Sparen Sie bis zu 80% der Zeit bei der
-              Erstellung Ihrer Ausschreibungen.
+              Von der Plananalyse zum fertigen Leistungsverzeichnis — automatisch und
+              nachvollziehbar. Spart Zeit gegenüber manueller Erstellung.
             </p>
             <div className="mt-8 flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
               <Link
@@ -200,10 +199,10 @@ export function LandingPage() {
             <Check className="h-4 w-4 text-green-600" /> Nachvollziehbare Berechnungen
           </span>
           <span className="flex items-center gap-2">
-            <Check className="h-4 w-4 text-green-600" /> DSGVO-konform
+            <Check className="h-4 w-4 text-green-600" /> Hosting in der EU
           </span>
           <span className="flex items-center gap-2">
-            <Check className="h-4 w-4 text-green-600" /> Made in Austria
+            <Check className="h-4 w-4 text-green-600" /> Aus Österreich
           </span>
         </div>
       </section>
@@ -295,7 +294,7 @@ export function LandingPage() {
               >
                 {plan.popular && (
                   <span className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full bg-primary px-4 py-1 text-xs font-medium text-primary-foreground">
-                    Am beliebtesten
+                    Empfohlen
                   </span>
                 )}
                 <h3 className="text-xl font-bold">{plan.name}</h3>
@@ -347,7 +346,7 @@ export function LandingPage() {
       {/* CTA */}
       <section className="border-t bg-gradient-to-r from-blue-600 to-blue-700 py-16 text-white">
         <div className="mx-auto max-w-3xl px-6 text-center">
-          <h2 className="text-3xl font-bold">Bereit, Ihre Ausschreibungen zu revolutionieren?</h2>
+          <h2 className="text-3xl font-bold">Bereit, Ihre Ausschreibungen zu vereinfachen?</h2>
           <p className="mt-4 text-blue-100">
             Testen Sie BauLV 14 Tage kostenlos und upgraden Sie jederzeit.
           </p>

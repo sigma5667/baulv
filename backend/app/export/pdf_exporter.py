@@ -405,7 +405,7 @@ def _draw_footer(canvas, document) -> None:
         18 * mm,
         footer_y,
         "Enthält ausschließlich die im Leistungsverzeichnis erfassten "
-        "Projektangaben (DSGVO-konforme Verarbeitung).",
+        "Projektangaben.",
     )
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")

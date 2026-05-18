@@ -426,7 +426,7 @@ function AuditDialog({
 
       <p className="text-xs text-muted-foreground italic">
         MCP-Aufrufe werden nach 24 Monaten automatisch gelöscht
-        (DSGVO-konform, Art. 5 Abs. 1 lit. e).
+        (begrenzte Speicherdauer nach Art. 5 Abs. 1 lit. e DSGVO).
       </p>
 
       {isLoading && (

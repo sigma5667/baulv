@@ -1,4 +1,4 @@
-"""DSGVO-konforme Nutzungs-Analytics: Tabelle + 3 User-Spalten
+"""Nutzungs-Analytics (mit DSGVO-Anforderungen kompatibel): Tabelle + 3 User-Spalten
 
 Revision ID: 022
 Revises: 021
