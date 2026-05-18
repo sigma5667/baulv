@@ -109,12 +109,12 @@ router = APIRouter()
 # Accounts. 8 war pre-v24.4.1 — zu kurz nach heutigen Standards.
 MIN_PASSWORD_LENGTH = 10
 
-# Bewusst kurze Liste — die 20 absolut häufigsten Default-Passwörter
-# laut HIBP-Pwned-Passwords-Statistik 2024. Wir machen KEINEN
-# vollständigen Pwned-Lookup (das würde einen externen API-Call
-# pro Registrierung kosten und Latenz hinzufügen). Diese Liste
-# fängt die "first guess"-Versuche ab; Bot-Schutz ist Aufgabe des
-# Rate-Limits.
+# Bewusst kurze Exact-Match-Liste — die 20 absolut häufigsten
+# Default-Passwörter laut HIBP-Pwned-Passwords-Statistik 2024.
+# Wir machen KEINEN vollständigen Pwned-Lookup (das würde einen
+# externen API-Call pro Registrierung kosten und Latenz hinzufügen).
+# Diese Liste fängt die "first guess"-Versuche ab; Bot-Schutz ist
+# Aufgabe des Rate-Limits.
 _COMMON_PASSWORDS: frozenset[str] = frozenset(
     s.lower() for s in [
         "password", "password1", "password123",
@@ -128,12 +128,76 @@ _COMMON_PASSWORDS: frozenset[str] = frozenset(
 )
 
 
+# v24.4.1-followup — Prefix-Match gegen klassische Bot-Probe-Varianten.
+#
+# Hintergrund: Smoke-Test ergab dass "password12" durch die alte
+# Exact-Match-Liste durchrutschte (zwischen "password1" und
+# "password123" geschlüpft). Die Exact-Liste deckt das nicht ab und
+# wir können nicht jede Variation ("password!", "password2024",
+# "password.", …) enumerieren. Stattdessen blockieren wir jedes
+# Passwort dessen lowercased Form mit einem dieser Präfixe beginnt.
+# Damit fallen Bot-Variations-Pattern wie "password*", "qwerty*",
+# "12345*" pauschal.
+#
+# Trade-off bewusst gewählt: ein User der "passworteichendiele2024"
+# tippt wird auch blockiert — obwohl das Passwort objektiv stark ist
+# (24 Zeichen mit Zahlen). Im Bauträger-Kontext akzeptabel: wer
+# "passwort..." als Anfang schreibt, sollte nochmal nachdenken.
+# Falls die Restriktion sich in der Praxis als zu eng erweist,
+# lässt sich die Liste leicht kürzen.
+#
+# Sortierung: gruppiert nach Familie, intern nach Häufigkeit.
+# Lowercase-Form ist Pflicht — der Match-Code lowered() das Input.
+_COMMON_PASSWORD_PREFIXES: tuple[str, ...] = (
+    # password-Familie (EN + DE)
+    "password",
+    "passwort",
+    # Tastatur-Walks (QWERTY, QWERTZ-DE, AZERTY-FR)
+    "qwerty",
+    "qwertz",
+    "azerty",
+    # Numerische Sequenzen
+    "12345",
+    "11111",
+    "00000",
+    # Account-Defaults / Setup-Passwörter
+    "admin",
+    "letmein",
+    "welcome",
+    "willkommen",
+    # Klassische personalisierte Defaults
+    "monkey",
+    "dragon",
+    "sunshine",
+    "princess",
+    "iloveyou",
+    # Tastatur-Diagonalen / Memorable-Patterns
+    "abc123",
+    "1q2w3e",
+    "asdf",
+    "asdfgh",
+    # AT/DE-typische Schwach-Wörter
+    "geheim",
+    "passwort1",  # explizit als Präfix damit "passwort1abc" auch matched
+)
+
+
 def _validate_password_strength(password: str) -> None:
     """Raise ``HTTPException`` if the password is too weak.
 
     Centralized so register / change-password / reset-confirm all
     apply the same rules. Failure mode: 400 with a German message
     the frontend can display verbatim.
+
+    Drei Stufen:
+      1. Mindest-Länge (``MIN_PASSWORD_LENGTH``)
+      2. Exact-Match gegen ``_COMMON_PASSWORDS`` (Bestandsliste)
+      3. Prefix-Match gegen ``_COMMON_PASSWORD_PREFIXES`` (v24.4.1-
+         followup — fängt Variations wie ``password12``,
+         ``qwerty98765`` etc.)
+
+    Alle drei Stufen fail-fast mit derselben 400-Antwort; die UI
+    rendert die Detail-Message verbatim als Inline-Fehler.
     """
     if len(password) < MIN_PASSWORD_LENGTH:
         raise HTTPException(
@@ -143,7 +207,8 @@ def _validate_password_strength(password: str) -> None:
                 f"Zeichen lang sein."
             ),
         )
-    if password.lower() in _COMMON_PASSWORDS:
+    lowered = password.lower()
+    if lowered in _COMMON_PASSWORDS:
         raise HTTPException(
             status_code=400,
             detail=(
@@ -151,6 +216,21 @@ def _validate_password_strength(password: str) -> None:
                 "Bitte wählen Sie ein weniger geläufiges Passwort."
             ),
         )
+    # v24.4.1-followup — Prefix-Check. Eines der bekannten Bot-Probe-
+    # Präfixe → block, auch wenn das Passwort länger ist als die
+    # Mindestlänge. "password12" / "Password12" / "PASSWORD12"
+    # landen alle hier.
+    for prefix in _COMMON_PASSWORD_PREFIXES:
+        if lowered.startswith(prefix):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Dieses Passwort beginnt mit einem häufigen Schwach-"
+                    "Wort (z.B. ``password``, ``qwerty``, ``12345``). "
+                    "Bitte wählen Sie einen weniger vorhersehbaren "
+                    "Anfang."
+                ),
+            )
 
 
 # v24.3 — Profil-Branding: zulaessige Logo-MIME-Types + Max-Size.

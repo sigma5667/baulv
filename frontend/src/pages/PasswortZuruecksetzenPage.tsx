@@ -185,7 +185,7 @@ export function PasswortZuruecksetzenPage() {
               </button>
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
-              Mindestens 8 Zeichen.
+              Mindestens 10 Zeichen.
             </p>
           </div>
           <div>

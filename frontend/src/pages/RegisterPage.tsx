@@ -187,7 +187,7 @@ export function RegisterPage() {
           </div>
           <div>
             <label className="mb-1 block text-sm font-medium">
-              Passwort * (min. 8 Zeichen)
+              Passwort * (min. 10 Zeichen)
             </label>
             <div className="relative">
               <input
