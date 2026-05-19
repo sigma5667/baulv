@@ -36,6 +36,10 @@ import {
   createRoom,
   bulkCalculateWalls,
 } from "../api/rooms";
+// v24.4.4 — LV-Liste für die "LV-Sync veraltet"-Pille. Ein leeres
+// Array bedeutet "noch kein LV im Projekt"; der Pille-Text wechselt
+// dann von "Zum LV gehen" auf "Jetzt LV erstellen".
+import { fetchProjectLVs } from "../api/lv";
 import { useAuth } from "../hooks/useAuth";
 import {
   normalizeError,
@@ -184,6 +188,28 @@ export function PlanAnalysisPage() {
       ),
     enabled: !!projectId,
   });
+
+  // v24.4.4 — LV-Liste für die "LV-Sync veraltet"-Pille in der
+  // Wandberechnungs-Tabelle. Wir brauchen lediglich "gibt es ≥1 LV in
+  // diesem Projekt?" um zwischen den zwei Pille-Varianten ("Zum LV
+  // gehen" vs. "Jetzt LV erstellen") zu entscheiden. ``placeholderData``
+  // hält das Vorgänger-Resultat während eines Refetch sichtbar, damit
+  // die Pille nicht zwischen den Varianten flackert.
+  const { data: lvs = [], isLoading: isLoadingLvs } = useQuery({
+    queryKey: ["lvs", projectId],
+    queryFn: () => fetchProjectLVs(projectId!),
+    enabled: !!projectId,
+  });
+  const hasLvs = lvs.length > 0;
+
+  // v24.4.4 — Shared filter "Nur aktive Räume zeigen". Lebt am Page-
+  // Level statt in einer Tabelle, damit der Toggle gleichzeitig die
+  // obere "Extrahierte Räume"-Tabelle UND die untere Wandberechnungs-
+  // Tabelle filtert. Default: aus (alle Räume sichtbar) — inaktive
+  // Räume bleiben mit dem ausgegrauten / durchgestrichenen Visual-Cue
+  // in beiden Tabellen präsent, sodass der User sie nicht aus den
+  // Augen verliert.
+  const [showOnlyActive, setShowOnlyActive] = useState(false);
 
   // Plan-id → Plan lookup map for the "Plan"-Spalte the aggregation
   // tables show when no filter is active. Cheap to memoise; recomputes
@@ -649,26 +675,55 @@ export function PlanAnalysisPage() {
           : "Extrahierte Räume";
         return (
           <div className="mb-8">
-            <h2 className="mb-3 text-lg font-semibold">
-              {baseLabel}{" "}
-              <span className="text-base font-normal text-muted-foreground">
-                ({activeCount} aktiv
-                {inactive > 0 && (
-                  <>
-                    {" · "}
-                    <span className="text-amber-700">
-                      {inactive} ausgenommen
-                    </span>
-                  </>
-                )}
-                )
-              </span>
-            </h2>
+            {/* v24.4.4 — Header-Zeile als Flex-Row: Titel links,
+                Filter-Button rechts. Der Filter steht hier (statt
+                in der Wandberechnungs-Tabelle wie pre-v24.4.4),
+                weil er beide Tabellen synchron filtert — die obere
+                "Extrahierte Räume" UND die untere "Wandberechnung".
+                Position oben macht den Toggle entdeckbar und macht
+                klar dass er global wirkt. */}
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <h2 className="text-lg font-semibold">
+                {baseLabel}{" "}
+                <span className="text-base font-normal text-muted-foreground">
+                  ({activeCount} aktiv
+                  {inactive > 0 && (
+                    <>
+                      {" · "}
+                      <span className="text-amber-700">
+                        {inactive} ausgenommen
+                      </span>
+                    </>
+                  )}
+                  )
+                </span>
+              </h2>
+              <button
+                type="button"
+                onClick={() => setShowOnlyActive((s) => !s)}
+                className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium ${
+                  showOnlyActive
+                    ? "border-primary bg-primary/10 text-primary"
+                    : "border-input hover:bg-accent"
+                }`}
+                title={
+                  showOnlyActive
+                    ? "Filter aktiv — zurzeit werden nur aktive Räume in beiden Tabellen gezeigt. Klicken um alle (auch inaktive) wieder einzublenden."
+                    : "Inaktive Räume in beiden Tabellen ausblenden (Übersicht + Wandberechnung)"
+                }
+              >
+                <Filter className="h-3.5 w-3.5" />
+                {showOnlyActive
+                  ? `Nur aktive (${activeCount})`
+                  : "Nur aktive zeigen"}
+              </button>
+            </div>
             <RoomTable
               rooms={rooms}
               projectId={projectId!}
               plansById={plansById}
               showPlanColumn={selectedPlanId === null && plans.length > 1}
+              showOnlyActive={showOnlyActive}
             />
           </div>
         );
@@ -693,6 +748,9 @@ export function PlanAnalysisPage() {
             projectId={projectId!}
             plansById={plansById}
             showPlanColumn={selectedPlanId === null && plans.length > 1}
+            showOnlyActive={showOnlyActive}
+            hasLvs={hasLvs}
+            isLoadingLvs={isLoadingLvs}
           />
         </div>
       )}
@@ -1450,6 +1508,7 @@ function RoomTable({
   projectId,
   plansById,
   showPlanColumn,
+  showOnlyActive = false,
 }: {
   rooms: Room[];
   projectId: string;
@@ -1462,6 +1521,12 @@ function RoomTable({
    * single-plan projects + when a filter is active to keep the
    * table compact. */
   showPlanColumn?: boolean;
+  /** v24.4.4 — when true, render only ``is_active === true`` rooms.
+   * Inaktive Räume verschwinden komplett aus dem Render-Output —
+   * der Page-Level-Toggle steuert beide Tabellen (Räume +
+   * Wandberechnung) synchron, sodass der User in einer
+   * Filter-Aktion beide Listen aufräumt. */
+  showOnlyActive?: boolean;
 }) {
   const queryClient = useQueryClient();
   const toast = useToast();
@@ -1511,6 +1576,11 @@ function RoomTable({
         room_type: "Raumtyp",
         floor_type: "Bodenbelag",
         is_wet_room: "Nassraum-Flag",
+        // v24.4.4 — Aktiv-Toggle. Eigenes Label, damit der Toast
+        // konkret sagt was passiert ist; ohne diesen Eintrag würde
+        // der Fallback "Raum gespeichert." fallen, was bei einem
+        // Toggle weniger informativ ist.
+        is_active: "Aktiv-Status",
       };
       const single =
         keys.length === 1 && labelMap[keys[0]] ? labelMap[keys[0]] : null;
@@ -1618,11 +1688,20 @@ function RoomTable({
               <th className="px-4 py-2 text-center font-medium">Nassraum</th>
               <th className="px-4 py-2 text-center font-medium">Quelle</th>
               <th className="px-4 py-2 text-right font-medium">Konfidenz</th>
+              {/* v24.4.4 — Aktiv-Toggle. Steuert ob der Raum in
+                  Mengenermittlungs-PDF, Bodenflächen-Aggregation und
+                  LV-Sync einbezogen wird. Inaktive Zeilen werden in
+                  beiden Tabellen grau + durchgestrichen gerendert
+                  (siehe Row-className weiter unten). */}
+              <th className="px-4 py-2 text-center font-medium">Aktiv</th>
               <th className="px-4 py-2"></th>
             </tr>
           </thead>
           <tbody className="divide-y">
-            {rooms.map((room) =>
+            {(showOnlyActive
+              ? rooms.filter((r) => r.is_active)
+              : rooms
+            ).map((room) =>
               editingId === room.id ? (
                 <RoomEditRow
                   key={room.id}
@@ -1843,6 +1922,38 @@ function RoomTable({
                     {room.ai_confidence
                       ? `${(room.ai_confidence * 100).toFixed(0)}%`
                       : "-"}
+                  </td>
+                  {/* v24.4.4 — Aktiv-Toggle. Selbes Pattern wie in
+                      der unteren Wandberechnungs-Tabelle, gleicher
+                      ``updateMutation``-Hook (mit ``is_active``-
+                      Label im Toast-LabelMap), gleiches A11y-
+                      Schema. Beim Klick aktualisiert das Backend
+                      ``rooms.is_active`` und die ``["rooms",
+                      projectId]``-Query wird invalidiert — beide
+                      Tabellen lesen aus derselben Query und
+                      re-rendern synchron. */}
+                  <td className="px-4 py-2 text-center">
+                    <label
+                      className="inline-flex cursor-pointer items-center gap-1.5 text-xs"
+                      title={
+                        room.is_active
+                          ? "Raum aus Berechnung ausnehmen (nicht zerstörerisch — Daten bleiben erhalten)"
+                          : "Raum wieder in Berechnung einbeziehen"
+                      }
+                    >
+                      <input
+                        type="checkbox"
+                        checked={room.is_active}
+                        disabled={updateMutation.isPending}
+                        onChange={(e) =>
+                          updateMutation.mutate({
+                            id: room.id,
+                            updates: { is_active: e.target.checked },
+                          })
+                        }
+                        aria-label={`Aktiv-Status für ${room.name}`}
+                      />
+                    </label>
                   </td>
                   <td className="whitespace-nowrap px-4 py-2 text-right">
                     {/* "Bearbeiten" stays for the multi-field
@@ -2148,6 +2259,14 @@ function RoomEditRow({
         <td className="px-2 py-2 text-right text-xs text-muted-foreground">
           —
         </td>
+        {/* v24.4.4 — Spalten-Platzhalter für die neue Aktiv-Spalte
+            (matching ``RoomTable``-Header). Der Aktiv-Toggle ist
+            nur im Read-Only-Modus interaktiv; im Edit-Modus
+            zeigen wir einen Em-Dash damit der Spalten-Layout
+            zwischen Edit- und View-Row identisch bleibt. */}
+        <td className="px-2 py-2 text-center text-xs text-muted-foreground">
+          —
+        </td>
         <td className="whitespace-nowrap px-2 py-2 text-right">
           <button
             type="button"
@@ -2169,8 +2288,9 @@ function RoomEditRow({
       </tr>
       {error && (
         <tr className="bg-destructive/5">
+          {/* v24.4.4 — colSpan +1 für die neue Aktiv-Spalte. */}
           <td
-            colSpan={showPlanColumn ? 11 : 10}
+            colSpan={showPlanColumn ? 12 : 11}
             className="px-4 py-2 text-xs text-destructive"
           >
             Speichern fehlgeschlagen: {error.message}
@@ -2334,6 +2454,9 @@ function WallCalculationTable({
   projectId,
   plansById,
   showPlanColumn,
+  showOnlyActive = false,
+  hasLvs = false,
+  isLoadingLvs = false,
 }: {
   rooms: Room[];
   projectId: string;
@@ -2341,6 +2464,19 @@ function WallCalculationTable({
    * aggregation-view Plan-Spalte. */
   plansById?: Map<string, Plan>;
   showPlanColumn?: boolean;
+  /** v24.4.4 — shared Filter "Nur aktive zeigen". Wird vom
+   * PlanAnalysisPage-Parent kontrolliert, damit Toggle gleichzeitig
+   * obere und untere Tabelle filtert. */
+  showOnlyActive?: boolean;
+  /** v24.4.4 — gibt es mindestens 1 LV im Projekt? Steuert die
+   * LV-Sync-Veraltet-Pille: ``true`` → klickbarer "Zum LV gehen"-
+   * Link, ``false`` → "Jetzt LV erstellen"-Link auf die leere
+   * LV-Liste. */
+  hasLvs?: boolean;
+  /** v24.4.4 — true solange ``GET /lv/projects/{id}/lv`` läuft.
+   * In dem Fenster zeigen wir einen neutralen Pille-Text statt
+   * zwischen den beiden Link-Varianten zu flackern. */
+  isLoadingLvs?: boolean;
 }) {
   const queryClient = useQueryClient();
   const invalidate = () =>
@@ -2384,12 +2520,13 @@ function WallCalculationTable({
     [rooms],
   );
   const [showOnlyIncomplete, setShowOnlyIncomplete] = useState(false);
-  // v24.4.3 — Filter "Nur aktive zeigen". Bei vielen Räumen sehr
-  // praktisch wenn der User mehrere Treppenhäuser / Balkone
-  // deaktiviert hat und nur noch die Berechnungs-relevanten sehen
-  // will. Default: aus (alle anzeigen) — der User soll die inaktiven
-  // Räume in der Tabelle nicht aus den Augen verlieren.
-  const [showOnlyActive, setShowOnlyActive] = useState(false);
+  // v24.4.4 — ``showOnlyActive`` ist jetzt ein Prop vom Page-Parent
+  // (statt lokalem State wie pre-v24.4.4). Damit filtert ein einziger
+  // Toggle beide Tabellen (Räume + Wandberechnung) synchron, statt
+  // dass der User in der Wandberechnung filtert und oben noch alle
+  // Räume sieht. Computed-Werte (``activeRooms``, ``inactiveCount``)
+  // bleiben lokal — sie werden in den Summen und der LV-Sync-Pille
+  // gebraucht und müssen pro Render frisch sein.
   const activeRooms = useMemo(
     () => rooms.filter((r) => r.is_active),
     [rooms],
@@ -2431,30 +2568,12 @@ function WallCalculationTable({
             live here was removed in v22: 2,50 m is the Austrian
             residential default and a soft fallback shouldn't read
             as a failure. The cell-level subtle hint on each row
-            carries the same message without alarming the user. */}
+            carries the same message without alarming the user.
 
-        {/* v24.4.3 — Filter "Nur aktive zeigen". Erscheint immer
-            (auch wenn aktuell kein Raum inaktiv ist), damit der User
-            die Funktion entdeckt. Mit deaktiviertem Button sieht er
-            alle Räume (Default), mit aktiviertem nur die, die ins
-            PDF / LV einfließen. */}
-        <button
-          type="button"
-          onClick={() => setShowOnlyActive((s) => !s)}
-          className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium ${
-            showOnlyActive
-              ? "border-primary bg-primary/10 text-primary"
-              : "border-input hover:bg-accent"
-          }`}
-          title={
-            showOnlyActive
-              ? "Aktuell werden nur aktive Räume gezeigt — klicken um alle anzuzeigen"
-              : "Inaktive Räume ausblenden"
-          }
-        >
-          <Filter className="h-3.5 w-3.5" />
-          {showOnlyActive ? `Nur aktive (${activeRooms.length})` : "Nur aktive zeigen"}
-        </button>
+            v24.4.4 — der "Nur aktive zeigen"-Filter ist von hier
+            in die obere "Extrahierte Räume"-Header-Zeile gewandert.
+            Ein einziger Toggle filtert jetzt beide Tabellen synchron.
+            */}
 
         <button
           type="button"
@@ -2478,11 +2597,25 @@ function WallCalculationTable({
           sind. Bewusst KEIN automatischer LV-Sync (würde gelockte /
           manuell editierte Positionen unerwartet überschreiben);
           stattdessen muss der User selbst entscheiden, wann er
-          synchronisiert. */}
+          synchronisiert.
+
+          v24.4.4 — die Pille schließt jetzt mit einem klickbaren Link
+          ab. Drei Varianten je nach LV-Status:
+            * isLoadingLvs       → neutraler Hinweis ohne Link, bis
+                                   die ``/lv/projects/{id}/lv``-Query
+                                   resolved.
+            * hasLvs === true    → "Zum LV gehen →" auf die LV-Liste
+                                   (`/app/projects/{id}/lv`).
+            * hasLvs === false   → "Jetzt LV erstellen →" auf
+                                   dieselbe Liste, die im Leer-Zustand
+                                   einen "Erstellen"-Button rendert.
+          Beides leitet auf die LV-Liste, weil der Sync-Button auf
+          der jeweiligen LV-Detail-Seite sitzt — der User soll selber
+          das passende LV wählen, falls mehrere existieren. */}
       {inactiveCount > 0 && (
         <div
           role="status"
-          className="mb-3 flex items-start gap-2 rounded-md border border-blue-300 bg-blue-50 px-3 py-2 text-xs text-blue-900"
+          className="mb-3 flex flex-wrap items-start gap-2 rounded-md border border-blue-300 bg-blue-50 px-3 py-2 text-xs text-blue-900"
         >
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-700" />
           <p className="flex-1">
@@ -2492,10 +2625,37 @@ function WallCalculationTable({
             </strong>{" "}
             aus der Berechnung ausgenommen. Die Bodenflächen-Aggregation
             und das Mengenermittlungs-PDF überspringen diese Räume
-            automatisch. Falls ein LV im Projekt existiert, ist die
-            Wandflächen-Synchronisation jetzt veraltet — bitte im LV
-            den Button „LV mit Wandflächen synchronisieren" manuell
-            drücken.
+            automatisch.{" "}
+            {isLoadingLvs ? (
+              <span className="text-blue-700">
+                LV-Status wird geladen…
+              </span>
+            ) : hasLvs ? (
+              <>
+                Falls ein LV im Projekt existiert, ist die Wandflächen-
+                Synchronisation jetzt veraltet — bitte den Button „LV
+                mit Wandflächen synchronisieren" im LV drücken.{" "}
+                <Link
+                  to={`/app/projects/${projectId}/lv`}
+                  className="font-medium text-blue-800 underline hover:text-blue-900"
+                  title="LV-Liste dieses Projekts öffnen"
+                >
+                  Zum LV gehen →
+                </Link>
+              </>
+            ) : (
+              <>
+                Für dieses Projekt existiert noch kein LV — daher ist
+                aktuell auch nichts zu synchronisieren.{" "}
+                <Link
+                  to={`/app/projects/${projectId}/lv`}
+                  className="font-medium text-blue-800 underline hover:text-blue-900"
+                  title="LV-Übersicht öffnen — dort gibt es einen ‚Neu erstellen'-Button"
+                >
+                  Jetzt LV erstellen →
+                </Link>
+              </>
+            )}
           </p>
         </div>
       )}
