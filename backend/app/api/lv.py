@@ -387,12 +387,19 @@ async def run_calculation(
         # ownership/lookup fails, but the explicit branch makes the
         # intent unambiguous.
         raise HTTPException(404, "LV nicht gefunden")
+    # v24.4.3 — zähle nur aktive Räume. Wenn der User alle Räume eines
+    # Projekts deaktiviert hat, ist die Berechnung effektiv leer und
+    # die Vorab-Validierung soll genauso "Bitte zuerst Räume hinzufügen"
+    # warnen wie bei einem komplett leeren Projekt — sonst läuft die
+    # Engine durch und gibt überall 0,00 m² zurück, was den User
+    # verwirren würde.
     room_count_stmt = (
         select(func.count(Room.id))
         .join(Unit, Room.unit_id == Unit.id)
         .join(Floor, Unit.floor_id == Floor.id)
         .join(Building, Floor.building_id == Building.id)
         .where(Building.project_id == lv.project_id)
+        .where(Room.is_active.is_(True))
     )
     room_count = (await db.execute(room_count_stmt)).scalar_one()
     if room_count == 0:
@@ -582,24 +589,41 @@ async def sync_wall_areas(
     try:
         lv = await verify_lv_owner(lv_id, user, db)
 
-        # Load every room in the LV's project with its precomputed
-        # wall-area cache. We don't re-run the calculator here — the
-        # Wandberechnung page is where the user is expected to confirm
-        # heights and trigger the bulk calc. This endpoint just reads
-        # the cached value and fans it out.
+        # Load every *active* room in the LV's project with its
+        # precomputed wall-area cache. We don't re-run the calculator
+        # here — the Wandberechnung page is where the user is expected
+        # to confirm heights and trigger the bulk calc. This endpoint
+        # just reads the cached value and fans it out.
+        #
+        # v24.4.3 — filtert ``Room.is_active = TRUE``. Inaktive Räume
+        # tragen ihre Wand-/Decken-/Bodenflächen NICHT zur LV-Position-
+        # Synchronisation bei. Der User muss nach einem Toggle den
+        # "LV mit Wandflächen synchronisieren"-Button manuell drücken,
+        # um die aktualisierten Summen in die Positionen zu ziehen;
+        # die UI zeigt nach dem Toggle einen "LV-Sync veraltet"-
+        # Hinweis. Ein Auto-Sync würde gelockte/manuell editierte
+        # Positionen unerwartet überschreiben.
         stmt = (
             select(Room)
             .join(Unit).join(Floor).join(Building)
             .where(Building.project_id == lv.project_id)
+            .where(Room.is_active.is_(True))
         )
         rooms = (await db.execute(stmt)).scalars().all()
 
         if not rooms:
+            # v24.4.3 — kann jetzt auch bedeuten "es gibt Räume, aber
+            # alle sind deaktiviert". Die Fehlermeldung ist bewusst
+            # generisch, weil der User in dem Fall den Toggle auf der
+            # Räume-Tabelle sieht und selbst weiß, was er deaktiviert
+            # hat. Hinweis auf "Plananalyse" bleibt für den
+            # ursprünglichen "noch nie Räume erfasst"-Fall.
             raise HTTPException(
                 400,
-                "Für dieses Projekt wurden noch keine Räume erfasst. Bitte "
-                "zuerst die Plananalyse durchführen oder Räume manuell "
-                "anlegen, bevor Wandflächen übernommen werden können.",
+                "Für dieses Projekt sind keine aktiven Räume vorhanden. "
+                "Bitte zuerst die Plananalyse durchführen, Räume manuell "
+                "anlegen oder mindestens einen Raum re-aktivieren, bevor "
+                "Wandflächen übernommen werden können.",
             )
 
         total_wall = sum(

@@ -101,11 +101,18 @@ def _code_to_sort_order(code: str) -> int:
 
 
 async def load_rooms_for_project(project_id: UUID, db: AsyncSession) -> list[RoomWithOpenings]:
-    """Load all rooms with openings for a project, building the hierarchy."""
+    """Load all *active* rooms with openings for a project, building the hierarchy.
+
+    v24.4.3 — filtert ``Room.is_active = TRUE``. Inaktive Räume sollen
+    nicht in die LV-Mengen-Berechnung einfließen; die Filterung passiert
+    auf der Query-Ebene (statt erst in Python) damit auch große Räume-
+    Mengen schon im DB-Layer verkleinert werden.
+    """
     stmt = (
         select(Room)
         .join(Unit).join(Floor).join(Building)
         .where(Building.project_id == project_id)
+        .where(Room.is_active.is_(True))
         .options(selectinload(Room.openings), selectinload(Room.unit))
     )
     result = await db.execute(stmt)

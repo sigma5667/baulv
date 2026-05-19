@@ -66,6 +66,15 @@ export interface Room {
   is_wet_room: boolean;
   has_dachschraege: boolean;
   is_staircase: boolean;
+  /** v24.4.3 — User-controlled "in Aggregation einbeziehen?"-Flag.
+   *  ``true``  = Raum fließt in Mengenermittlungs-PDF, Bodenflächen-
+   *              Aggregation, LV-Wandflächen-Sync und MCP-Berechnungen
+   *              ein.
+   *  ``false`` = Raum bleibt im UI sichtbar (grau + durchgestrichen)
+   *              und wird in allen Berechnungs-Pfaden ausgeklammert.
+   *  Nicht destruktiv — Daten bleiben erhalten, Wand-Calc-Cache wird
+   *  weitergeführt, Re-Aktivierung ist ein Toggle weit entfernt. */
+  is_active: boolean;
   /** Gross wall area (perimeter × height × factor). Null until calculated. */
   wall_area_gross_m2: number | null;
   /** Net wall area (gross minus openings ≥ 2.5 m² when deductions enabled). */

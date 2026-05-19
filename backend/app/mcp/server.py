@@ -786,7 +786,14 @@ async def _tool_get_project_structure(
 
 
 def _room_summary(room: Room) -> dict[str, Any]:
-    """Common projection for ``get_project_structure`` and ``list_rooms``."""
+    """Common projection for ``get_project_structure`` and ``list_rooms``.
+
+    v24.4.3 — ``is_active`` is exposed so agents can see the full set
+    of rooms (active + inactive) and reason about which ones the user
+    has excluded from aggregation. The MCP tool deliberately does NOT
+    filter inactive rooms; downstream callers that compute sums must
+    do so themselves by checking ``is_active``.
+    """
     return {
         "id": str(room.id),
         "name": room.name,
@@ -798,6 +805,7 @@ def _room_summary(room: Room) -> dict[str, Any]:
         "is_wet_room": room.is_wet_room,
         "is_staircase": room.is_staircase,
         "has_dachschraege": room.has_dachschraege,
+        "is_active": room.is_active,
         "ceiling_height_source": room.ceiling_height_source,
         "wall_area_gross_m2": room.wall_area_gross_m2,
         "wall_area_net_m2": room.wall_area_net_m2,

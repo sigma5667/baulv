@@ -57,6 +57,11 @@ class RoomCreate(BaseModel):
     has_dachschraege: bool = False
     is_staircase: bool = False
     deductions_enabled: bool = True
+    # v24.4.3 — see Room.is_active model docstring. New rooms default
+    # to active so the Vision pipeline (and the manual create-room
+    # flow) never produce silently-skipped rows. Toggle is a user-
+    # facing action on the rooms table.
+    is_active: bool = True
     openings: list[OpeningCreate] = []
 
 
@@ -76,6 +81,10 @@ class RoomUpdate(BaseModel):
     has_dachschraege: bool | None = None
     is_staircase: bool | None = None
     deductions_enabled: bool | None = None
+    # v24.4.3 — Toggle aus der Räume-Tabelle. ``None`` bedeutet "nicht
+    # geändert" (FastAPI ``exclude_unset=True`` lässt den Bool dann
+    # unangetastet); ``True``/``False`` schreibt den neuen Zustand.
+    is_active: bool | None = None
 
 
 class RoomResponse(BaseModel):
@@ -96,6 +105,10 @@ class RoomResponse(BaseModel):
     is_wet_room: bool
     has_dachschraege: bool
     is_staircase: bool
+    # v24.4.3 — Aktiv-Flag. True = fließt in Aggregation/PDF/LV ein;
+    # False = bleibt im UI sichtbar (grau + durchgestrichen) aber wird
+    # aus allen Berechnungs-Pfaden ausgeklammert.
+    is_active: bool = True
     # Wall-calculation cache. Null until the calculation has been run
     # (freshly created manual rooms sit in this state); populated by
     # the plan-analysis pipeline on ingest and by the

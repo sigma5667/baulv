@@ -116,6 +116,20 @@ class Room(Base):
     is_wet_room: Mapped[bool] = mapped_column(Boolean, default=False)
     has_dachschraege: Mapped[bool] = mapped_column(Boolean, default=False)
     is_staircase: Mapped[bool] = mapped_column(Boolean, default=False)
+    # v24.4.3 — User-controlled "in Aggregation einbeziehen?"-Flag.
+    # ``True`` = Raum fließt in Mengenermittlungs-PDF, Bodenflächen-
+    # Aggregation, LV-Wandflächen-Sync und MCP-Berechnungen ein.
+    # ``False`` = Raum bleibt gespeichert und in der UI sichtbar, wird
+    # aber überall in den Berechnungs-Pfaden ausgeklammert.
+    #
+    # Bewusst NICHT destruktiv: Daten bleiben erhalten, Wand-Calc-
+    # Cache wird weitergeführt, Re-Aktivierung ist ein Toggle weit
+    # entfernt. Default ``True`` schützt davor, dass Pipeline-erzeugte
+    # Räume versehentlich übersprungen werden — der User muss aktiv
+    # deaktivieren.
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true", nullable=False
+    )
     # Where the ceiling height came from so the UI can warn when we've
     # fallen back to a default. Values: ``schnitt`` (from a cross-section
     # plan), ``grundriss`` (noted on the floorplan), ``manual`` (user

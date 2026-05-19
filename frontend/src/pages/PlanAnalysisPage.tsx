@@ -634,22 +634,45 @@ export function PlanAnalysisPage() {
         </div>
       )}
 
-      {/* Extracted rooms table */}
-      {rooms.length > 0 && (
-        <div className="mb-8">
-          <h2 className="mb-3 text-lg font-semibold">
-            {selectedPlan
-              ? `Räume aus „${selectedPlan.filename}" (${rooms.length})`
-              : `Extrahierte Räume (${rooms.length})`}
-          </h2>
-          <RoomTable
-            rooms={rooms}
-            projectId={projectId!}
-            plansById={plansById}
-            showPlanColumn={selectedPlanId === null && plans.length > 1}
-          />
-        </div>
-      )}
+      {/* Extracted rooms table.
+       *
+       * v24.4.3 — Header-Counter zeigt "X aktive Räume" und (falls
+       * ausgenommene existieren) zusätzlich "Y ausgenommen" als
+       * dezenter Sub-Counter. Wenn alle Räume aktiv sind, fällt der
+       * Sub-Counter weg und das Label bleibt schlank.
+       */}
+      {rooms.length > 0 && (() => {
+        const activeCount = rooms.filter((r) => r.is_active).length;
+        const inactive = rooms.length - activeCount;
+        const baseLabel = selectedPlan
+          ? `Räume aus „${selectedPlan.filename}"`
+          : "Extrahierte Räume";
+        return (
+          <div className="mb-8">
+            <h2 className="mb-3 text-lg font-semibold">
+              {baseLabel}{" "}
+              <span className="text-base font-normal text-muted-foreground">
+                ({activeCount} aktiv
+                {inactive > 0 && (
+                  <>
+                    {" · "}
+                    <span className="text-amber-700">
+                      {inactive} ausgenommen
+                    </span>
+                  </>
+                )}
+                )
+              </span>
+            </h2>
+            <RoomTable
+              rooms={rooms}
+              projectId={projectId!}
+              plansById={plansById}
+              showPlanColumn={selectedPlanId === null && plans.length > 1}
+            />
+          </div>
+        );
+      })()}
 
       {/* Wall-area calculation — runs on the same rooms table but shows
           the numbers that will flow into paint/wallpaper/tiles/plaster
@@ -1616,7 +1639,21 @@ function RoomTable({
                   showPlanColumn={showPlanColumn}
                 />
               ) : (
-                <tr key={room.id} className="hover:bg-muted/30">
+                // v24.4.3 — inaktive Räume optisch zurücknehmen
+                // (gleicher Effekt wie in der Wandberechnungs-Tabelle
+                // weiter unten). Toggle des Aktiv-Status erfolgt nicht
+                // hier, sondern im Wandberechnungs-Block — aber die
+                // Visualisierung muss konsistent sein, damit der User
+                // beide Tabellen für denselben Raum gleich gerendert
+                // sieht.
+                <tr
+                  key={room.id}
+                  className={
+                    room.is_active
+                      ? "hover:bg-muted/30"
+                      : "bg-muted/10 opacity-50 [&_td]:line-through"
+                  }
+                >
                   {/* v23.7 (Bug 3) — clickable name. Switches to an
                       input on click, commits on Enter/blur, reverts
                       on Escape. Same UX semantics as the numeric
@@ -2347,18 +2384,42 @@ function WallCalculationTable({
     [rooms],
   );
   const [showOnlyIncomplete, setShowOnlyIncomplete] = useState(false);
-  const visibleRooms = showOnlyIncomplete ? incompleteRooms : rooms;
+  // v24.4.3 — Filter "Nur aktive zeigen". Bei vielen Räumen sehr
+  // praktisch wenn der User mehrere Treppenhäuser / Balkone
+  // deaktiviert hat und nur noch die Berechnungs-relevanten sehen
+  // will. Default: aus (alle anzeigen) — der User soll die inaktiven
+  // Räume in der Tabelle nicht aus den Augen verlieren.
+  const [showOnlyActive, setShowOnlyActive] = useState(false);
+  const activeRooms = useMemo(
+    () => rooms.filter((r) => r.is_active),
+    [rooms],
+  );
+  const inactiveCount = rooms.length - activeRooms.length;
+
+  // Filter-Kombination: erst der Mängel-Filter (Fläche/Umfang fehlt),
+  // dann der Aktiv-Filter darauf. Die beiden sind orthogonal — ein
+  // User kann sich auf "unvollständige UND aktive" Räume fokussieren
+  // wenn er nur das nachpflegen will, was wirklich ins PDF kommt.
+  const filteredByIncomplete = showOnlyIncomplete ? incompleteRooms : rooms;
+  const visibleRooms = showOnlyActive
+    ? filteredByIncomplete.filter((r) => r.is_active)
+    : filteredByIncomplete;
 
   // Totals row — handy for the estimator to sanity-check the whole
   // project at a glance. Sum over net because that's what flows into
-  // the LV; nulls collapse to 0. v24.3.2: bewusst auf ``rooms``
-  // (alle Räume), nicht ``visibleRooms`` — die Summe ist die
-  // Projekt-Gesamtsumme, nicht die Filter-Summe.
-  const totalNet = rooms.reduce(
+  // the LV; nulls collapse to 0.
+  //
+  // v24.4.3 — Summen rechnen nur über AKTIVE Räume. Inaktive Räume
+  // fließen auch nicht ins Mengenermittlungs-PDF und nicht in den
+  // LV-Sync, daher wäre eine Summe inklusive Inaktiver hier
+  // irreführend. (Pre-v24.4.3 war's bewusst ``rooms`` weil der
+  // Mängelfilter nur die Anzeige, nicht die Berechnung änderte —
+  // aber das Aktiv-Flag ändert tatsächlich die Berechnung.)
+  const totalNet = activeRooms.reduce(
     (acc, r) => acc + (r.wall_area_net_m2 ?? 0),
     0
   );
-  const totalGross = rooms.reduce(
+  const totalGross = activeRooms.reduce(
     (acc, r) => acc + (r.wall_area_gross_m2 ?? 0),
     0
   );
@@ -2371,6 +2432,30 @@ function WallCalculationTable({
             residential default and a soft fallback shouldn't read
             as a failure. The cell-level subtle hint on each row
             carries the same message without alarming the user. */}
+
+        {/* v24.4.3 — Filter "Nur aktive zeigen". Erscheint immer
+            (auch wenn aktuell kein Raum inaktiv ist), damit der User
+            die Funktion entdeckt. Mit deaktiviertem Button sieht er
+            alle Räume (Default), mit aktiviertem nur die, die ins
+            PDF / LV einfließen. */}
+        <button
+          type="button"
+          onClick={() => setShowOnlyActive((s) => !s)}
+          className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium ${
+            showOnlyActive
+              ? "border-primary bg-primary/10 text-primary"
+              : "border-input hover:bg-accent"
+          }`}
+          title={
+            showOnlyActive
+              ? "Aktuell werden nur aktive Räume gezeigt — klicken um alle anzuzeigen"
+              : "Inaktive Räume ausblenden"
+          }
+        >
+          <Filter className="h-3.5 w-3.5" />
+          {showOnlyActive ? `Nur aktive (${activeRooms.length})` : "Nur aktive zeigen"}
+        </button>
+
         <button
           type="button"
           onClick={() => bulkMutation.mutate()}
@@ -2386,6 +2471,34 @@ function WallCalculationTable({
           Wandflächen berechnen
         </button>
       </div>
+
+      {/* v24.4.3 — LV-Sync-Veraltet Info-Pille. Erscheint sobald min.
+          1 Raum deaktiviert ist; ohne diesen Hinweis würde der User
+          nicht sehen, dass die LV-Wandflächen-Summen jetzt veraltet
+          sind. Bewusst KEIN automatischer LV-Sync (würde gelockte /
+          manuell editierte Positionen unerwartet überschreiben);
+          stattdessen muss der User selbst entscheiden, wann er
+          synchronisiert. */}
+      {inactiveCount > 0 && (
+        <div
+          role="status"
+          className="mb-3 flex items-start gap-2 rounded-md border border-blue-300 bg-blue-50 px-3 py-2 text-xs text-blue-900"
+        >
+          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-700" />
+          <p className="flex-1">
+            <strong>
+              {inactiveCount}{" "}
+              {inactiveCount === 1 ? "Raum" : "Räume"}
+            </strong>{" "}
+            aus der Berechnung ausgenommen. Die Bodenflächen-Aggregation
+            und das Mengenermittlungs-PDF überspringen diese Räume
+            automatisch. Falls ein LV im Projekt existiert, ist die
+            Wandflächen-Synchronisation jetzt veraltet — bitte im LV
+            den Button „LV mit Wandflächen synchronisieren" manuell
+            drücken.
+          </p>
+        </div>
+      )}
 
       {bulkError && (
         <div
@@ -2463,14 +2576,35 @@ function WallCalculationTable({
               <th className="px-3 py-2 text-right font-medium">
                 KI-Konfidenz
               </th>
+              {/* v24.4.3 — Aktiv-Toggle (is_active). Steuert ob der
+                  Raum in Mengenermittlungs-PDF, Bodenflächen-
+                  Aggregation und LV-Sync einbezogen wird. Inaktive
+                  Zeilen werden komplett grau + durchgestrichen
+                  dargestellt (siehe Row-className unten), damit der
+                  User auf einen Blick sieht was nicht zählt — aber
+                  die Daten sind weiterhin im Browser-State vorhanden
+                  und können per Toggle re-aktiviert werden. */}
+              <th className="px-3 py-2 text-center font-medium">Aktiv</th>
             </tr>
           </thead>
           <tbody className="divide-y">
             {visibleRooms.map((room) => {
               const isDefault = room.ceiling_height_source === "default";
               const perimeterHint = perimeterAnnotation(room);
+              // v24.4.3 — inaktive Räume optisch zurücknehmen. Bewusst
+              // NICHT ``display:none`` (das wäre der Filter-Job) — die
+              // Zeile bleibt sichtbar, aber halbtransparent und mit
+              // Durchstreichung, damit der User auf einen Blick sieht
+              // dass dieser Raum gerade nicht in die Berechnung
+              // einfließt. Der Aktiv-Toggle in der letzten Spalte
+              // bleibt voll opaque (per ``[&_td:last-child]:opacity-100``-
+              // Override wäre möglich, aber 50%-Toggle ist auch
+              // ablesbar und Sehrechte gehen nicht verloren).
+              const rowClass = room.is_active
+                ? "hover:bg-muted/30"
+                : "bg-muted/10 opacity-50 [&_td:not(:last-child)]:line-through";
               return (
-                <tr key={room.id} className="hover:bg-muted/30">
+                <tr key={room.id} className={rowClass}>
                   <td className="px-3 py-2 font-medium">
                     {room.name}
                     {room.is_staircase && (
@@ -2650,6 +2784,42 @@ function WallCalculationTable({
                       <span className="text-xs text-muted-foreground">—</span>
                     )}
                   </td>
+                  {/* v24.4.3 — Aktiv-Toggle. Selbes Pattern wie der
+                      Abzüge-Toggle weiter oben in der Tabelle, daher
+                      gleicher ``toggleMutation``-Hook und gleiche
+                      Loading-/A11y-Behandlung. Beim Klick wird
+                      ``is_active`` per PUT /rooms/{id} aktualisiert;
+                      die LV-Wandflächen-Sync wird NICHT automatisch
+                      gefeuert (siehe Info-Pille oben in der Sektion).
+                      */}
+                  <td className="px-3 py-2 text-center">
+                    <label
+                      className="inline-flex cursor-pointer items-center gap-1.5 text-xs"
+                      title={
+                        room.is_active
+                          ? "Raum aus Berechnung ausnehmen (nicht zerstörerisch — Daten bleiben erhalten)"
+                          : "Raum wieder in Berechnung einbeziehen"
+                      }
+                    >
+                      <input
+                        type="checkbox"
+                        checked={room.is_active}
+                        disabled={toggleMutation.isPending}
+                        onChange={(e) =>
+                          toggleMutation.mutate({
+                            id: room.id,
+                            updates: {
+                              is_active: e.target.checked,
+                            },
+                          })
+                        }
+                        aria-label={`Aktiv-Status für ${room.name}`}
+                      />
+                      <span className="text-muted-foreground">
+                        {room.is_active ? "aktiv" : "inaktiv"}
+                      </span>
+                    </label>
+                  </td>
                 </tr>
               );
             })}
@@ -2660,10 +2830,20 @@ function WallCalculationTable({
                   Spalte) Spalten bis zur Brutto-m²-Zelle.
                   v24.3.2 — letzter Trailing-colSpan ist 3 (statt 2),
                   weil eine KI-Konfidenz-Spalte rechts dazugekommen
-                  ist (Raumtyp + Faktor + KI-Konfidenz). */}
+                  ist (Raumtyp + Faktor + KI-Konfidenz).
+                  v24.4.3 — Trailing-colSpan ist jetzt 4 (Raumtyp +
+                  Faktor + KI-Konfidenz + Aktiv); und der Counter
+                  zählt nur AKTIVE Räume, weil die Summen oben auch
+                  nur die aktiven enthalten. */}
               <td className="px-3 py-2" colSpan={showPlanColumn ? 5 : 4}>
-                Summe über {rooms.length}{" "}
-                {rooms.length === 1 ? "Raum" : "Räume"}
+                Summe über {activeRooms.length}{" "}
+                {activeRooms.length === 1 ? "aktiven Raum" : "aktive Räume"}
+                {inactiveCount > 0 && (
+                  <span className="ml-2 text-xs font-normal text-muted-foreground">
+                    ({inactiveCount}{" "}
+                    {inactiveCount === 1 ? "ausgenommen" : "ausgenommen"})
+                  </span>
+                )}
               </td>
               <td className="px-3 py-2 text-right font-mono">
                 {fmt2(totalGross)}
@@ -2672,7 +2852,7 @@ function WallCalculationTable({
               <td className="px-3 py-2 text-right font-mono">
                 {fmt2(totalNet)}
               </td>
-              <td className="px-3 py-2" colSpan={3} />
+              <td className="px-3 py-2" colSpan={4} />
             </tr>
           </tfoot>
         </table>

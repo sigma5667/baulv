@@ -201,7 +201,21 @@ async def export_mengenermittlung_pdf(
 
     # Flatten the room tree, carrying the floor/unit context for each
     # room so the table cells can show "Wohnzimmer · EG · Top 1".
-    rooms_with_context = list(_iter_rooms(project))
+    all_rooms_with_context = list(_iter_rooms(project))
+
+    # v24.4.3 — Split nach ``is_active``-Flag. Nur aktive Räume fließen
+    # in Übersichtstabelle, Bodenflächen-Aggregation, Detail-Nachweise
+    # und Summen ein. Inaktive Räume erscheinen ganz am Ende in der
+    # "Aus der Berechnung ausgenommen"-Sektion mit Transparenz-Hinweis,
+    # damit der PDF-Empfänger (Bauträger, Behörde) explizit sieht
+    # welche Räume der Anwender ausgeklammert hat — sicherer gegen
+    # "ich dachte der Raum war drin"-Disputes als unsichtbares Weglassen.
+    rooms_with_context = [
+        (r, f, u) for (r, f, u) in all_rooms_with_context if r.is_active
+    ]
+    excluded_rooms_with_context = [
+        (r, f, u) for (r, f, u) in all_rooms_with_context if not r.is_active
+    ]
 
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -237,6 +251,16 @@ async def export_mengenermittlung_pdf(
         _append_floor_covering_section(story, rooms_with_context, styles)
         _append_room_details(story, rooms_with_context, styles)
         _append_summary(story, rooms_with_context, styles)
+
+    # v24.4.3 — "Aus der Berechnung ausgenommen"-Sektion. Bewusst NACH
+    # den Summen platziert: der primäre Inhalt (Aggregation, Detail,
+    # Summen) steht oben, die Transparenz-Notiz unten als
+    # Footnote-artige Information. Funktion entscheidet selbst, ob
+    # die Sektion gerendert wird (skippt komplett, wenn keine
+    # inaktiven Räume existieren — das ist der Normalfall).
+    _append_excluded_rooms_section(
+        story, excluded_rooms_with_context, styles
+    )
 
     # v24.3 — Two-pass page numbering via NumberedCanvas so the
     # footer can render "Seite X von N" instead of the bare
@@ -1337,6 +1361,79 @@ def _append_summary(
         )
     )
     story.append(summary_table)
+
+
+# ---------------------------------------------------------------------------
+# v24.4.3 — "Aus der Berechnung ausgenommen"-Sektion
+# ---------------------------------------------------------------------------
+#
+# Räume mit ``is_active = False`` werden nicht stillschweigend
+# verschluckt, sondern am Ende des PDFs explizit aufgeführt. So sieht
+# der PDF-Empfänger (Bauträger, Behörde, Sub-Unternehmer) auf einen
+# Blick, was bewusst ausgeklammert wurde — und kann beim Anwender
+# nachfragen, falls eine Auslassung überrascht. Bewusst KEINE Flächen/
+# Volumen/Wandwerte hier — das würde suggerieren, dass die Räume doch
+# in irgendeiner Summe stecken. Die Sektion ist reine Transparenz-
+# Information, keine Mini-Aggregation.
+
+
+def _append_excluded_rooms_section(
+    story: list,
+    excluded_rooms_with_context: list[tuple[Room, Floor | None, Unit | None]],
+    styles,
+) -> None:
+    """Render the inactive-rooms transparency block.
+
+    Skipped entirely when no room in the project has ``is_active = False``
+    (the common case after a fresh Plan-Analyse). When inactive rooms
+    exist, we render a section header, a single-paragraph note that
+    explains what "ausgenommen" means and that no data was lost, and a
+    bulleted list of room names with their floor/unit context.
+    """
+    if not excluded_rooms_with_context:
+        return
+
+    count = len(excluded_rooms_with_context)
+
+    story.append(Spacer(1, 8 * mm))
+    story.append(
+        Paragraph(
+            "Aus der Berechnung ausgenommen", styles["MESection"]
+        )
+    )
+    story.append(
+        Paragraph(
+            f"Folgende {count} "
+            f"{'Raum wurde' if count == 1 else 'Räume wurden'} "
+            "vom Anwender bewusst aus der Mengenermittlung "
+            "herausgenommen und fließen <b>nicht</b> in die obige "
+            "Übersicht, die Bodenflächen-Aggregation, die Summen oder "
+            "die Berechnungs-Nachweise ein. Die Räume bleiben in der "
+            "Plattform gespeichert und können jederzeit re-aktiviert "
+            "werden — keine Daten gehen verloren.",
+            styles["MEMeta"],
+        )
+    )
+    story.append(Spacer(1, 3 * mm))
+
+    for room, floor, unit in excluded_rooms_with_context:
+        label = _safe(room.name or "—")
+        context_parts: list[str] = []
+        if floor is not None:
+            context_parts.append(_floor_label(floor))
+        if unit is not None and getattr(unit, "name", None):
+            context_parts.append(_safe(unit.name))
+        context = (
+            " · ".join(context_parts)
+            if context_parts
+            else "ohne Geschoss-Zuordnung"
+        )
+        story.append(
+            Paragraph(
+                f"• <b>{label}</b> &nbsp; <font color='#6b7280'>({context})</font>",
+                styles["MEMeta"],
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
