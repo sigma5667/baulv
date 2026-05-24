@@ -439,6 +439,18 @@ async def analyze_plan(plan_id: UUID, db: AsyncSession) -> dict:
         if total_rooms == 0:
             plan.analysis_status = "failed"
             await db.flush()
+            # v24.4.5 — KI-``notes`` einsammeln (das Feld setzt die KI
+            # laut Prompt NUR im 0-Räume-Fall, z.B. "wirkt wie ein
+            # Lageplan"). So bekommt der User einen konkreten Grund
+            # statt der generischen Meldung. Dedupliziert + auf die
+            # ersten 3 begrenzt, damit ein 20-seitiges PDF die Meldung
+            # nicht sprengt.
+            ki_notes: list[str] = []
+            for _pn, r in all_results:
+                if isinstance(r, dict) and r.get("notes"):
+                    note = str(r["notes"]).strip()
+                    if note and note not in ki_notes:
+                        ki_notes.append(note)
             # Assemble a specific message so we're not hiding the cause.
             if page_errors:
                 detail = (
@@ -453,6 +465,8 @@ async def analyze_plan(plan_id: UUID, db: AsyncSession) -> dict:
                     "Bitte prüfen Sie, ob es sich um einen Grundriss mit "
                     "lesbaren Raumbezeichnungen und Maßangaben handelt."
                 )
+                if ki_notes:
+                    detail += " Hinweis der KI: " + " / ".join(ki_notes[:3])
             raise PlanAnalysisError(detail)
 
         plan.analysis_status = "completed"
@@ -816,7 +830,7 @@ async def _extract_rooms_from_image(
 
     try:
         json_str = _extract_json_blob(response_text)
-        return json.loads(json_str)
+        parsed = json.loads(json_str)
     except (json.JSONDecodeError, ValueError) as e:
         # Log a truncated preview so we can diagnose without flooding
         # logs on big responses.
@@ -828,6 +842,40 @@ async def _extract_rooms_from_image(
             preview,
         )
         return None
+
+    # v24.4.5 — Diagnose-Logging. Token-Usage immer; bei 0 Räumen
+    # zusätzlich eine WARNING mit der ROHEN Antwort + dem ``notes``-
+    # Feld. Vorher war genau dieser Fall (valides JSON, aber
+    # ``units == []``) ein blinder Fleck: das Ergebnis wurde still als
+    # 0-Räume gewertet, ohne dass im Log stand, was die KI eigentlich
+    # zurückgegeben hat. Mit dem Prompt-``notes``-Feld (siehe
+    # room_extraction.txt, Sektion "WENN DU KEINE RÄUME FINDEST")
+    # liefert die KI im Leer-Fall jetzt eine Begründung mit, die hier
+    # geloggt und in die User-Fehlermeldung gehoben wird.
+    usage = getattr(message, "usage", None)
+    in_tok = getattr(usage, "input_tokens", None)
+    out_tok = getattr(usage, "output_tokens", None)
+    room_count = _count_extracted_rooms(parsed)
+    logger.info(
+        "vision.page_parsed page=%d rooms=%d input_tokens=%s output_tokens=%s",
+        page_number,
+        room_count,
+        in_tok,
+        out_tok,
+    )
+    if room_count == 0:
+        notes = parsed.get("notes") if isinstance(parsed, dict) else None
+        raw_preview = response_text[:2000].replace("\n", "\\n")
+        logger.warning(
+            "vision.zero_rooms page=%d notes=%r input_tokens=%s "
+            "output_tokens=%s raw=%s",
+            page_number,
+            notes,
+            in_tok,
+            out_tok,
+            raw_preview,
+        )
+    return parsed
 
 
 def _extract_json_blob(text: str) -> str:
@@ -851,6 +899,32 @@ def _extract_json_blob(text: str) -> str:
     if first != -1 and last != -1 and last > first:
         return text[first : last + 1]
     return text.strip()
+
+
+def _count_extracted_rooms(parsed: object) -> int:
+    """Count rooms across all units in a Vision extraction result.
+
+    v24.4.5 — extracted as a pure helper so the 0-rooms diagnose-
+    logging in ``_extract_rooms_from_image`` is unit-testable without
+    mocking the Anthropic SDK. Deliberately tolerant of malformed
+    shapes (non-dict input, missing/non-list ``units``, units without
+    a ``rooms`` list) — a counting helper that feeds a log line must
+    never raise, otherwise it would convert a "0 rooms" diagnostic
+    into a hard pipeline failure.
+    """
+    if not isinstance(parsed, dict):
+        return 0
+    units = parsed.get("units")
+    if not isinstance(units, list):
+        return 0
+    total = 0
+    for unit in units:
+        if not isinstance(unit, dict):
+            continue
+        rooms = unit.get("rooms")
+        if isinstance(rooms, list):
+            total += len(rooms)
+    return total
 
 
 async def _store_extraction_result(

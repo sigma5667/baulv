@@ -107,3 +107,101 @@ def test_format_page_error_handles_empty_message():
     assert out == "Seite 2: RuntimeError"
     assert "—" not in out
     assert not out.endswith(" ")
+
+
+# ---------------------------------------------------------------------------
+# v24.4.5 — Room-Count-Helper + notes-Durchreichung
+# ---------------------------------------------------------------------------
+#
+# Hintergrund: cluttered-Pläne (voll mit Möbeln/Maßketten) lieferten
+# manchmal valides JSON mit ``units: []`` zurück — 0 Räume, aber kein
+# Fehler. Dieser Fall war im Log ein blinder Fleck. v24.4.5:
+#
+#   * ``_count_extracted_rooms`` ist die pure Zähl-Logik, die das
+#     0-Räume-Diagnose-Logging speist. Hier direkt getestet, ohne den
+#     Anthropic-SDK zu mocken.
+#   * Das KI-``notes``-Feld (im Prompt nur für den 0-Räume-Fall) muss
+#     den Parse-Pfad unverändert überstehen, damit es im Log und in
+#     der User-Fehlermeldung landen kann. Geprüft über die echte
+#     Parse-Kette ``_extract_json_blob`` → ``json.loads``.
+
+
+def test_count_extracted_rooms_zero_for_empty_units():
+    """Der Kernfall: valides JSON, aber leere units → 0. Genau das
+    triggert das ``vision.zero_rooms``-Warning + die KI-notes-Meldung."""
+    from app.plan_analysis.pipeline import _count_extracted_rooms
+
+    assert _count_extracted_rooms({"floor_name": "EG", "units": []}) == 0
+
+
+def test_count_extracted_rooms_counts_across_units():
+    """Räume werden über mehrere Einheiten hinweg aufsummiert."""
+    from app.plan_analysis.pipeline import _count_extracted_rooms
+
+    parsed = {
+        "units": [
+            {"unit_name": "W1", "rooms": [{"room_name": "Bad"}, {"room_name": "WC"}]},
+            {"unit_name": "W2", "rooms": [{"room_name": "Wohnen"}]},
+        ]
+    }
+    assert _count_extracted_rooms(parsed) == 3
+
+
+def test_count_extracted_rooms_tolerates_malformed_shapes():
+    """Der Helper speist nur ein Log-Line — er darf NIE werfen, sonst
+    würde aus einer 0-Räume-Diagnose ein harter Pipeline-Absturz.
+    Alle kaputten Formen kollabieren auf 0."""
+    from app.plan_analysis.pipeline import _count_extracted_rooms
+
+    assert _count_extracted_rooms(None) == 0
+    assert _count_extracted_rooms("nonsense") == 0
+    assert _count_extracted_rooms({}) == 0
+    assert _count_extracted_rooms({"units": None}) == 0
+    assert _count_extracted_rooms({"units": "x"}) == 0
+    # Einheit ohne rooms-Liste / mit null rooms.
+    assert _count_extracted_rooms({"units": [{"unit_name": "W1"}]}) == 0
+    assert _count_extracted_rooms({"units": [{"rooms": None}]}) == 0
+    # Gemischt: eine kaputte + eine gültige Einheit → nur die gültige zählt.
+    assert (
+        _count_extracted_rooms(
+            {"units": ["garbage", {"rooms": [{"room_name": "Bad"}]}]}
+        )
+        == 1
+    )
+
+
+def test_notes_field_survives_parse_chain_fenced():
+    """notes-Durchreichung: ein ```json-gefenctes Vision-Resultat mit
+    ``notes`` muss nach ``_extract_json_blob`` + ``json.loads`` das
+    notes-Feld unverändert tragen — sonst käme der Grund nie ins Log
+    oder in die User-Meldung."""
+    import json
+
+    from app.plan_analysis.pipeline import _count_extracted_rooms, _extract_json_blob
+
+    raw = (
+        "```json\n"
+        '{"floor_name": "EG", "notes": "Wirkt wie ein Lageplan, kein Grundriss.", '
+        '"units": []}\n'
+        "```"
+    )
+    parsed = json.loads(_extract_json_blob(raw))
+    assert parsed["notes"] == "Wirkt wie ein Lageplan, kein Grundriss."
+    assert _count_extracted_rooms(parsed) == 0
+
+
+def test_notes_absent_in_normal_result():
+    """Findet die KI Räume, lässt sie ``notes`` weg — der Parse-Pfad
+    darf das nicht erzwingen. ``.get('notes')`` ist dann schlicht None,
+    und der Room-Count ist > 0 (kein zero_rooms-Warning)."""
+    import json
+
+    from app.plan_analysis.pipeline import _count_extracted_rooms, _extract_json_blob
+
+    raw = (
+        '{"floor_name": "EG", "units": [{"unit_name": "W1", '
+        '"rooms": [{"room_name": "WOHNEN / KOCHEN"}]}]}'
+    )
+    parsed = json.loads(_extract_json_blob(raw))
+    assert parsed.get("notes") is None
+    assert _count_extracted_rooms(parsed) == 1

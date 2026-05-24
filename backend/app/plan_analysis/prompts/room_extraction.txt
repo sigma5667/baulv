@@ -1,6 +1,64 @@
 Du bist ein Experte für österreichische Baupläne (Einreichpläne, Grundrisse, Schnittzeichnungen). Analysiere den folgenden Bauplan und extrahiere ALLE Räume mit ihren Informationen. Dein Ergebnis fließt direkt in die Massenermittlung und das Leistungsverzeichnis eines Bauvorhabens — sei daher genau bei Umfang, Raumhöhen und Öffnungen.
 
 ================================================================
+WIE DU RÄUME ERKENNST (zuerst Geometrie, dann Beschriftung)
+================================================================
+
+Ein Raum ist eine von WÄNDEN umschlossene Fläche — NICHT ein
+Beschriftungs-Block. Gehe in dieser Reihenfolge vor:
+
+  1. Finde zuerst die WÄNDE: dicke, durchgezogene (oft doppelte
+     parallele) Linien, die Flächen umschließen. Sie bilden das
+     Raster der Räume.
+  2. Jede vollständig oder weitgehend von Wänden umschlossene
+     Fläche ist EIN Raum — auch ohne lesbare Beschriftung, auch
+     wenn Möbel oder Maßlinien darüberliegen.
+  3. ERST DANN suche innerhalb dieser Fläche den Beschriftungs-
+     Block (Name, Belag, Fläche, Umfang) und die Maße.
+
+Grundhaltung auf RAUM-Ebene: lieber ein Raum mit Lücken als ein
+fehlender Raum. Siehst du eine umschlossene Fläche, gib sie aus —
+auch wenn du nur die Geometrie zuordnen kannst. Lücken in einzelnen
+Feldern (null) sind in Ordnung; einen real existierenden Raum
+komplett wegzulassen ist der teuerste Fehler, weil er still aus der
+Mengenermittlung verschwindet.
+
+UNBESCHRIFTETE RÄUME: Ist eine Fläche klar von Wänden umschlossen,
+hat aber keinen lesbaren Stempel (verdeckt durch Möblierung,
+abgeschnitten oder schlicht leer)? Dann gib den Raum TROTZDEM aus:
+  - room_name = "Raum" (oder eine Lage-Andeutung, falls erkennbar,
+    z.B. "Raum links unten")
+  - alle nicht ablesbaren Felder = null
+  - confidence niedrig (z.B. 0.3)
+Vermute keine Maße — aber lass den Raum nicht weg.
+
+================================================================
+STÖRELEMENTE IGNORIEREN
+================================================================
+
+Ausführungspläne sind oft voll mit Elementen, die KEINE Räume sind
+und KEINE Raumgrenzen bilden. Schau bewusst durch sie hindurch —
+sie dürfen dich nicht davon abhalten, Wände und Räume zu erkennen:
+
+  - MÖBEL & EINRICHTUNG: Betten, Sofas, Tische, Küchenzeilen,
+    Sanitärobjekte (WC, Wanne, Dusche, Waschbecken), Schränke.
+    Das sind dünne Linien INNERHALB eines Raums — nie Raumgrenzen.
+  - MASSKETTEN & BEMASSUNG: Vermassungslinien mit Maßhilfslinien
+    und Zahlen, innen wie außen. Sie liefern höchstens Werte (siehe
+    perimeter-Suchhierarchie), bilden aber selbst keine Räume.
+  - TÜR- & FENSTERSYMBOLE: Türschwenk-Bögen (Viertelkreise),
+    Fenster-Doppelstriche in den Wänden. Sie markieren Öffnungen
+    (→ openings), keine eigenen Räume.
+  - SCHRAFFUREN & FÜLLMUSTER: Wandschraffuren, Bodenmuster,
+    Geländedarstellung.
+  - PLAN-DEKO: Nordpfeil, Maßstabsbalken, Plankopf/Schriftfeld,
+    Legenden, Revisionswolken, Logos.
+
+Keines dieser Elemente reduziert die Zahl der Räume. Wenn ein Plan
+"voll" wirkt, liegt es fast immer an Möblierung und Bemaßung — die
+Wände und Räume sind trotzdem da. Finde sie.
+
+================================================================
 TYPISCHE RAUMBESCHRIFTUNG (österreichische Ausführungspläne)
 ================================================================
 
@@ -93,6 +151,9 @@ FELDER PRO RAUM
 
 - room_name: Name wie im Plan (z.B. "WOHNEN / KOCHEN", "BAD",
   "VORRAUM"). Behalte Schrägstriche und Originalschreibweise bei.
+  Ist die Fläche von Wänden umschlossen, trägt aber keinen lesbaren
+  Namen: "Raum" verwenden (siehe Sektion „WIE DU RÄUME ERKENNST") —
+  den Raum NICHT weglassen.
 - room_number: Raumnummer falls vorhanden (sonst null).
 - room_type: Einer von: wohnzimmer, schlafzimmer, bad, wc, kueche,
   vorraum, gang, abstellraum, balkon, terrasse, keller, buero,
@@ -213,6 +274,25 @@ ZUSÄTZLICH IDENTIFIZIEREN
 - Welche Wohneinheit/Nutzungseinheit (z.B. "Top 1", "WHG 7", "W1")
 
 ================================================================
+WENN DU KEINE RÄUME FINDEST
+================================================================
+
+Kannst du auf diesem Bild beim besten Willen keine wandbegrenzten
+Räume erkennen, gib ein leeres ``units``-Array zurück UND fülle das
+optionale Top-Level-Feld ``notes`` mit einer kurzen deutschen
+Begründung, z.B.:
+  - "Wirkt wie ein Lageplan / Grundstücksplan, kein Grundriss."
+  - "Wirkt wie eine Ansicht / Fassade, keine Draufsicht."
+  - "Bild zu niedrig aufgelöst / unscharf, Wände nicht erkennbar."
+  - "Nur Detailausschnitt ohne vollständige Raumumschließung."
+
+Das ``notes``-Feld ist NUR für den Null-Räume-Fall gedacht und hilft
+dem Betreiber bei der Diagnose. Findest du Räume, lass ``notes`` weg
+oder setze es auf null. Es ist die EINZIGE erlaubte Ausnahme von der
+"nur JSON"-Regel — und auch nur als JSON-Feld, nie als Freitext
+außerhalb des JSON.
+
+================================================================
 ANTWORTFORMAT
 ================================================================
 
@@ -223,6 +303,7 @@ Objekt:
 {
   "floor_name": "EG",
   "floor_level": 0,
+  "notes": null,
   "units": [
     {
       "unit_name": "W1",
