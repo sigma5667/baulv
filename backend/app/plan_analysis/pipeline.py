@@ -1176,26 +1176,31 @@ def _bbox_fail_safe_reason(
     return None
 
 
-def _bbox_to_pdf_rect(
+def _compute_clip_rect_tuple(
     bbox_px: dict, *,
     source_width_px: int, source_height_px: int,
     pdf_width_pts: float, pdf_height_pts: float,
     padding_frac: float = _BBOX_PADDING_FRAC,
-):
-    """Skaliert eine Low-Res-Pixel-BBox + 5 %-Margin auf eine
-    PDF-Punkt-Rect (clamping auf Page-Grenzen).
+) -> tuple[float, float, float, float]:
+    """Pure-math backbone of ``_bbox_to_pdf_rect`` — KEIN fitz-Import.
 
-    Skalierungsfaktor pixel→pt: ``pdf_width_pts / source_width_px``.
-    Identisch in x und y, weil der Renderer uniform skaliert hat.
+    Skaliert eine Low-Res-Pixel-BBox + Padding-Margin auf
+    PDF-Punkt-Koords ``(x0, y0, x1, y1)``, mit Clamping auf die
+    Page-Grenzen. Skalierungsfaktor pixel→pt: ``pdf_width_pts /
+    source_width_px`` (uniform in x und y, weil der Low-Res-Renderer
+    uniform skaliert hat).
+
+    Bewusst als Tuple-Rückgabe und ohne fitz-Abhängigkeit: macht die
+    Skalierungs- und Padding-Mathe unit-testbar, ohne dass die
+    pymupdf-DLL geladen werden muss (Windows-AppLocker-freundlich).
+    Der fitz.Rect-Konstruktor sitzt im dünnen Wrapper darunter.
     """
-    import fitz  # PyMuPDF
-
     x_px = float(bbox_px["x"])
     y_px = float(bbox_px["y"])
     w_px = float(bbox_px["width"])
     h_px = float(bbox_px["height"])
 
-    # 5 % Margin auf Pixel-Ebene, dann clampen.
+    # Padding-Margin auf Pixel-Ebene, dann clampen.
     pad_x = w_px * padding_frac
     pad_y = h_px * padding_frac
     x0_px = max(0.0, x_px - pad_x)
@@ -1205,7 +1210,30 @@ def _bbox_to_pdf_rect(
 
     sx = pdf_width_pts / float(source_width_px)
     sy = pdf_height_pts / float(source_height_px)
-    return fitz.Rect(x0_px * sx, y0_px * sy, x1_px * sx, y1_px * sy)
+    return (x0_px * sx, y0_px * sy, x1_px * sx, y1_px * sy)
+
+
+def _bbox_to_pdf_rect(
+    bbox_px: dict, *,
+    source_width_px: int, source_height_px: int,
+    pdf_width_pts: float, pdf_height_pts: float,
+    padding_frac: float = _BBOX_PADDING_FRAC,
+):
+    """Thin wrapper: liefert eine ``fitz.Rect`` aus den
+    ``_compute_clip_rect_tuple``-Math-Koords, für die Verwendung in
+    fitz-APIs (``page.get_pixmap(clip=...)``).
+    """
+    import fitz  # PyMuPDF
+
+    x0, y0, x1, y1 = _compute_clip_rect_tuple(
+        bbox_px,
+        source_width_px=source_width_px,
+        source_height_px=source_height_px,
+        pdf_width_pts=pdf_width_pts,
+        pdf_height_pts=pdf_height_pts,
+        padding_frac=padding_frac,
+    )
+    return fitz.Rect(x0, y0, x1, y1)
 
 
 def _resize_long_edge_pillow(

@@ -134,92 +134,99 @@ def test_bbox_fail_safe_usable():
 
 
 # ---------------------------------------------------------------------------
-# _bbox_to_pdf_rect — Pixel-BBox → PDF-Punkt-Rect mit Padding + Clamping
+# _compute_clip_rect_tuple — Pure-Math-Backbone von _bbox_to_pdf_rect
+# (Tests laufen ohne fitz-Import, damit sie auch unter Windows-
+# AppLocker / restriktiven DLL-Policies fahren können.)
 # ---------------------------------------------------------------------------
 
 
-def test_bbox_to_pdf_rect_identity_scale_no_padding():
+def test_compute_clip_rect_identity_scale_no_padding():
     """1:1-Skalierung (source-px == pdf-pt), 0-Padding: Box bleibt
     wie sie ist."""
-    from app.plan_analysis.pipeline import _bbox_to_pdf_rect
+    from app.plan_analysis.pipeline import _compute_clip_rect_tuple
 
-    rect = _bbox_to_pdf_rect(
+    x0, y0, x1, y1 = _compute_clip_rect_tuple(
         {"x": 100, "y": 200, "width": 300, "height": 400},
         source_width_px=1000, source_height_px=1000,
         pdf_width_pts=1000.0, pdf_height_pts=1000.0,
         padding_frac=0.0,
     )
-    assert rect.x0 == pytest.approx(100.0)
-    assert rect.y0 == pytest.approx(200.0)
-    assert rect.x1 == pytest.approx(400.0)
-    assert rect.y1 == pytest.approx(600.0)
+    assert x0 == pytest.approx(100.0)
+    assert y0 == pytest.approx(200.0)
+    assert x1 == pytest.approx(400.0)
+    assert y1 == pytest.approx(600.0)
 
 
-def test_bbox_to_pdf_rect_half_scale():
+def test_compute_clip_rect_half_scale():
     """source-px = 2 × pdf-pt → Koords werden halbiert."""
-    from app.plan_analysis.pipeline import _bbox_to_pdf_rect
+    from app.plan_analysis.pipeline import _compute_clip_rect_tuple
 
-    rect = _bbox_to_pdf_rect(
+    x0, y0, x1, y1 = _compute_clip_rect_tuple(
         {"x": 200, "y": 400, "width": 600, "height": 800},
         source_width_px=2000, source_height_px=2000,
         pdf_width_pts=1000.0, pdf_height_pts=1000.0,
         padding_frac=0.0,
     )
-    assert rect.x0 == pytest.approx(100.0)
-    assert rect.y0 == pytest.approx(200.0)
-    assert rect.x1 == pytest.approx(400.0)
-    assert rect.y1 == pytest.approx(600.0)
+    assert x0 == pytest.approx(100.0)
+    assert y0 == pytest.approx(200.0)
+    assert x1 == pytest.approx(400.0)
+    assert y1 == pytest.approx(600.0)
 
 
-def test_bbox_to_pdf_rect_padding_clamps_to_bounds():
+def test_compute_clip_rect_padding_clamps_to_bounds():
     """5 %-Padding darf nicht über die Bildgrenzen hinausschießen.
     BBox am linken Rand: x=0, padding würde negativ werden → muss
     auf 0 clamped sein."""
-    from app.plan_analysis.pipeline import _bbox_to_pdf_rect
+    from app.plan_analysis.pipeline import _compute_clip_rect_tuple
 
-    rect = _bbox_to_pdf_rect(
+    x0, y0, x1, y1 = _compute_clip_rect_tuple(
         {"x": 0, "y": 0, "width": 500, "height": 500},
         source_width_px=1000, source_height_px=1000,
         pdf_width_pts=1000.0, pdf_height_pts=1000.0,
         padding_frac=0.05,
     )
     # Linke + obere Kante geclampt auf 0.
-    assert rect.x0 == pytest.approx(0.0)
-    assert rect.y0 == pytest.approx(0.0)
+    assert x0 == pytest.approx(0.0)
+    assert y0 == pytest.approx(0.0)
     # Rechte + untere Kante mit 5 % Padding: 500 + 25 = 525.
-    assert rect.x1 == pytest.approx(525.0)
-    assert rect.y1 == pytest.approx(525.0)
+    assert x1 == pytest.approx(525.0)
+    assert y1 == pytest.approx(525.0)
 
 
-def test_bbox_to_pdf_rect_padding_clamps_to_far_edge():
+def test_compute_clip_rect_padding_clamps_to_far_edge():
     """5 %-Padding am rechten/unteren Rand darf nicht über
     source_width/height hinaus."""
-    from app.plan_analysis.pipeline import _bbox_to_pdf_rect
+    from app.plan_analysis.pipeline import _compute_clip_rect_tuple
 
-    rect = _bbox_to_pdf_rect(
+    x0, y0, x1, y1 = _compute_clip_rect_tuple(
         {"x": 600, "y": 600, "width": 400, "height": 400},
         source_width_px=1000, source_height_px=1000,
         pdf_width_pts=1000.0, pdf_height_pts=1000.0,
         padding_frac=0.05,
     )
     # 5 % von 400 = 20 px Padding, links/oben würde 580 ergeben.
-    assert rect.x0 == pytest.approx(580.0)
-    assert rect.y0 == pytest.approx(580.0)
+    assert x0 == pytest.approx(580.0)
+    assert y0 == pytest.approx(580.0)
     # Rechts/unten: 600+400+20 = 1020 → muss auf 1000 clamped sein.
-    assert rect.x1 == pytest.approx(1000.0)
-    assert rect.y1 == pytest.approx(1000.0)
+    assert x1 == pytest.approx(1000.0)
+    assert y1 == pytest.approx(1000.0)
 
 
 # ---------------------------------------------------------------------------
 # _should_tile — physische pt-Schwelle (DPI-unabhängig)
+#
+# Die Funktion liest nur ``.width`` und ``.height`` vom übergebenen
+# Rect-Objekt → Duck-Type-Stub via SimpleNamespace ist legitim und
+# macht die Tests fitz-frei (Windows-AppLocker-freundlich).
 # ---------------------------------------------------------------------------
 
 
 def _rect(width: float, height: float):
-    """Mini-Helper: fitz.Rect baut aus (x0, y0, x1, y1)."""
-    import fitz
+    """Duck-type stub: ein Objekt mit .width und .height, wie
+    fitz.Rect.width / .height — alles, was ``_should_tile`` liest."""
+    from types import SimpleNamespace
 
-    return fitz.Rect(0.0, 0.0, width, height)
+    return SimpleNamespace(width=width, height=height)
 
 
 def test_should_tile_below_threshold():
