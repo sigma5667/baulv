@@ -71,6 +71,20 @@ class Settings(BaseSettings):
     # feature matrix from /auth/me/features instead.
     beta_unlock_all_features: bool = False
 
+    # v24.4.6 — Two-Pass-Plananalyse-Diagnose. Während der Beta-Phase
+    # ``DEBUG_SAVE_CROPS=true`` in Railway setzen, damit jede Seite
+    # ihre Render-Zwischenstufen als JPEG unter
+    # ``{upload_dir}/debug-crops/{plan_id}/`` ablegt:
+    #   * page-N-low_res.jpg     — 1536-px-Probe, an Haiku geschickt
+    #   * page-N-high_res_crop.jpg — high-DPI-Clip nach BBox-Crop
+    #   * page-N-resized.jpg     — falls Crop > 1536 verkleinert
+    #   * page-N-tile-{0..3}.jpg — falls 2×2-Kachel-Pfad genommen
+    #   * page-N-bbox.json       — BBox-Koords + Skalierungs-Faktoren
+    # Default ``False`` damit Production keinen unbegrenzten Disk-
+    # Verbrauch hat. Nach Beta-Ende auf ``False`` zurück; Operator
+    # muss den Ordner manuell aufräumen (kein Auto-Cleanup).
+    debug_save_crops: bool = False
+
     # v24.4.2 — Coming-Soon-Gate vor der öffentlichen Marketing-
     # Oberfläche. Solange baulv.at in der geschlossenen Test-Phase
     # läuft, fragt das Frontend an dieser Stelle einen geteilten

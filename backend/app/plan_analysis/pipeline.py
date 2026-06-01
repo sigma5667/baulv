@@ -1,17 +1,27 @@
 """Plan analysis pipeline: PDF → Images → Claude Vision → Structured room data.
 
-Flow:
+Flow (v24.4.6, Two-Pass-Raumerkennung):
 
     upload_plan (PDF on disk)
         │
         ▼
     analyze_plan(plan_id)
+        │  (öffnet PDF einmal im fitz_executor, hält's offen)
         │
-        ├──► _pdf_to_images()          ← PyMuPDF, 300 DPI, capped at max_plan_pages
+        ├──► _render_all_pages(doc)    ← PyMuPDF, DPI-Ladder, Pre-Render
+        │                                  als Fallback-Bytes pro Seite
         │
-        ├──► _extract_rooms_from_image() × N pages
-        │      └─► AsyncAnthropic Claude Vision
-        │            └─► JSON response parsed into ExtractedRoom tree
+        ├──► _extract_rooms_two_pass(doc, page_number, …) × N pages
+        │      │
+        │      ├──► _render_page_long_edge_jpeg → 1536-px-Probe
+        │      ├──► _find_building_bbox        ← Haiku-Call (Schritt 1)
+        │      ├──► _bbox_fail_safe_reason     ← Fallback-Entscheidung
+        │      │      └─► bei Fail-Safe: _extract_rooms_from_image
+        │      │              auf fallback_bytes (= alter Single-Pass)
+        │      ├──► _render_page_clip_jpeg     ← High-DPI-Crop (Schritt 2)
+        │      ├──► _should_tile? → ggf. _tile_2x2_pillow
+        │      └──► _extract_rooms_from_image  ← Sonnet (Schritt 3)
+        │              └─► JSON response parsed into ExtractedRoom tree
         │
         └──► _store_extraction_result() × N pages
                └─► Inserts Building/Floor/Unit/Room/Opening rows
@@ -36,6 +46,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import concurrent.futures
+import io
 import json
 import logging
 from pathlib import Path
@@ -143,6 +155,16 @@ logger = logging.getLogger(__name__)
 
 ROOM_EXTRACTION_PROMPT = (
     Path(__file__).parent / "prompts" / "room_extraction.txt"
+).read_text(encoding="utf-8")
+
+
+# v24.4.6 — Schritt-1-Prompt (Haiku-BBox-Probe) für den Two-Pass-Flow.
+# Template-String: ``image_width`` / ``image_height`` werden zur
+# Laufzeit per ``.format()`` injiziert, weil das Vision-Modell sonst
+# die genauen Bildmaße aus dem Bild selbst herauslesen müsste — und
+# dabei gelegentlich daneben liegt.
+BUILDING_BBOX_PROMPT_TEMPLATE = (
+    Path(__file__).parent / "prompts" / "building_bbox.txt"
 ).read_text(encoding="utf-8")
 
 
@@ -272,8 +294,23 @@ async def analyze_plan(plan_id: UUID, db: AsyncSession) -> dict:
 
     logger.info("Starting plan analysis: plan_id=%s file=%s", plan_id, plan.file_path)
 
+    # v24.4.6 — dedicated single-thread-executor für alle fitz-
+    # Operationen in diesem analyze_plan-Aufruf. PyMuPDF-Doc-Objekte
+    # sind nicht thread-safe; mit max_workers=1 ist garantiert, dass
+    # jeder run_in_executor-Call dasselbe Doc auf demselben Thread
+    # anfasst, egal wie viele Anthropic-await-Switches dazwischen
+    # liegen. Das Doc wird einmal geöffnet, sowohl für den Pre-Render
+    # (``_render_all_pages``) als auch für die Two-Pass-Clip-Renders
+    # in ``_extract_rooms_two_pass`` benutzt, und am Ende des
+    # äußeren ``finally``-Blocks geschlossen.
+    fitz_executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix=f"fitz-{plan_id}"
+    )
+    doc = None
+    loop = asyncio.get_event_loop()
+
     try:
-        # Step 1: Convert PDF pages to images.
+        # Step 1: Open PDF + render every page once.
         #
         # Failure-mode catalogue:
         #
@@ -288,7 +325,7 @@ async def analyze_plan(plan_id: UUID, db: AsyncSession) -> dict:
         #     class. Same handling as ``FileDataError``. We
         #     deliberately bound this to the open call only, so per-
         #     page render failures (which v23.1.3 wraps inside
-        #     ``_pdf_to_images`` itself) don't accidentally surface
+        #     ``_render_all_pages`` itself) don't accidentally surface
         #     as "PDF nicht öffenbar" — that misclassification was
         #     the v23.1.2 regression this hotfix targets.
         #
@@ -296,8 +333,12 @@ async def analyze_plan(plan_id: UUID, db: AsyncSession) -> dict:
         # list (not as exceptions) so one unrenderable page doesn't
         # abort the whole upload.
         try:
-            rendered_pages, render_errors = await asyncio.to_thread(
-                _pdf_to_images, plan.file_path
+            import fitz  # PyMuPDF
+            doc = await loop.run_in_executor(
+                fitz_executor, fitz.open, plan.file_path
+            )
+            rendered_pages, render_errors = await loop.run_in_executor(
+                fitz_executor, _render_all_pages, doc
             )
         except FileNotFoundError:
             logger.exception(
@@ -311,7 +352,7 @@ async def analyze_plan(plan_id: UUID, db: AsyncSession) -> dict:
         except RuntimeError as e:
             # PyMuPDF raises RuntimeError exclusively for open-time
             # corruption now that v23.1.3 wraps render-time failures
-            # inside ``_pdf_to_images``. Full stack to logs, friendly
+            # inside ``_render_all_pages``. Full stack to logs, friendly
             # German message to user.
             logger.exception(
                 "pdf_open.failed plan=%s file=%s err=%s: %s",
@@ -361,23 +402,39 @@ async def analyze_plan(plan_id: UUID, db: AsyncSession) -> dict:
         # exercised.
         import anthropic
 
-        # Step 2: Claude Vision extraction per page. Runs sequentially
-        # because concurrent Claude Vision calls don't buy much for
-        # typical plan sizes and would multiply quota spikes.
+        # Step 2: Two-Pass-Vision-Extraction per Seite (v24.4.6).
+        # Sequenziell — concurrent Claude-Calls bringen für typische
+        # Plan-Größen wenig und multiplizieren Quota-Spikes.
         # We track ``(page_number, result)`` tuples so the persist
         # phase can stamp each room with the page it was extracted
         # from — Vision doesn't see the page index itself, the
         # pipeline owns that fact.
+        #
+        # ``_extract_rooms_two_pass`` macht intern:
+        #   1. Low-Res-Render (1536 px) → Haiku-BBox-Probe.
+        #   2. Fail-Safe falls BBox unbrauchbar → Sonnet auf den
+        #      bereits hochauflösenden ``fallback_bytes`` (= Pre-Render
+        #      aus Schritt 1 oben, der heutige Single-Pass).
+        #   3. Sonst: High-Res-Clip, ggf. 2×2-Kacheln, Sonnet-Call(s).
+        # Die Funktion liefert ein einzelnes Page-Result (oder None
+        # bei unbehebbarem Fehler) — identische Form zum vorherigen
+        # ``_extract_rooms_from_image``-Output, sodass Step 3 unverändert
+        # bleibt.
         all_results: list[tuple[int, dict]] = []
         # Seed page_errors with any per-page render failures we
         # already collected. This way the user sees one consistent
         # list of "what went wrong on which page", regardless of
         # whether the failure was at render-time or Vision-time.
         page_errors: list[str] = list(render_errors)
-        for page_number, image_bytes, mime_type in rendered_pages:
+        for page_number, fallback_bytes, fallback_mime in rendered_pages:
             try:
-                result = await _extract_rooms_from_image(
-                    image_bytes, page_number=page_number, mime_type=mime_type
+                result = await _extract_rooms_two_pass(
+                    doc=doc,
+                    page_number=page_number,
+                    fitz_executor=fitz_executor,
+                    fallback_image_bytes=fallback_bytes,
+                    fallback_mime_type=fallback_mime,
+                    plan_id=plan_id,
                 )
                 if result is not None:
                     all_results.append((page_number, result))
@@ -499,6 +556,20 @@ async def analyze_plan(plan_id: UUID, db: AsyncSession) -> dict:
             "Bei der KI-Analyse ist ein unerwarteter Fehler aufgetreten. "
             "Bitte versuchen Sie es erneut oder kontaktieren Sie den Support."
         )
+    finally:
+        # v24.4.6 — Doc + Executor sauber aufräumen, egal welchen
+        # Pfad wir genommen haben (Erfolg, PlanAnalysisError, generic
+        # Exception). Beides bewusst best-effort: ein Cleanup-Fehler
+        # darf den eigentlichen Pfad nicht maskieren.
+        if doc is not None:
+            try:
+                await loop.run_in_executor(fitz_executor, doc.close)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "two_pass.doc_close_failed plan=%s err=%s: %s",
+                    plan_id, type(exc).__name__, exc,
+                )
+        fitz_executor.shutdown(wait=True)
 
 
 # Anthropic's image-size limit is 5 MB on the binary payload (the
@@ -530,6 +601,59 @@ _VISION_DPI_LADDER = (200, 150, 112, 100)
 # (vermassung, room labels) crisp, low enough that file size drops
 # ~70 % vs the equivalent PNG.
 _VISION_JPEG_QUALITY = 85
+
+
+# ---------------------------------------------------------------------------
+# v24.4.6 — Two-Pass-Konstanten (Building-BBox-Probe + High-Res-Crop)
+# ---------------------------------------------------------------------------
+#
+# Problem: bei Plänen mit Lageplan-Rand nimmt das Gebäude nur einen
+# Bruchteil der Bildfläche ein. Anthropic resizet jedes Bild intern auf
+# 1568 px Long-Edge → die Raum-Beschriftung ist nach dem Resize zu klein
+# zum Lesen. Lösung: erst Haiku den Gebäude-Block lokalisieren lassen,
+# dann den Bereich mit hoher DPI nachrendern, croppen, an Sonnet
+# schicken. Details siehe ``_extract_rooms_two_pass``.
+
+# Schritt 1: Vollbild bei bekannter fester Pixel-Größe rendern. 1536
+# (statt 1568) verhindert ein verstecktes Anthropic-Internal-Resize an
+# der API-Grenze — die Eingabe ist exakt was die KI nachher sieht.
+_BBOX_PROBE_LONG_EDGE_PX = 1536
+
+# Schritt 2: High-DPI fürs Crop-Rendering. 300 DPI ist CAD-Industrie-
+# Standard für lesbare Architektur-Pläne; bei einem typischen
+# Wohnungs-Crop ergibt das nach dem Resize-Schritt (siehe unten)
+# deutlich mehr Detail als der 1536-px-Vollbild-Render.
+_HIGH_RES_DPI = 300
+
+# Schritt 3: Zielgröße für den finalen Räume-Call. Gleiche 1536-Grenze
+# wie Schritt 1, gleicher Anthropic-Grund.
+_VISION_LONG_EDGE_PX = 1536
+
+# Fail-Safe-Schwellen für die BBox aus Schritt 1.
+# > 95 % der Bildfläche → kein Lageplan rundherum, kein Crop nötig
+# < 15 % der Bildfläche → fast sicher Fehl-Erkennung (KI hat etwas
+#                         Kleines markiert statt das Gebäude)
+_BBOX_TOO_LARGE_FRAC = 0.95
+_BBOX_TOO_SMALL_FRAC = 0.15
+
+# Tile-Schwelle in PDF-PUNKTEN (nicht Pixeln). Wenn der Crop physisch
+# länger ist als ~81 cm (2300 pt = 800 mm), wird's nach Resize auf
+# 1536 px Long-Edge eng mit der Label-Lesbarkeit — dann 2×2 kacheln.
+# Bewusst konservativ: der 5 %-Kachel-Overlap kann ein Raum-Label auf
+# der Kachel-Grenze trotzdem halbieren → Fläche fehlt. Lieber selten
+# kacheln. Physische Einheit (PDF-Punkte) ist DPI-unabhängig — eine
+# Verdopplung des High-Res-DPI ändert die Schwelle NICHT.
+_TILE_THRESHOLD_LONG_EDGE_PT = 2300.0
+_TILE_OVERLAP_FRAC = 0.05
+
+# 5 % Rand um die BBox in Low-Res-Pixeln (vor der PDF-Punkt-Umrechnung),
+# damit die Außenwände nicht hart abgeschnitten sind.
+_BBOX_PADDING_FRAC = 0.05
+
+# Schritt-1-Modell — Haiku reicht für reine BBox-Lokalisation (keine
+# Lesen-Aufgabe). Das gute Modell bleibt für Schritt 3 (Räume).
+_BBOX_MODEL = "claude-haiku-4-5"
+_BBOX_MAX_TOKENS = 256
 
 
 def _render_page_for_vision(
@@ -685,10 +809,16 @@ def _render_page_for_vision(
     )
 
 
-def _pdf_to_images(
-    file_path: str,
+def _render_all_pages(
+    doc,
 ) -> tuple[list[tuple[int, bytes, str]], list[str]]:
-    """Convert PDF to per-page image bytes for Vision.
+    """Render every page of an OPEN ``fitz.Document`` to Vision-ready bytes.
+
+    v24.4.6 — extrahiert aus ``_pdf_to_images`` damit ``analyze_plan``
+    das PDF nur EINMAL öffnen muss. PyMuPDF-Doc-Objekte sind nicht
+    thread-safe; ein einziges Doc + ein dedicated single-thread-executor
+    schließt jedes Cross-Thread-Risiko aus, das zwei separate
+    ``fitz.open()``-Calls auf dieselbe Datei hätten.
 
     Returns ``(rendered_pages, render_errors)``:
 
@@ -702,14 +832,65 @@ def _pdf_to_images(
       The caller folds these into the project-wide ``page_errors``
       list so the user sees a precise per-page rundown.
 
+    Per-page render-errors do NOT propagate; we want one bad page to
+    skip itself rather than abort the whole upload.
+
+    PyMuPDF is CPU-bound and releases the GIL during rendering; the
+    caller dispatches this function from a thread executor so the
+    event loop stays responsive.
+    """
+    rendered: list[tuple[int, bytes, str]] = []
+    errors: list[str] = []
+    max_pages = settings.max_plan_pages
+    for i, page in enumerate(doc):
+        if i >= max_pages:
+            break
+        page_number = i + 1
+        try:
+            data, mime = _render_page_for_vision(
+                page, page_number=page_number
+            )
+        except PlanAnalysisError as exc:
+            # Per-page render failure with a user-facing message
+            # already attached. Collect for the per-page error
+            # list, do not abort the full upload.
+            errors.append(f"Seite {page_number}: {exc.detail}")
+            continue
+        except Exception as exc:  # noqa: BLE001
+            # Truly unexpected — should not happen, render
+            # function already wraps known failure modes. Log
+            # the full stack and surface as a per-page error so
+            # the user sees something concrete.
+            logger.exception(
+                "pdf_to_images.unexpected_render_failure "
+                "page=%d: %s",
+                page_number, exc,
+            )
+            errors.append(
+                f"Seite {page_number} konnte nicht gerendert werden "
+                f"({type(exc).__name__})."
+            )
+            continue
+        rendered.append((page_number, data, mime))
+    logger.info(
+        "pdf_to_images.completed rendered=%d failed=%d",
+        len(rendered), len(errors),
+    )
+    return rendered, errors
+
+
+def _pdf_to_images(
+    file_path: str,
+) -> tuple[list[tuple[int, bytes, str]], list[str]]:
+    """Convenience wrapper: open, render, close. PRE-v24.4.6 was the
+    only entry point; new code (``analyze_plan``) opens the doc itself
+    and calls ``_render_all_pages`` directly so it can reuse the same
+    handle for the Two-Pass-BBox-Probe. This wrapper stays for the
+    Schnitt-pipeline and existing tests that pass file paths.
+
     Open-errors (corrupt PDF, missing file) propagate as their
     native exception type — the caller maps them to "PDF nicht
-    öffenbar". Per-page render-errors do NOT propagate; we want one
-    bad page to skip itself rather than abort the whole upload.
-
-    PyMuPDF is CPU-bound and releases the GIL during rendering; we
-    dispatch it from ``asyncio.to_thread`` in the caller so the
-    event loop stays responsive.
+    öffenbar". Per-page render-errors do NOT propagate.
     """
     import fitz  # PyMuPDF
 
@@ -719,44 +900,7 @@ def _pdf_to_images(
     # else, that handler couldn't tell open-error from render-error.
     doc = fitz.open(file_path)
     try:
-        rendered: list[tuple[int, bytes, str]] = []
-        errors: list[str] = []
-        max_pages = settings.max_plan_pages
-        for i, page in enumerate(doc):
-            if i >= max_pages:
-                break
-            page_number = i + 1
-            try:
-                data, mime = _render_page_for_vision(
-                    page, page_number=page_number
-                )
-            except PlanAnalysisError as exc:
-                # Per-page render failure with a user-facing message
-                # already attached. Collect for the per-page error
-                # list, do not abort the full upload.
-                errors.append(f"Seite {page_number}: {exc.detail}")
-                continue
-            except Exception as exc:  # noqa: BLE001
-                # Truly unexpected — should not happen, render
-                # function already wraps known failure modes. Log
-                # the full stack and surface as a per-page error so
-                # the user sees something concrete.
-                logger.exception(
-                    "pdf_to_images.unexpected_render_failure "
-                    "page=%d file=%s: %s",
-                    page_number, file_path, exc,
-                )
-                errors.append(
-                    f"Seite {page_number} konnte nicht gerendert werden "
-                    f"({type(exc).__name__})."
-                )
-                continue
-            rendered.append((page_number, data, mime))
-        logger.info(
-            "pdf_to_images.completed file=%s rendered=%d failed=%d",
-            file_path, len(rendered), len(errors),
-        )
-        return rendered, errors
+        return _render_all_pages(doc)
     finally:
         doc.close()
 
@@ -925,6 +1069,652 @@ def _count_extracted_rooms(parsed: object) -> int:
         if isinstance(rooms, list):
             total += len(rooms)
     return total
+
+
+# ---------------------------------------------------------------------------
+# v24.4.6 — Two-Pass-Helpers (fitz rendering, BBox-Math, Pillow crop/tile)
+# ---------------------------------------------------------------------------
+#
+# Alle fitz-anfassenden Helper sind SYNCHRON und müssen vom
+# ``analyze_plan``-eigenen single-thread-executor aufgerufen werden
+# (siehe Konstruktion dort). PyMuPDF-Doc-Objekte sind nicht thread-
+# safe — ein dedizierter Executor ist die einzige Garantie, dass alle
+# Doc-Operationen auf demselben Thread laufen, egal wie viele
+# Anthropic-await-Switches dazwischen liegen.
+
+
+def _render_page_long_edge_jpeg(
+    doc, page_number: int, long_edge_px: int,
+) -> tuple[bytes, int, int]:
+    """Render the whole page so its longer pixel edge equals ``long_edge_px``.
+
+    Used für die BBox-Probe in Schritt 1: das Bild geht 1:1 an Haiku,
+    ohne weiteres Resize an der API-Grenze. Liefert
+    ``(jpeg_bytes, width_px, height_px)``.
+
+    Muss im fitz-Executor laufen (Doc-Access).
+    """
+    import fitz  # PyMuPDF
+
+    page = doc[page_number - 1]
+    page_w_pts = float(page.rect.width)
+    page_h_pts = float(page.rect.height)
+    long_edge_pts = max(page_w_pts, page_h_pts)
+    # ``scale`` ist der Faktor pt→pixel. fitz.Matrix nimmt sx/sy
+    # separat, beides identisch hier (uniform scaling).
+    scale = long_edge_px / long_edge_pts
+    mat = fitz.Matrix(scale, scale)
+    pix = page.get_pixmap(matrix=mat, alpha=False, colorspace=fitz.csRGB)
+    jpeg_bytes = pix.tobytes("jpeg", jpg_quality=_VISION_JPEG_QUALITY)
+    return jpeg_bytes, pix.width, pix.height
+
+
+def _render_page_clip_jpeg(
+    doc, page_number: int, clip_rect, dpi: int = _HIGH_RES_DPI,
+) -> tuple[bytes, int, int]:
+    """Render only ``clip_rect`` of the page at ``dpi``.
+
+    Liefert ``(jpeg_bytes, width_px, height_px)``. clip_rect ist eine
+    ``fitz.Rect`` in PDF-Punkten. PyMuPDF rendert nur den Clip; das
+    Vollbild muss nicht zwischengelagert werden, was bei A0/A1-Plänen
+    relevant Memory spart.
+
+    Muss im fitz-Executor laufen.
+    """
+    import fitz  # PyMuPDF
+
+    page = doc[page_number - 1]
+    mat = fitz.Matrix(dpi / 72, dpi / 72)
+    pix = page.get_pixmap(
+        matrix=mat,
+        clip=clip_rect,
+        alpha=False,
+        colorspace=fitz.csRGB,
+    )
+    jpeg_bytes = pix.tobytes("jpeg", jpg_quality=_VISION_JPEG_QUALITY)
+    return jpeg_bytes, pix.width, pix.height
+
+
+def _bbox_fail_safe_reason(
+    bbox: dict | None, *, image_width: int, image_height: int,
+) -> str | None:
+    """Pure helper: should the Two-Pass-Pfad auf Single-Pass fallen?
+
+    Liefert einen Reason-String (für Logging + Fallback-Entscheidung)
+    oder ``None`` wenn die BBox brauchbar ist.
+
+    Reasons:
+      ``bbox_parse_failed``  — bbox is None (Haiku-JSON kaputt)
+      ``bbox_invalid_shape`` — fehlende oder nicht-numerische Felder
+      ``bbox_out_of_bounds`` — Koords negativ oder außerhalb [0, W/H]
+      ``bbox_too_large``     — Fläche > _BBOX_TOO_LARGE_FRAC
+      ``bbox_too_small``     — Fläche < _BBOX_TOO_SMALL_FRAC
+    """
+    if bbox is None:
+        return "bbox_parse_failed"
+    try:
+        x = float(bbox["x"])
+        y = float(bbox["y"])
+        w = float(bbox["width"])
+        h = float(bbox["height"])
+    except (KeyError, TypeError, ValueError):
+        return "bbox_invalid_shape"
+    if x < 0 or y < 0 or w <= 0 or h <= 0:
+        return "bbox_out_of_bounds"
+    if x + w > image_width + 1 or y + h > image_height + 1:
+        # +1 toleriert ein einzelnes Pixel Rundung am Rand.
+        return "bbox_out_of_bounds"
+    total_area = float(image_width) * float(image_height)
+    if total_area <= 0:
+        return "bbox_out_of_bounds"
+    bbox_area = w * h
+    frac = bbox_area / total_area
+    if frac > _BBOX_TOO_LARGE_FRAC:
+        return "bbox_too_large"
+    if frac < _BBOX_TOO_SMALL_FRAC:
+        return "bbox_too_small"
+    return None
+
+
+def _bbox_to_pdf_rect(
+    bbox_px: dict, *,
+    source_width_px: int, source_height_px: int,
+    pdf_width_pts: float, pdf_height_pts: float,
+    padding_frac: float = _BBOX_PADDING_FRAC,
+):
+    """Skaliert eine Low-Res-Pixel-BBox + 5 %-Margin auf eine
+    PDF-Punkt-Rect (clamping auf Page-Grenzen).
+
+    Skalierungsfaktor pixel→pt: ``pdf_width_pts / source_width_px``.
+    Identisch in x und y, weil der Renderer uniform skaliert hat.
+    """
+    import fitz  # PyMuPDF
+
+    x_px = float(bbox_px["x"])
+    y_px = float(bbox_px["y"])
+    w_px = float(bbox_px["width"])
+    h_px = float(bbox_px["height"])
+
+    # 5 % Margin auf Pixel-Ebene, dann clampen.
+    pad_x = w_px * padding_frac
+    pad_y = h_px * padding_frac
+    x0_px = max(0.0, x_px - pad_x)
+    y0_px = max(0.0, y_px - pad_y)
+    x1_px = min(float(source_width_px), x_px + w_px + pad_x)
+    y1_px = min(float(source_height_px), y_px + h_px + pad_y)
+
+    sx = pdf_width_pts / float(source_width_px)
+    sy = pdf_height_pts / float(source_height_px)
+    return fitz.Rect(x0_px * sx, y0_px * sy, x1_px * sx, y1_px * sy)
+
+
+def _resize_long_edge_pillow(
+    image_bytes: bytes, *,
+    target_long_edge: int,
+    jpeg_quality: int = _VISION_JPEG_QUALITY,
+) -> tuple[bytes, int, int]:
+    """Pillow-Resize wenn das Bild länger als ``target_long_edge`` ist.
+
+    Liefert ``(jpeg_bytes, w, h)``. Wenn das Bild bereits kleiner ist,
+    wird es 1:1 zurück-rejpegged (gleiche Qualität, kein Pixel-Verlust).
+    """
+    from PIL import Image
+
+    with Image.open(io.BytesIO(image_bytes)) as img:
+        if max(img.width, img.height) > target_long_edge:
+            img.thumbnail(
+                (target_long_edge, target_long_edge),
+                resample=Image.Resampling.LANCZOS,
+            )
+        out = io.BytesIO()
+        # Mode 'RGB' sicherstellen — Pillow speichert sonst RGBA-JPEG
+        # nicht ab. Unsere fitz-Pixmaps sind RGB, aber defensive coding.
+        rgb = img.convert("RGB") if img.mode != "RGB" else img
+        rgb.save(out, format="JPEG", quality=jpeg_quality, optimize=True)
+        return out.getvalue(), rgb.width, rgb.height
+
+
+def _should_tile(
+    *, clip_rect,
+    threshold_pt: float = _TILE_THRESHOLD_LONG_EDGE_PT,
+) -> bool:
+    """Pure: True wenn die längere Kante der Clip-Region in PDF-Punkten
+    > ``threshold_pt`` ist.
+
+    PDF-Punkte sind die stabile physische Einheit (1 pt = 1/72 inch ≈
+    0.353 mm). Im Gegensatz zur Pixel-Größe nach High-Res-Render ist
+    die Schwelle damit unabhängig vom gewählten DPI — eine
+    Verdopplung des DPI ändert die Kachel-Entscheidung NICHT.
+    """
+    return max(float(clip_rect.width), float(clip_rect.height)) > threshold_pt
+
+
+def _tile_2x2_pillow(
+    image_bytes: bytes, *,
+    overlap_frac: float = _TILE_OVERLAP_FRAC,
+    jpeg_quality: int = _VISION_JPEG_QUALITY,
+) -> list[bytes]:
+    """In 2×2 Kacheln zerlegen mit ``overlap_frac`` Überlappung.
+
+    Reihenfolge im Output: ``[TL, TR, BL, BR]``. Überlappung sorgt
+    dafür, dass ein Raum-Label, das genau auf einer inneren Kachel-
+    Grenze sitzt, in mindestens einer Kachel ganz auftaucht. Bei
+    5 %-Überlap reicht das nicht für jedes Label — die Schwelle in
+    ``_should_tile`` ist deshalb bewusst konservativ.
+    """
+    from PIL import Image
+
+    with Image.open(io.BytesIO(image_bytes)) as img:
+        w, h = img.size
+        mid_x = w // 2
+        mid_y = h // 2
+        ovx = int(w * overlap_frac)
+        ovy = int(h * overlap_frac)
+        boxes = [
+            (0,             0,             mid_x + ovx,  mid_y + ovy),       # TL
+            (mid_x - ovx,   0,             w,            mid_y + ovy),       # TR
+            (0,             mid_y - ovy,   mid_x + ovx,  h),                 # BL
+            (mid_x - ovx,   mid_y - ovy,   w,            h),                 # BR
+        ]
+        rgb = img.convert("RGB") if img.mode != "RGB" else img
+        tiles: list[bytes] = []
+        for box in boxes:
+            tile = rgb.crop(box)
+            buf = io.BytesIO()
+            tile.save(buf, format="JPEG", quality=jpeg_quality, optimize=True)
+            tiles.append(buf.getvalue())
+        return tiles
+
+
+def _normalise_room_key(name: object) -> str:
+    """Dedupe-key for room names across tiles. Lowercased, whitespace
+    collapsed, leading/trailing stripped. Non-strings collapse to ''."""
+    if not isinstance(name, str):
+        return ""
+    return " ".join(name.lower().split())
+
+
+def _merge_tiled_results(results: list[dict | None]) -> dict:
+    """Aus mehreren Kachel-Ergebnissen ein einziges Page-Result bauen.
+
+    Dedupe nach normalisiertem Raumnamen über alle Kacheln/Units. Die
+    erste Sichtung gewinnt — spätere Duplikate werden verworfen. Wenn
+    keine Kachel auch nur einen Raum geliefert hat, kommt ein leeres
+    Result mit ``notes`` zurück, damit der 0-Räume-Diagnose-Pfad in
+    ``_extract_rooms_from_image`` auch hier eine sinnvolle Meldung
+    bekommt.
+    """
+    seen_keys: set[str] = set()
+    merged_units: list[dict] = []
+    notes_collected: list[str] = []
+    floor_name: str | None = None
+    floor_level: int | None = None
+
+    for r in results:
+        if not isinstance(r, dict):
+            continue
+        if floor_name is None and isinstance(r.get("floor_name"), str):
+            floor_name = r["floor_name"]
+        if floor_level is None and isinstance(r.get("floor_level"), int):
+            floor_level = r["floor_level"]
+        if r.get("notes"):
+            notes_collected.append(str(r["notes"]).strip())
+        units = r.get("units") or []
+        if not isinstance(units, list):
+            continue
+        for unit in units:
+            if not isinstance(unit, dict):
+                continue
+            rooms = unit.get("rooms") or []
+            if not isinstance(rooms, list):
+                continue
+            deduped_rooms = []
+            for room in rooms:
+                if not isinstance(room, dict):
+                    continue
+                key = _normalise_room_key(room.get("room_name"))
+                if key and key in seen_keys:
+                    continue
+                if key:
+                    seen_keys.add(key)
+                deduped_rooms.append(room)
+            if deduped_rooms:
+                merged_units.append({**unit, "rooms": deduped_rooms})
+
+    merged: dict = {
+        "floor_name": floor_name,
+        "floor_level": floor_level,
+        "units": merged_units,
+    }
+    # ``notes`` nur setzen wenn die Kacheln-Summe 0 Räume war — sonst
+    # würde ein einzelnes Kachel-notes (z.B. "Plankopf-Kachel leer")
+    # fälschlich als "Plan-Problem" in die User-Fehlermeldung landen.
+    if not merged_units and notes_collected:
+        merged["notes"] = " / ".join(dict.fromkeys(notes_collected))
+    return merged
+
+
+# ---------------------------------------------------------------------------
+# Debug-Snapshots — Diagnostik während Beta
+# ---------------------------------------------------------------------------
+
+
+def _debug_crop_dir(plan_id: UUID) -> Path:
+    """Pfad-Konstruktor für die Snapshot-Ablage; legt Ordner an."""
+    base = Path(settings.upload_dir) / "debug-crops" / str(plan_id)
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def _save_debug_crop(
+    payload: bytes, *,
+    plan_id: UUID, page_number: int, stage: str, extension: str = "jpg",
+) -> None:
+    """Speichere ein Zwischenresultat unter
+    ``{upload_dir}/debug-crops/{plan_id}/page-{N}-{stage}.{ext}``.
+
+    No-op wenn ``settings.debug_save_crops`` False ist (default). Bei
+    Disk-Fehler nur loggen, nie raisen — Diagnostik darf den
+    Hauptpfad nicht brechen.
+    """
+    if not settings.debug_save_crops:
+        return
+    try:
+        out_dir = _debug_crop_dir(plan_id)
+        path = out_dir / f"page-{page_number}-{stage}.{extension}"
+        path.write_bytes(payload)
+        logger.info(
+            "debug_crop.saved plan=%s page=%d stage=%s path=%s bytes=%d",
+            plan_id, page_number, stage, path, len(payload),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "debug_crop.failed plan=%s page=%d stage=%s err=%s: %s",
+            plan_id, page_number, stage, type(exc).__name__, exc,
+        )
+
+
+def _save_debug_json(
+    payload: dict, *,
+    plan_id: UUID, page_number: int, stage: str,
+) -> None:
+    """JSON-Variante von ``_save_debug_crop`` — für BBox-Koordinaten,
+    Skalierungs-Faktoren, Fail-Safe-Reasons. Gleicher No-op + No-Raise
+    Vertrag."""
+    if not settings.debug_save_crops:
+        return
+    try:
+        out_dir = _debug_crop_dir(plan_id)
+        path = out_dir / f"page-{page_number}-{stage}.json"
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        logger.info(
+            "debug_crop.saved plan=%s page=%d stage=%s path=%s",
+            plan_id, page_number, stage, path,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "debug_crop.failed plan=%s page=%d stage=%s err=%s: %s",
+            plan_id, page_number, stage, type(exc).__name__, exc,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Schritt 1 — Haiku-Call zur BBox-Lokalisation
+# ---------------------------------------------------------------------------
+
+
+async def _find_building_bbox(
+    image_bytes: bytes, *,
+    image_width: int, image_height: int,
+    page_number: int,
+) -> dict | None:
+    """Schritt 1 des Two-Pass-Flows.
+
+    Schickt das Low-Res-Bild an Haiku mit dem Building-BBox-Prompt
+    und parst die Antwort. Liefert ``{x, y, width, height}`` (alle int)
+    bei Erfolg, sonst ``None``. Validierung der numerischen Range
+    macht ``_bbox_fail_safe_reason``.
+    """
+    import anthropic
+
+    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    prompt = BUILDING_BBOX_PROMPT_TEMPLATE.format(
+        image_width=image_width, image_height=image_height,
+    )
+    image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+    try:
+        message = await asyncio.wait_for(
+            client.messages.create(
+                model=_BBOX_MODEL,
+                max_tokens=_BBOX_MAX_TOKENS,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/jpeg",
+                                    "data": image_b64,
+                                },
+                            },
+                            {"type": "text", "text": prompt},
+                        ],
+                    }
+                ],
+            ),
+            timeout=_CLAUDE_CALL_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "two_pass.bbox_timeout page=%d", page_number,
+        )
+        return None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "two_pass.bbox_call_failed page=%d err=%s: %s",
+            page_number, type(exc).__name__, str(exc)[:500],
+        )
+        return None
+
+    response_text = "".join(
+        getattr(block, "text", "") for block in (message.content or [])
+    ).strip()
+    usage = getattr(message, "usage", None)
+    in_tok = getattr(usage, "input_tokens", None)
+    out_tok = getattr(usage, "output_tokens", None)
+
+    if not response_text:
+        logger.warning(
+            "two_pass.bbox_empty_response page=%d input_tokens=%s output_tokens=%s",
+            page_number, in_tok, out_tok,
+        )
+        return None
+
+    try:
+        bbox = json.loads(_extract_json_blob(response_text))
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.warning(
+            "two_pass.bbox_parse_failed page=%d err=%s raw=%s",
+            page_number, e, response_text[:500].replace("\n", "\\n"),
+        )
+        return None
+
+    if not isinstance(bbox, dict):
+        logger.warning(
+            "two_pass.bbox_not_dict page=%d raw=%s",
+            page_number, response_text[:500].replace("\n", "\\n"),
+        )
+        return None
+
+    logger.info(
+        "two_pass.bbox_call page=%d input_tokens=%s output_tokens=%s bbox=%r",
+        page_number, in_tok, out_tok, bbox,
+    )
+    return bbox
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator — Schritt 1 + 2 + 3 + Fail-Safe + Kacheln + Debug-Save
+# ---------------------------------------------------------------------------
+
+
+async def _extract_rooms_two_pass(
+    *,
+    doc,
+    page_number: int,
+    fitz_executor: concurrent.futures.Executor,
+    fallback_image_bytes: bytes,
+    fallback_mime_type: str,
+    plan_id: UUID,
+) -> dict | None:
+    """v24.4.6 — der neue Hauptpfad pro Seite.
+
+    Flow:
+      1. Low-Res-Render (1536 px Long-Edge) im fitz-Executor.
+      2. Haiku-Call → BBox des Gebäudes.
+      3. Fail-Safe-Check → wenn problematisch: Fallback auf den
+         existierenden Single-Pass (``_extract_rooms_from_image`` auf
+         dem hoch aufgelösten ``fallback_image_bytes``).
+      4. Sonst: High-Res-Clip rendern, je nach Größe entweder
+         resizen oder 2×2 kacheln.
+      5. Sonnet-Call(s) für Schritt 3 (Räume + Flächen ablesen).
+      6. Bei Kacheln: Ergebnisse mergen + Duplikate entfernen.
+
+    Liefert das geparste Vision-Resultat oder ``None`` bei
+    unbehebbarem Fehler. Logging deckt jeden Branch ab; debug
+    snapshots werden bei aktivem Flag immer mitgeschrieben.
+    """
+    loop = asyncio.get_event_loop()
+
+    # ---- Schritt 1: Low-Res-Render -----------------------------------
+    try:
+        low_res_bytes, low_res_w, low_res_h = await loop.run_in_executor(
+            fitz_executor,
+            _render_page_long_edge_jpeg,
+            doc, page_number, _BBOX_PROBE_LONG_EDGE_PX,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Render-Fehler in Schritt 1 → zurück zum klassischen Pfad
+        # mit dem bereits gerenderten Fallback-Bild.
+        logger.warning(
+            "two_pass.low_res_render_failed page=%d err=%s: %s — "
+            "falling back to single-pass",
+            page_number, type(exc).__name__, str(exc)[:300],
+        )
+        return await _extract_rooms_from_image(
+            fallback_image_bytes,
+            page_number=page_number,
+            mime_type=fallback_mime_type,
+        )
+    logger.info(
+        "two_pass.low_res_rendered page=%d w=%d h=%d bytes=%d",
+        page_number, low_res_w, low_res_h, len(low_res_bytes),
+    )
+    _save_debug_crop(
+        low_res_bytes, plan_id=plan_id, page_number=page_number, stage="low_res",
+    )
+
+    # ---- Schritt 1b: BBox-Probe (Haiku) ------------------------------
+    bbox = await _find_building_bbox(
+        low_res_bytes,
+        image_width=low_res_w, image_height=low_res_h,
+        page_number=page_number,
+    )
+
+    # ---- Fail-Safe-Check ---------------------------------------------
+    reason = _bbox_fail_safe_reason(
+        bbox, image_width=low_res_w, image_height=low_res_h,
+    )
+    _save_debug_json(
+        {
+            "bbox": bbox,
+            "low_res_dims": [low_res_w, low_res_h],
+            "fail_safe_reason": reason,
+        },
+        plan_id=plan_id, page_number=page_number, stage="bbox",
+    )
+    if reason is not None:
+        logger.warning(
+            "two_pass.fallback page=%d reason=%s bbox=%r — using fallback image",
+            page_number, reason, bbox,
+        )
+        return await _extract_rooms_from_image(
+            fallback_image_bytes,
+            page_number=page_number,
+            mime_type=fallback_mime_type,
+        )
+
+    # ---- Schritt 2: High-Res-Clip rendern ----------------------------
+    # Hole Page-Dimensionen im fitz-Executor (Doc-Access).
+    def _page_dims() -> tuple[float, float]:
+        page = doc[page_number - 1]
+        return float(page.rect.width), float(page.rect.height)
+
+    pdf_w_pts, pdf_h_pts = await loop.run_in_executor(fitz_executor, _page_dims)
+    clip_rect = _bbox_to_pdf_rect(
+        bbox,
+        source_width_px=low_res_w, source_height_px=low_res_h,
+        pdf_width_pts=pdf_w_pts, pdf_height_pts=pdf_h_pts,
+    )
+
+    try:
+        crop_bytes, crop_w, crop_h = await loop.run_in_executor(
+            fitz_executor,
+            _render_page_clip_jpeg,
+            doc, page_number, clip_rect, _HIGH_RES_DPI,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "two_pass.clip_render_failed page=%d err=%s: %s — falling back",
+            page_number, type(exc).__name__, str(exc)[:300],
+        )
+        return await _extract_rooms_from_image(
+            fallback_image_bytes,
+            page_number=page_number,
+            mime_type=fallback_mime_type,
+        )
+    logger.info(
+        "two_pass.crop_rendered page=%d pdf_rect=(%.1f,%.1f,%.1f,%.1f) "
+        "pixels=%dx%d bytes=%d",
+        page_number,
+        clip_rect.x0, clip_rect.y0, clip_rect.x1, clip_rect.y1,
+        crop_w, crop_h, len(crop_bytes),
+    )
+    _save_debug_crop(
+        crop_bytes, plan_id=plan_id, page_number=page_number, stage="high_res_crop",
+    )
+
+    # ---- Kachel-Entscheidung (physische Größe in pt) -----------------
+    do_tile = _should_tile(clip_rect=clip_rect)
+    logger.info(
+        "two_pass.tile_decision page=%d tile=%s crop_pt=(%.1fx%.1f) threshold_pt=%.1f",
+        page_number, do_tile,
+        clip_rect.width, clip_rect.height, _TILE_THRESHOLD_LONG_EDGE_PT,
+    )
+
+    if do_tile:
+        # 2×2 Kacheln (Pillow, läuft im default-Pool — kein fitz nötig).
+        tiles = await loop.run_in_executor(
+            None, _tile_2x2_pillow, crop_bytes,
+        )
+        tile_results: list[dict | None] = []
+        for i, tile_bytes in enumerate(tiles):
+            _save_debug_crop(
+                tile_bytes, plan_id=plan_id, page_number=page_number,
+                stage=f"tile_{i}",
+            )
+            # Jede Kachel separat auf 1536-Long-Edge bringen — die
+            # geviertelten Kacheln sind oft noch deutlich > 1536.
+            resized, _, _ = await loop.run_in_executor(
+                None, _tile_resize_for_vision, tile_bytes,
+            )
+            result = await _extract_rooms_from_image(
+                resized, page_number=page_number, mime_type="image/jpeg",
+            )
+            tile_results.append(result)
+        merged = _merge_tiled_results(tile_results)
+        merged_rooms = _count_extracted_rooms(merged)
+        # Dedup-Statistik fürs Log: rohe Raum-Anzahl pro Kachel summiert
+        # minus gemerged. Hilft beim Abschätzen, ob die Überlappung
+        # systematisch Doppel-Erkennungen erzeugt.
+        raw_room_sum = sum(
+            _count_extracted_rooms(r) for r in tile_results if r is not None
+        )
+        logger.info(
+            "two_pass.merge_dedup page=%d tiles=%d raw_rooms=%d merged_rooms=%d "
+            "duplicates_removed=%d",
+            page_number, len(tile_results), raw_room_sum, merged_rooms,
+            raw_room_sum - merged_rooms,
+        )
+        return merged
+
+    # ---- Einzelbild-Pfad: ggf. resizen + Sonnet-Call -----------------
+    resized_bytes, resized_w, resized_h = await loop.run_in_executor(
+        None, _tile_resize_for_vision, crop_bytes,
+    )
+    if (resized_w, resized_h) != (crop_w, crop_h):
+        _save_debug_crop(
+            resized_bytes, plan_id=plan_id, page_number=page_number,
+            stage="resized",
+        )
+        logger.info(
+            "two_pass.crop_resized page=%d from=%dx%d to=%dx%d bytes=%d",
+            page_number, crop_w, crop_h, resized_w, resized_h, len(resized_bytes),
+        )
+    return await _extract_rooms_from_image(
+        resized_bytes, page_number=page_number, mime_type="image/jpeg",
+    )
+
+
+def _tile_resize_for_vision(image_bytes: bytes) -> tuple[bytes, int, int]:
+    """Convenience-Wrapper für die Default-Resize-Parameter im
+    Two-Pass-Pfad: auf ``_VISION_LONG_EDGE_PX`` (1536) bringen."""
+    return _resize_long_edge_pillow(
+        image_bytes, target_long_edge=_VISION_LONG_EDGE_PX,
+    )
 
 
 async def _store_extraction_result(

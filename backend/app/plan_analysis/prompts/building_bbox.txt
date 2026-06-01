@@ -1,0 +1,17 @@
+Du siehst einen Bauplan auf einem Bild der Größe {image_width} × {image_height} Pixel.
+
+Lokalisiere die Pixel-Bounding-Box des GEBÄUDE-GRUNDRISSES — der inneren Wohn-/Nutzfläche mit ihren Räumen.
+
+NICHT einschließen:
+  - Lageplan, Grundstück, Garten, Außenanlagen, Zufahrten
+  - Plankopf, Schriftfeld, Legende, Maßstab, Nordpfeil
+  - Bemaßungsketten außerhalb der Außenwände
+  - Texte und Notizen am Bildrand
+
+Wenn das gesamte Bild bereits NUR der Gebäude-Grundriss ist (kein Lageplan/Plankopf/Rand drumherum sichtbar), gib die volle Bildfläche zurück: {{"x": 0, "y": 0, "width": {image_width}, "height": {image_height}}}.
+
+Antworte ausschließlich mit diesem JSON-Objekt, ohne Erklärung, ohne Markdown:
+
+{{"x": <linker Offset, Pixel>, "y": <oberer Offset, Pixel>, "width": <Box-Breite, Pixel>, "height": <Box-Höhe, Pixel>}}
+
+Bedingungen: x ≥ 0, y ≥ 0, x + width ≤ {image_width}, y + height ≤ {image_height}.
