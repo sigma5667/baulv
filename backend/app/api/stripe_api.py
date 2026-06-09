@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timezone
 
 import stripe
@@ -10,6 +11,8 @@ from app.db.models.user import User
 from app.db.session import get_db
 from app.legal_versions import BUSINESS_TERMS_VERSION
 from app.services.consent import record_business_status_confirmation
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -171,6 +174,29 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         if user:
             if status == "active":
                 user.subscription_plan = plan
+                # v24.4.8 — Audit-Logging gegen die im B2B-Endkontroll-
+                # Bericht identifizierte theoretische Webhook-Lücke. Eine
+                # Subscription geht hier nur "active", wenn entweder
+                # unser /checkout-Endpoint die UGB-Bestätigung schon
+                # validiert hat (Normalfall) ODER jemand Stripe-Admin-
+                # Zugang hat und manuell eine Subscription anlegt
+                # (Ausnahmefall). Im zweiten Fall ist die Bestätigung
+                # ggf. nicht im User-State, was wir hier loggen — als
+                # WARN, nicht als Hard-Reject:
+                #   * Ablehnen würde einen halb-bezahlt-State erzeugen
+                #     (Stripe rechnet ab, wir setzen den Plan nicht →
+                #     User zahlt, sieht aber keinen Pro-Feature-Zugang).
+                #   * Stattdessen Audit-Hinweis für Anomalie-Erkennung
+                #     in den Railway-Logs.
+                if user.current_business_terms_version is None:
+                    logger.warning(
+                        "stripe.subscription_activated_without_business_terms "
+                        "customer=%s user=%s plan=%s subscription=%s — "
+                        "investigate: should never happen via /checkout (which "
+                        "validates UGB confirmation server-side). Likely cause: "
+                        "manual Stripe-Admin subscription create.",
+                        customer_id, user.id, plan, data["id"],
+                    )
             user.stripe_subscription_id = data["id"]
             await db.flush()
 
