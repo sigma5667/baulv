@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.consent import (
     EVENT_ANALYTICS_OPTIN_CHANGE,
+    EVENT_BUSINESS_STATUS_CONFIRMED,
     EVENT_MARKETING_OPTIN_CHANGE,
     EVENT_PRIVACY_UPDATE,
     EVENT_REGISTRATION,
@@ -33,6 +34,7 @@ from app.db.models.consent import (
     ConsentSnapshot,
 )
 from app.legal_versions import (
+    BUSINESS_TERMS_VERSION,
     PRIVACY_POLICY_VERSION,
     TERMS_VERSION,
 )
@@ -75,6 +77,7 @@ async def record_consent(
     terms_version: str | None,
     marketing_optin: bool,
     analytics_consent: bool = False,
+    business_terms_version: str | None = None,
     request: Request | None = None,
 ) -> ConsentSnapshot:
     """Write a single consent-snapshot row.
@@ -89,6 +92,13 @@ async def record_consent(
     "analytics-off" snapshot. New call sites should always pass
     the user's current flag.
 
+    ``business_terms_version`` (v24.4.8) defaults to None for call
+    sites that pre-date this column — older snapshots had no notion
+    of business-terms. New snapshots SHOULD pass the user's current
+    value (or the freshly-accepted value for registration/refresh/
+    business-status-confirmed events), so a single snapshot row
+    reconstructs the user's full consent state at that moment.
+
     On internal failure we log and re-raise — losing a consent
     snapshot must NOT silently succeed. This is the difference
     between consent-evidence (must not be lost) and the audit
@@ -102,6 +112,7 @@ async def record_consent(
         terms_version=terms_version,
         marketing_optin=marketing_optin,
         analytics_consent=analytics_consent,
+        business_terms_version=business_terms_version,
         ip_address=_client_ip(request),
         user_agent=_user_agent(request),
     )
@@ -115,13 +126,15 @@ async def record_consent(
         )
         raise
     logger.info(
-        "consent.snapshot_recorded event=%s user=%s privacy=%s terms=%s marketing=%s analytics=%s",
+        "consent.snapshot_recorded event=%s user=%s privacy=%s terms=%s "
+        "marketing=%s analytics=%s business_terms=%s",
         event_type,
         user_id,
         privacy_version,
         terms_version,
         marketing_optin,
         analytics_consent,
+        business_terms_version,
     )
     return snapshot
 
@@ -139,6 +152,7 @@ async def record_registration_consent(
     user_id: UUID,
     privacy_version: str,
     terms_version: str,
+    business_terms_version: str,
     marketing_optin: bool,
     analytics_consent: bool = False,
     request: Request | None = None,
@@ -152,6 +166,12 @@ async def record_registration_consent(
     consent state at signup — every later analytics-toggle row in
     ``consent_snapshots`` describes a *change* relative to this
     baseline.
+
+    ``business_terms_version`` (v24.4.8) is required at registration
+    — the Unternehmer-Bestätigung is a Pflicht-Checkbox in
+    RegisterPage. NULL would mean the user signed up without ever
+    confirming UGB-Status, which the v24.4.8+ register endpoint
+    refuses.
     """
     return await record_consent(
         db,
@@ -161,6 +181,7 @@ async def record_registration_consent(
         terms_version=terms_version,
         marketing_optin=marketing_optin,
         analytics_consent=analytics_consent,
+        business_terms_version=business_terms_version,
         request=request,
     )
 
@@ -171,30 +192,39 @@ async def record_consent_refresh(
     user_id: UUID,
     privacy_version: str,
     terms_version: str,
+    business_terms_version: str,
     marketing_optin: bool,
     analytics_consent: bool,
     privacy_changed: bool,
     terms_changed: bool,
+    business_terms_changed: bool = False,
     request: Request | None = None,
 ) -> ConsentSnapshot:
     """Snapshot for the consent-refresh modal flow.
 
     The ``event_type`` is picked from whichever document actually
     changed since the user last accepted: ``privacy_update`` if
-    the privacy policy bumped, ``terms_update`` if the terms did.
-    If both changed simultaneously (rare but possible on a major
-    legal review), we use ``privacy_update`` — privacy carries
-    more user-impact in DSGVO terms, so it gets the dominant tag.
+    the privacy policy bumped, ``terms_update`` if the terms did,
+    ``business_status_confirmed`` if the UGB-Klausel bumped (or if
+    the user was grandfathered and is confirming for the first time).
+    If multiple changed simultaneously (rare but possible on a major
+    legal review), we prefer ``privacy_update`` — privacy carries
+    more user-impact in DSGVO terms.
 
     ``analytics_consent`` (v23.8) is captured on every refresh too
     — the modal exposes the analytics checkbox alongside the
     legal-doc acceptance, so the user might flip it during the
     same gesture.
+
+    ``business_terms_version`` (v24.4.8) is always written into
+    the snapshot so the row stays self-contained.
     """
     if privacy_changed:
         event_type = EVENT_PRIVACY_UPDATE
     elif terms_changed:
         event_type = EVENT_TERMS_UPDATE
+    elif business_terms_changed:
+        event_type = EVENT_BUSINESS_STATUS_CONFIRMED
     else:
         # Caller shouldn't have asked to refresh if nothing
         # changed, but log and fall through with privacy_update
@@ -212,6 +242,7 @@ async def record_consent_refresh(
         terms_version=terms_version,
         marketing_optin=marketing_optin,
         analytics_consent=analytics_consent,
+        business_terms_version=business_terms_version,
         request=request,
     )
 
@@ -222,6 +253,7 @@ async def record_marketing_optin_change(
     user_id: UUID,
     new_value: bool,
     analytics_consent: bool,
+    business_terms_version: str | None = None,
     request: Request | None = None,
 ) -> ConsentSnapshot:
     """Snapshot when the user toggles their marketing-mail flag.
@@ -230,6 +262,12 @@ async def record_marketing_optin_change(
     record them so the row is self-contained — "what was the
     user's full consent state at this moment?" can be answered
     from a single snapshot without joining to the user table.
+
+    ``business_terms_version`` (v24.4.8) — caller should pass the
+    user's current value (which may be NULL for grandfathered
+    pre-v24.4.8 accounts). We do NOT auto-fill with the canonical
+    BUSINESS_TERMS_VERSION here — that would falsely claim the user
+    had confirmed something they never confirmed.
     """
     return await record_consent(
         db,
@@ -239,6 +277,7 @@ async def record_marketing_optin_change(
         terms_version=TERMS_VERSION,
         marketing_optin=new_value,
         analytics_consent=analytics_consent,
+        business_terms_version=business_terms_version,
         request=request,
     )
 
@@ -249,6 +288,7 @@ async def record_analytics_optin_change(
     user_id: UUID,
     new_value: bool,
     marketing_optin: bool,
+    business_terms_version: str | None = None,
     request: Request | None = None,
 ) -> ConsentSnapshot:
     """Snapshot when the user toggles the analytics-opt-in flag.
@@ -260,6 +300,10 @@ async def record_analytics_optin_change(
     state at the moment of the snapshot) and the snapshot's
     ``event_type`` (``analytics_optin_change``) so the row is
     self-describing without a join to ``users``.
+
+    ``business_terms_version`` (v24.4.8) — same handling as in
+    ``record_marketing_optin_change``: pass the user's current
+    value (may be NULL for grandfathered accounts).
     """
     return await record_consent(
         db,
@@ -269,6 +313,44 @@ async def record_analytics_optin_change(
         terms_version=TERMS_VERSION,
         marketing_optin=marketing_optin,
         analytics_consent=new_value,
+        business_terms_version=business_terms_version,
+        request=request,
+    )
+
+
+async def record_business_status_confirmation(
+    db: AsyncSession,
+    *,
+    user_id: UUID,
+    business_terms_version: str,
+    marketing_optin: bool,
+    analytics_consent: bool,
+    request: Request | None = None,
+) -> ConsentSnapshot:
+    """Snapshot for the Unternehmer-Bestätigung am Vertragsschluss-Moment
+    (v24.4.8).
+
+    Wird vor jedem Stripe-Checkout-Aufruf geschrieben, sodass jeder
+    Kaufversuch einen frischen Beweis mit aktuellem IP/UA/Timestamp
+    erzeugt. Auch wenn die User-Row schon ``current_business_terms_version
+    == BUSINESS_TERMS_VERSION`` trägt (= bei Registrierung schon
+    bestätigt) — Defense in Depth gegen die OGH-"hätte-wissen-müssen"-
+    Linie und für die forensische Beweiskette bei einem späteren
+    Stripe-Dispute.
+
+    Privacy/Terms-Versionen werden mit den kanonischen Werten gefüllt
+    (gleiches Pattern wie ``record_marketing_optin_change``) — so
+    bleibt der Snapshot self-contained.
+    """
+    return await record_consent(
+        db,
+        event_type=EVENT_BUSINESS_STATUS_CONFIRMED,
+        user_id=user_id,
+        privacy_version=PRIVACY_POLICY_VERSION,
+        terms_version=TERMS_VERSION,
+        marketing_optin=marketing_optin,
+        analytics_consent=analytics_consent,
+        business_terms_version=business_terms_version,
         request=request,
     )
 

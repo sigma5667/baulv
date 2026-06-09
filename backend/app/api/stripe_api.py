@@ -1,11 +1,15 @@
+from datetime import datetime, timezone
+
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
-from app.db.session import get_db
-from app.db.models.user import User
 from app.auth import get_current_user
+from app.config import settings
+from app.db.models.user import User
+from app.db.session import get_db
+from app.legal_versions import BUSINESS_TERMS_VERSION
+from app.services.consent import record_business_status_confirmation
 
 router = APIRouter()
 
@@ -42,9 +46,28 @@ async def _ensure_stripe_customer(user: User, db: AsyncSession) -> str:
 @router.post("/checkout")
 async def create_checkout_session(
     plan: str,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """Erzeugt eine Stripe-Hosted-Checkout-Session für das gewählte Plan.
+
+    v24.4.8 — B2B-Absicherung gegen FAGG/KSchG:
+      * Bevor wir Stripe überhaupt anrufen, prüfen wir dass der User
+        die aktuelle Unternehmer-Bestätigung (BUSINESS_TERMS_VERSION)
+        akzeptiert hat. Grandfathered Bestandsuser (NULL) oder User
+        mit veralteter Version werden mit 400 abgewiesen — das
+        Frontend zeigt ihnen den ConsentRefreshModal und sie können
+        es danach erneut versuchen.
+      * Nach erfolgreicher Validierung schreiben wir einen frischen
+        ``business_status_confirmed``-Snapshot mit IP+UA des aktuellen
+        Requests — pro Kauf ein neuer Beweis-Eintrag am tatsächlichen
+        Vertragsschluss-Moment.
+      * In die Stripe-Customer-Metadata legen wir Versionstring +
+        Bestätigungs-Zeitstempel, sodass die Beweiskette auch in der
+        Stripe-Console direkt sichtbar ist (wichtig für
+        Charge-Disputes).
+    """
     if not settings.stripe_secret_key:
         raise HTTPException(503, "Stripe ist noch nicht konfiguriert.")
 
@@ -55,7 +78,35 @@ async def create_checkout_session(
     if not price_id:
         raise HTTPException(400, f"Ungültiger Plan: {plan}")
 
+    # v24.4.8 — B2B-Abgrenzung enforced server-side. NIE auf
+    # Client-State allein vertrauen. Auch wenn die SubscriptionPage
+    # die Checkbox als Pflicht rendert, muss das Backend die
+    # Bestätigung im DB-Zustand des Users haben — sonst lehnt es ab.
+    if user.current_business_terms_version != BUSINESS_TERMS_VERSION:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Bitte zuerst auf der Plattform die Unternehmer-"
+                "Bestätigung in der aktuellen Fassung erteilen. "
+                "Laden Sie die Seite neu — der Dialog wird "
+                "automatisch erscheinen."
+            ),
+        )
+
     customer_id = await _ensure_stripe_customer(user, db)
+
+    # v24.4.8 — frischer Beweis-Snapshot pro Checkout. Trifft auch
+    # zu wenn der User schon bei Registrierung bestätigt hatte —
+    # Defense in Depth gegen die OGH-"hätte-wissen-müssen"-Linie.
+    confirmed_at = datetime.now(timezone.utc).isoformat()
+    await record_business_status_confirmation(
+        db,
+        user_id=user.id,
+        business_terms_version=BUSINESS_TERMS_VERSION,
+        marketing_optin=user.marketing_email_opt_in,
+        analytics_consent=user.analytics_consent,
+        request=request,
+    )
 
     session = stripe.checkout.Session.create(
         customer=customer_id,
@@ -64,7 +115,13 @@ async def create_checkout_session(
         line_items=[{"price": price_id, "quantity": 1}],
         success_url=f"{settings.frontend_url}/app/subscription?success=true",
         cancel_url=f"{settings.frontend_url}/app/subscription?canceled=true",
-        metadata={"user_id": str(user.id)},
+        metadata={
+            "user_id": str(user.id),
+            # v24.4.8 — Dispute-Defense direkt in der Stripe-Console
+            # einsehbar, ohne in unsere DB schauen zu müssen.
+            "business_terms_version": BUSINESS_TERMS_VERSION,
+            "business_status_confirmed_at": confirmed_at,
+        },
     )
     return {"checkout_url": session.url}
 

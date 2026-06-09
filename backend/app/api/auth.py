@@ -89,6 +89,8 @@ from app.db.models.analytics import (
     UsageAnalyticsEvent,
 )
 from app.legal_versions import (
+    BUSINESS_TERMS_DATE,
+    BUSINESS_TERMS_VERSION,
     PRIVACY_POLICY_DATE,
     PRIVACY_POLICY_VERSION,
     TERMS_DATE,
@@ -281,6 +283,11 @@ def _user_response(user: User) -> UserResponse:
         accepted_terms_version=user.current_terms_version,
         required_privacy_version=PRIVACY_POLICY_VERSION,
         required_terms_version=TERMS_VERSION,
+        # v24.4.8 — Unternehmer-Bestätigung. ``accepted_business_terms_version``
+        # ist NULL für Bestandsuser vor v24.4.8 (grandfathered) — diese
+        # triggern den ConsentRefreshModal beim nächsten Login.
+        accepted_business_terms_version=user.current_business_terms_version,
+        required_business_terms_version=BUSINESS_TERMS_VERSION,
         # v23.8 — analytics state. The frontend reads these to
         # render the privacy-settings page + the admin nav entry.
         analytics_consent=user.analytics_consent,
@@ -369,6 +376,17 @@ async def register(
                 "Seite neu und akzeptieren Sie die aktuelle Version."
             ),
         )
+    # v24.4.8 — Unternehmer-Bestätigung (B2B-Abgrenzung). Stale-Tab-
+    # Schutz analog Privacy/Terms.
+    if data.accepted_business_terms_version != BUSINESS_TERMS_VERSION:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Die Unternehmer-Bestätigung wurde aktualisiert. "
+                "Bitte laden Sie die Seite neu und akzeptieren Sie "
+                "die aktuelle Version."
+            ),
+        )
 
     # v24.4.1+ — Passwort-Stärke vor dem Email-Existence-Check.
     # Diese Reihenfolge ist bewusst — wir verraten keine Konto-
@@ -401,6 +419,10 @@ async def register(
         marketing_email_opt_in=data.marketing_optin,
         current_privacy_version=PRIVACY_POLICY_VERSION,
         current_terms_version=TERMS_VERSION,
+        # v24.4.8 — Unternehmer-Bestätigung bei Registrierung
+        # gesetzt; vor jedem Stripe-Checkout serverseitig erneut
+        # gegen die kanonische Version geprüft (siehe stripe_api.py).
+        current_business_terms_version=BUSINESS_TERMS_VERSION,
         analytics_consent=data.analytics_consent,
         industry_segment=industry,
     )
@@ -417,6 +439,11 @@ async def register(
         user_id=user.id,
         privacy_version=PRIVACY_POLICY_VERSION,
         terms_version=TERMS_VERSION,
+        # v24.4.8 — Unternehmer-Bestätigung als Teil des Registrierungs-
+        # Snapshots. Damit ist die Beweiskette vollständig: ein
+        # einzelner EVENT_REGISTRATION-Snapshot dokumentiert die
+        # akzeptierte UGB-Klausel mit IP+UA.
+        business_terms_version=BUSINESS_TERMS_VERSION,
         marketing_optin=data.marketing_optin,
         analytics_consent=data.analytics_consent,
         request=request,
@@ -717,6 +744,12 @@ async def get_legal_versions():
         privacy_date=PRIVACY_POLICY_DATE,
         terms_version=TERMS_VERSION,
         terms_date=TERMS_DATE,
+        # v24.4.8 — Unternehmer-Bestätigung wird neben Privacy/Terms
+        # in RegisterPage, SubscriptionPage und ConsentRefreshModal
+        # angezeigt; alle drei Endpoints holen sich die Version
+        # über diesen Public-Endpoint.
+        business_terms_version=BUSINESS_TERMS_VERSION,
+        business_terms_date=BUSINESS_TERMS_DATE,
     )
 
 
@@ -769,12 +802,29 @@ async def refresh_consent(
                 "Bitte laden Sie die Seite neu."
             ),
         )
+    # v24.4.8 — Unternehmer-Bestätigung (Stale-Tab-Schutz).
+    if data.accepted_business_terms_version != BUSINESS_TERMS_VERSION:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Die Unternehmer-Bestätigung wurde inzwischen erneut "
+                "aktualisiert. Bitte laden Sie die Seite neu."
+            ),
+        )
 
     privacy_changed = user.current_privacy_version != PRIVACY_POLICY_VERSION
     terms_changed = user.current_terms_version != TERMS_VERSION
+    # v24.4.8 — auch ein "grandfathered → bestätigt" Übergang
+    # (NULL → "1.0") gilt als business_terms_changed: der Snapshot
+    # bekommt dann ``event_type='business_status_confirmed'`` als
+    # Tag, weil das semantisch ein erstmaliges Bestätigen ist.
+    business_terms_changed = (
+        user.current_business_terms_version != BUSINESS_TERMS_VERSION
+    )
 
     user.current_privacy_version = PRIVACY_POLICY_VERSION
     user.current_terms_version = TERMS_VERSION
+    user.current_business_terms_version = BUSINESS_TERMS_VERSION
     user.marketing_email_opt_in = data.marketing_optin
     # v23.8 — analytics state can change as part of the refresh.
     # The modal exposes the analytics checkbox alongside the
@@ -789,10 +839,12 @@ async def refresh_consent(
         user_id=user.id,
         privacy_version=PRIVACY_POLICY_VERSION,
         terms_version=TERMS_VERSION,
+        business_terms_version=BUSINESS_TERMS_VERSION,
         marketing_optin=data.marketing_optin,
         analytics_consent=data.analytics_consent,
         privacy_changed=privacy_changed,
         terms_changed=terms_changed,
+        business_terms_changed=business_terms_changed,
         request=request,
     )
     # Existing audit-log channel still records the privacy update

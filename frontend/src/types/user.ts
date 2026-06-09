@@ -29,6 +29,14 @@ export interface User {
    * Always populated; comes from ``app/legal_versions.py``. */
   required_privacy_version: string;
   required_terms_version: string;
+  /** v24.4.8 — Unternehmer-Bestätigung iSd § 1 UGB (B2B-Abgrenzung
+   * gegen FAGG/KSchG). ``accepted_business_terms_version`` ist NULL
+   * für grandfathered Bestandsuser (Konto vor v24.4.8 registriert).
+   * Für die müssen wir den Modal anzeigen UND ihre erste Bestätigung
+   * einholen — siehe ``needsConsentRefresh`` weiter unten, die NULL
+   * im Business-Feld jetzt aktiv als "refresh nötig" wertet. */
+  accepted_business_terms_version: string | null;
+  required_business_terms_version: string;
   /** v23.8 — anonymised analytics opt-in. Default false. The
    * privacy-settings page exposes a toggle; see
    * ``/app/settings/datenschutz``. */
@@ -88,8 +96,17 @@ export interface UserAnalyticsEvent {
 }
 
 /** Convenience predicate — does this user need to re-accept the
- * legal documents? NULL accepted versions mean grandfathered
- * (pre-v23.2 user, separate retroactive campaign), NOT stale. */
+ * legal documents?
+ *
+ * For privacy + terms: NULL accepted versions mean grandfathered
+ * (pre-v23.2 user, separate retroactive campaign), NOT stale.
+ *
+ * For business_terms (v24.4.8): NULL **does** count as "refresh
+ * needed". The Unternehmer-Bestätigung is a hard B2B-Abgrenzung
+ * gegen FAGG — wir können einen grandfathered Bestandsuser nicht
+ * stillschweigend als "hat bestätigt" behandeln, sonst hätten wir
+ * keinen Beweis-Snapshot. Der ConsentRefreshModal fängt sie beim
+ * nächsten Login ein und holt die erste Bestätigung. */
 export function needsConsentRefresh(user: User): boolean {
   if (
     user.accepted_privacy_version !== null &&
@@ -100,6 +117,14 @@ export function needsConsentRefresh(user: User): boolean {
   if (
     user.accepted_terms_version !== null &&
     user.accepted_terms_version !== user.required_terms_version
+  ) {
+    return true;
+  }
+  // v24.4.8 — Business-Terms: NULL ist hier KEINE "grandfathered,
+  // lass in Ruhe"-Markierung, sondern "noch nie bestätigt → muss
+  // jetzt". Daher kein NULL-Filter wie bei Privacy/Terms.
+  if (
+    user.accepted_business_terms_version !== user.required_business_terms_version
   ) {
     return true;
   }

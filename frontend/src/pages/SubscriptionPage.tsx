@@ -98,6 +98,15 @@ export function SubscriptionPage() {
   const [checkoutState, setCheckoutState] = useState<CheckoutState>({
     kind: "idle",
   });
+  // v24.4.8 — Unternehmer-Bestätigung pro Plan-Karte. Frische
+  // Bestätigung am Vertragsschluss-Moment (zusätzlich zur initialen
+  // bei Registrierung). Per-plan damit ein User der von Basis auf
+  // Pro will sich nicht versehentlich für Enterprise mit-bestätigt.
+  // Backend setzt zusätzlich eine HARTE Server-side-Prüfung — diese
+  // Checkbox ist die UX-Schicht, nicht die Sicherheits-Schicht.
+  const [businessConfirmed, setBusinessConfirmed] = useState<
+    Record<string, boolean>
+  >({});
 
   const success = searchParams.get("success") === "true";
   const canceled = searchParams.get("canceled") === "true";
@@ -303,14 +312,50 @@ export function SubscriptionPage() {
                   <ArrowRight className="h-4 w-4" />
                 </button>
               ) : (
-                <button
-                  onClick={() => handleCheckout(plan.id)}
-                  disabled={loadingPlan === plan.id}
-                  className="flex w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                >
-                  {loadingPlan === plan.id ? "Weiterleitung..." : "Jetzt upgraden"}
-                  <ArrowRight className="h-4 w-4" />
-                </button>
+                <div className="space-y-3">
+                  {/* v24.4.8 — Unternehmer-Bestätigung am Vertragsschluss-
+                      Moment (Pflicht). Selbe Klausel wie auf RegisterPage
+                      und im ConsentRefreshModal — die User-Reg.-
+                      Bestätigung wurde schon abgegeben, aber der OGH-
+                      "hätte-wissen-müssen"-Schutz wird stärker, wenn
+                      die Bestätigung direkt am Pay-Button wiederholt
+                      wird. Backend lehnt 400 ab wenn der User-State
+                      die Bestätigung nicht trägt. */}
+                  <label className="flex cursor-pointer items-start gap-2 rounded-md border-l-2 border-amber-500 bg-amber-50/40 p-2.5 text-xs">
+                    <input
+                      type="checkbox"
+                      required
+                      checked={businessConfirmed[plan.id] ?? false}
+                      onChange={(e) =>
+                        setBusinessConfirmed({
+                          ...businessConfirmed,
+                          [plan.id]: e.target.checked,
+                        })
+                      }
+                      className="mt-0.5 h-4 w-4 shrink-0 rounded border-muted-foreground/40 text-primary focus:ring-primary"
+                    />
+                    <span className="text-muted-foreground">
+                      <strong className="text-foreground">
+                        Unternehmer-Bestätigung:
+                      </strong>{" "}
+                      Ich schließe diesen Vertrag als Unternehmer
+                      (§&nbsp;1 UGB) und nicht als Verbraucher ab.
+                    </span>
+                  </label>
+                  <button
+                    onClick={() => handleCheckout(plan.id)}
+                    disabled={
+                      loadingPlan === plan.id ||
+                      !(businessConfirmed[plan.id] ?? false)
+                    }
+                    className="flex w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {loadingPlan === plan.id
+                      ? "Weiterleitung..."
+                      : "Jetzt upgraden"}
+                    <ArrowRight className="h-4 w-4" />
+                  </button>
+                </div>
               )}
             </div>
           );

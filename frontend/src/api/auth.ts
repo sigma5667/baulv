@@ -42,6 +42,12 @@ export interface LegalVersions {
   privacy_date: string;
   terms_version: string;
   terms_date: string;
+  /** v24.4.8 — Unternehmer-Bestätigung iSd § 1 UGB. Wird in
+   * RegisterPage, SubscriptionPage und ConsentRefreshModal
+   * angezeigt; alle drei holen sich die Version über diesen
+   * Endpoint statt sie hardcoded zu führen. */
+  business_terms_version: string;
+  business_terms_date: string;
 }
 
 export async function fetchLegalVersions(): Promise<LegalVersions> {
@@ -55,6 +61,10 @@ export async function fetchLegalVersions(): Promise<LegalVersions> {
 export async function refreshConsent(data: {
   accepted_privacy_version: string;
   accepted_terms_version: string;
+  /** v24.4.8 — Unternehmer-Bestätigung. Wird neben Privacy/Terms
+   * vom Modal eingesammelt und muss zur kanonischen Server-Version
+   * passen (Stale-Tab-Schutz). */
+  accepted_business_terms_version: string;
   marketing_optin: boolean;
   // v23.8 — analytics state can flip during the refresh too.
   analytics_consent: boolean;

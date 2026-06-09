@@ -29,12 +29,25 @@ class UserRegister(BaseModel):
     email: EmailStr
     password: str
     full_name: str
-    company_name: str | None = None
+    # v24.4.8 — ``company_name`` ist jetzt PFLICHT (war zuvor optional).
+    # BauLV ist ein B2B-Angebot ausschließlich für Unternehmer iSd
+    # § 1 UGB; ohne Firmenname fehlt der wichtigste objektive
+    # B2B-Indikator und die OGH-„hätte-wissen-müssen"-Linie würde
+    # die Unternehmer-Bestätigung weiter unten entwerten. Frontend
+    # macht das Feld required + mit klarem Hinweis "Für B2B-Angebote
+    # erforderlich".
+    company_name: str
     # Mandatory consent fields. The frontend supplies the version
     # strings it displayed; the backend rejects with 409 if they
     # don't match the canonical ``app/legal_versions.py`` values.
     accepted_privacy_version: str
     accepted_terms_version: str
+    # v24.4.8 — Pflicht-Bestätigung der Unternehmer-Eigenschaft
+    # iSd § 1 UGB. Frontend liest die Version aus
+    # ``/api/legal/versions`` und sendet sie hier zurück; Backend
+    # lehnt 409 ab bei Version-Mismatch (Stale-Tab-Schutz analog
+    # Privacy/Terms).
+    accepted_business_terms_version: str
     # Marketing opt-in stays optional, default false per Art. 7
     # ("clear affirmative action"). The user has to actively tick
     # the third checkbox in the SPA.
@@ -94,6 +107,17 @@ class UserResponse(BaseModel):
     accepted_terms_version: str | None = None
     required_privacy_version: str
     required_terms_version: str
+    # v24.4.8 — Unternehmer-Bestätigung. ``accepted_business_terms_version``
+    # ist NULL für grandfathered Bestandsuser (vor v24.4.8 registriert);
+    # die SPA-Logik ``needsConsentRefresh`` triggert den Modal, wenn der
+    # Wert non-null UND ungleich ``required_business_terms_version`` ist.
+    # Pre-v24.4.8 NULL-Werte werden also explizit NICHT geforced — diese
+    # User werden im nächsten Schritt durch eine retroaktive
+    # Reconsent-Kampagne abgeholt (Code-seitig: der ConsentRefreshModal
+    # zeigt die Business-Checkbox auch wenn nur das Business-Feld NULL
+    # ist, siehe ``needsConsentRefresh`` v24.4.8+).
+    accepted_business_terms_version: str | None = None
+    required_business_terms_version: str
     # v23.8 — analytics state. ``analytics_consent`` drives the
     # service-layer gate; ``industry_segment`` is the user's self-
     # classification. ``is_admin`` lets the frontend conditionally
@@ -184,6 +208,12 @@ class ConsentRefreshRequest(BaseModel):
 
     accepted_privacy_version: str
     accepted_terms_version: str
+    # v24.4.8 — der Modal zeigt jetzt drei Pflicht-Checkboxen (Privacy,
+    # Terms, Unternehmer-Bestätigung). Alle drei Versionen kommen
+    # zurück; Backend validiert alle drei gegen die kanonischen
+    # ``*_VERSION``-Konstanten und schreibt einen Snapshot mit allen
+    # drei Werten.
+    accepted_business_terms_version: str
     marketing_optin: bool
     analytics_consent: bool = False
     industry_segment: str | None = None
@@ -198,6 +228,10 @@ class LegalVersionsResponse(BaseModel):
     privacy_date: str
     terms_version: str
     terms_date: str
+    # v24.4.8 — Unternehmer-Bestätigung. Wird neben Privacy/Terms in
+    # RegisterPage + SubscriptionPage + ConsentRefreshModal angezeigt.
+    business_terms_version: str
+    business_terms_date: str
 
 
 # ---------------------------------------------------------------------------

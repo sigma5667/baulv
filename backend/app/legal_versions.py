@@ -48,3 +48,17 @@ PRIVACY_POLICY_DATE: str = "2026-05-18"
 # Allgemeine Geschäftsbedingungen (Terms of Service)
 TERMS_VERSION: str = "1.0"
 TERMS_DATE: str = "2026-04-27"
+
+# Unternehmer-Bestätigung (B2B-Abgrenzung gegen FAGG / KSchG)
+# v24.4.8 (2026-06-09) — erstmalige Einführung. BauLV ist ein
+# B2B-Angebot ausschließlich für Unternehmer iSd § 1 UGB. Der
+# Wortlaut der Bestätigung wird bei Registrierung UND vor jedem
+# Stripe-Checkout abgefragt; ein Snapshot landet in
+# ``consent_snapshots`` mit ``event_type='business_status_confirmed'``.
+#
+# Anwalt-Sign-off vor Go-Live vorgesehen — WKO-Erstberatung mit der
+# AGB-Klausel und der UID-Pflicht-Frage. Bumpt sich die Klausel,
+# triggert der ConsentRefreshModal beim nächsten Login (analog
+# Privacy/Terms-Bumps).
+BUSINESS_TERMS_VERSION: str = "1.0"
+BUSINESS_TERMS_DATE: str = "2026-06-09"

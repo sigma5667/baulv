@@ -36,6 +36,10 @@ export function ConsentRefreshModal({ user }: { user: User }) {
   const { refreshConsent } = useAuth();
   const [privacyAccepted, setPrivacyAccepted] = useState(false);
   const [termsAccepted, setTermsAccepted] = useState(false);
+  // v24.4.8 — Unternehmer-Bestätigung. Drittes Pflicht-Häkchen
+  // analog Privacy/Terms; muss bestätigt sein bevor der Submit
+  // freigegeben wird.
+  const [businessTermsAccepted, setBusinessTermsAccepted] = useState(false);
   const [marketingOptin, setMarketingOptin] = useState(
     user.marketing_email_opt_in,
   );
@@ -57,14 +61,21 @@ export function ConsentRefreshModal({ user }: { user: User }) {
   const termsChanged =
     user.accepted_terms_version !== null &&
     user.accepted_terms_version !== user.required_terms_version;
+  // v24.4.8 — Business-Terms-Drift. Im Unterschied zu Privacy/Terms
+  // gilt NULL hier ALS "muss bestätigen" (grandfathered Bestandsuser
+  // haben nie eine UGB-Bestätigung abgegeben — wir holen die jetzt
+  // erstmals ein). Daher kein NULL-Bypass.
+  const businessTermsChanged =
+    user.accepted_business_terms_version !==
+    user.required_business_terms_version;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
 
-    if (!privacyAccepted || !termsAccepted) {
+    if (!privacyAccepted || !termsAccepted || !businessTermsAccepted) {
       setError(
-        "Bitte bestätigen Sie sowohl Datenschutzerklärung als auch AGB, um BauLV weiter zu nutzen.",
+        "Bitte bestätigen Sie Datenschutzerklärung, AGB und Unternehmer-Status, um BauLV weiter zu nutzen.",
       );
       return;
     }
@@ -74,6 +85,8 @@ export function ConsentRefreshModal({ user }: { user: User }) {
       await refreshConsent({
         accepted_privacy_version: user.required_privacy_version,
         accepted_terms_version: user.required_terms_version,
+        accepted_business_terms_version:
+          user.required_business_terms_version,
         marketing_optin: marketingOptin,
         // v23.8 — analytics state can change as part of the
         // refresh. Industry stays NULL when the user didn't
@@ -115,13 +128,16 @@ export function ConsentRefreshModal({ user }: { user: User }) {
               Aktualisierte Rechtsdokumente
             </h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              {privacyChanged && termsChanged
-                ? "Unsere Datenschutzerklärung und unsere AGB wurden aktualisiert."
-                : privacyChanged
-                  ? "Unsere Datenschutzerklärung wurde aktualisiert."
-                  : "Unsere AGB wurden aktualisiert."}{" "}
-              Bitte prüfen Sie die geänderten Dokumente und bestätigen
-              Sie erneut, um BauLV weiter zu nutzen.
+              {/* v24.4.8 — Überschrift deckt jetzt drei Dokumente
+                  ab (Privacy, AGB, Unternehmer-Bestätigung). Wenn
+                  der User mehrere gleichzeitig refrishen muss,
+                  zeigt der Modal alle drei Checkboxen — wir lassen
+                  die Begründung daher allgemeiner ("Bestätigungen
+                  erforderlich") statt fünf Fälle mit if/else
+                  durchzuspielen. */}
+              Es liegen aktualisierte Rechtsdokumente bzw. Bestätigungen
+              vor. Bitte prüfen und bestätigen Sie die geänderten Punkte,
+              um BauLV weiter zu nutzen.
             </p>
           </div>
         </div>
@@ -178,6 +194,44 @@ export function ConsentRefreshModal({ user }: { user: User }) {
                 </Link>{" "}
                 (Version {user.required_terms_version}) gelesen und
                 akzeptiert. <span className="text-destructive">*</span>
+              </span>
+            </label>
+
+            {/* v24.4.8 — Unternehmer-Bestätigung (Pflicht). Wird IMMER
+                gezeigt im Modal, auch wenn nur Privacy/Terms gebumpt
+                wurden — so kann der User die Bestätigung im selben
+                Zug erneuern, und grandfathered Bestandsuser holen
+                ihre erste Bestätigung beim nächsten Login nach. */}
+            <label className="flex cursor-pointer items-start gap-2 rounded-md border-l-2 border-amber-500 bg-amber-50/40 p-2 text-sm">
+              <input
+                type="checkbox"
+                required
+                checked={businessTermsAccepted}
+                onChange={(e) => setBusinessTermsAccepted(e.target.checked)}
+                className="mt-0.5 h-4 w-4 shrink-0 rounded border-muted-foreground/40 text-primary focus:ring-primary"
+              />
+              <span className="text-muted-foreground">
+                <strong className="text-foreground">
+                  Unternehmer-Bestätigung:
+                </strong>{" "}
+                Ich nutze BauLV als Unternehmer im Sinne des § 1 UGB
+                (gewerbliche oder selbständige berufliche Tätigkeit)
+                und nicht als Verbraucher. Siehe{" "}
+                <Link
+                  to="/agb"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-medium text-primary hover:underline"
+                >
+                  AGB
+                </Link>{" "}
+                (Fassung {user.required_business_terms_version})
+                {businessTermsChanged && (
+                  <span className="ml-1 inline-block rounded bg-amber-200 px-1 text-xs text-amber-900">
+                    aktualisiert
+                  </span>
+                )}
+                . <span className="text-destructive">*</span>
               </span>
             </label>
 
@@ -250,7 +304,10 @@ export function ConsentRefreshModal({ user }: { user: User }) {
           <button
             type="submit"
             disabled={
-              submitting || !privacyAccepted || !termsAccepted
+              submitting ||
+              !privacyAccepted ||
+              !termsAccepted ||
+              !businessTermsAccepted
             }
             className="flex w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
           >

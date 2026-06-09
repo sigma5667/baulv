@@ -39,6 +39,14 @@ EVENT_MARKETING_OPTIN_CHANGE = "marketing_optin_change"
 # Stored alongside the legal-version pins so we can reconstruct
 # the exact privacy-policy text the user saw when they consented.
 EVENT_ANALYTICS_OPTIN_CHANGE = "analytics_optin_change"
+# v24.4.8 — Unternehmer-Bestätigung (B2B-Abgrenzung gegen FAGG).
+# Fired in two situations: bei der Registrierung (zusammen mit
+# EVENT_REGISTRATION als getrennter Snapshot wird's NICHT gemacht
+# — der Registration-Snapshot trägt das Feld direkt; siehe
+# ``services/consent.py``) und bei jedem Stripe-Checkout
+# (eigener Snapshot mit dem aktuellen IP/UA als zeitnaher
+# Beweis am Vertragsschluss-Moment).
+EVENT_BUSINESS_STATUS_CONFIRMED = "business_status_confirmed"
 
 
 class ConsentSnapshot(Base):
@@ -77,6 +85,15 @@ class ConsentSnapshot(Base):
     analytics_consent: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
     )
+    # v24.4.8 — Version der Unternehmer-Bestätigung, die der User zum
+    # Snapshot-Zeitpunkt akzeptiert hatte. NULL bei Snapshots, die vor
+    # v24.4.8 entstanden, oder bei Events bei denen der User die
+    # Business-Terms (noch) nie bestätigt hat (z.B. ein Marketing-
+    # Toggle-Event eines Bestandsusers). Bei Snapshots aus
+    # ``EVENT_REGISTRATION`` und ``EVENT_BUSINESS_STATUS_CONFIRMED``
+    # ist das Feld immer gesetzt — der ganze Sinn dieser Events ist
+    # ja, die Bestätigung zu beweisen.
+    business_terms_version: Mapped[str | None] = mapped_column(String(20))
     # Forensic context. Helpful when a user disputes that *they*
     # agreed (vs someone using their device); also part of "the
     # circumstances in which the data was processed" expected under

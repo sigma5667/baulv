@@ -36,6 +36,9 @@ export function RegisterPage() {
   });
   const [privacyAccepted, setPrivacyAccepted] = useState(false);
   const [termsAccepted, setTermsAccepted] = useState(false);
+  // v24.4.8 — Unternehmer-Bestätigung (Pflicht). B2B-Abgrenzung
+  // gegen FAGG/KSchG; siehe Backend ``BUSINESS_TERMS_VERSION``.
+  const [businessTermsAccepted, setBusinessTermsAccepted] = useState(false);
   const [marketingOptin, setMarketingOptin] = useState(false);
   // v23.8 — anonymised analytics opt-in (default OFF per DSGVO
   // Art. 7 "clear affirmative action"). When the user ticks the
@@ -86,6 +89,16 @@ export function RegisterPage() {
       );
       return;
     }
+    if (!businessTermsAccepted) {
+      setError(
+        "Bitte bestätigen Sie, dass Sie BauLV als Unternehmer (§ 1 UGB) nutzen — BauLV richtet sich ausschließlich an Geschäftskunden.",
+      );
+      return;
+    }
+    if (!form.company_name.trim()) {
+      setError("Bitte geben Sie einen Firmennamen ein (B2B-Angebot).");
+      return;
+    }
     if (!legal) {
       setError(
         "Die aktuellen Rechtsdokument-Versionen konnten nicht geladen werden. Bitte Seite neu laden.",
@@ -99,9 +112,12 @@ export function RegisterPage() {
         email: form.email,
         password: form.password,
         full_name: form.full_name,
-        company_name: form.company_name || undefined,
+        // v24.4.8 — Pflichtfeld, oben validiert. Trim damit Whitespace-
+        // Only-Strings nicht durchrutschen.
+        company_name: form.company_name.trim(),
         accepted_privacy_version: legal.privacy_version,
         accepted_terms_version: legal.terms_version,
+        accepted_business_terms_version: legal.business_terms_version,
         marketing_optin: marketingOptin,
         // v23.8 — only send a non-null industry when the user
         // both opted in and picked an option. ``"" || null``
@@ -129,6 +145,10 @@ export function RegisterPage() {
     : "";
   const termsSuffix = legal
     ? ` (Version ${legal.terms_version} vom ${formatDateDe(legal.terms_date)})`
+    : "";
+  // v24.4.8 — Versions-Label für die UGB-Bestätigungs-Checkbox.
+  const businessTermsSuffix = legal
+    ? ` (Fassung ${legal.business_terms_version} vom ${formatDateDe(legal.business_terms_date)})`
     : "";
 
   return (
@@ -165,14 +185,24 @@ export function RegisterPage() {
             />
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium">Firmenname</label>
+            <label className="mb-1 block text-sm font-medium">
+              Firmenname *
+            </label>
             <input
               type="text"
+              required
               value={form.company_name}
               onChange={update("company_name")}
               className="w-full rounded-md border px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
               placeholder="Musterbau GmbH"
             />
+            {/* v24.4.8 — Pflichtfeld. B2B-only Angebot; der Firmenname
+                ist der wichtigste objektive UGB-Indikator und stützt
+                die Unternehmer-Bestätigung weiter unten. */}
+            <p className="mt-1 text-xs text-muted-foreground">
+              Pflichtfeld — BauLV richtet sich ausschließlich an
+              Unternehmen.
+            </p>
           </div>
           <div>
             <label className="mb-1 block text-sm font-medium">E-Mail *</label>
@@ -276,6 +306,40 @@ export function RegisterPage() {
               </span>
             </label>
 
+            {/* v24.4.8 — Unternehmer-Bestätigung (Pflicht). B2B-
+                Abgrenzung gegen FAGG/KSchG. Optisch durch
+                amber-Border hervorgehoben, damit der User merkt
+                dass das eine andere Kategorie als die normalen
+                Privacy/Terms-Boxen ist. */}
+            <label className="flex cursor-pointer items-start gap-2 rounded-md border-l-2 border-amber-500 bg-amber-50/40 p-2 text-sm">
+              <input
+                type="checkbox"
+                required
+                checked={businessTermsAccepted}
+                onChange={(e) => setBusinessTermsAccepted(e.target.checked)}
+                className="mt-0.5 h-4 w-4 shrink-0 rounded border-muted-foreground/40 text-primary focus:ring-primary"
+              />
+              <span className="text-muted-foreground">
+                <strong className="text-foreground">
+                  Unternehmer-Bestätigung:
+                </strong>{" "}
+                Ich bestätige, dass ich BauLV als Unternehmer im Sinne
+                des § 1 UGB (in Ausübung meiner gewerblichen oder
+                selbständigen beruflichen Tätigkeit) nutzen werde und
+                nicht als Verbraucher handle. Siehe{" "}
+                <Link
+                  to="/agb"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-medium text-primary hover:underline"
+                >
+                  AGB
+                </Link>
+                {businessTermsSuffix}.{" "}
+                <span className="text-destructive">*</span>
+              </span>
+            </label>
+
             <label className="flex cursor-pointer items-start gap-2 text-sm">
               <input
                 type="checkbox"
@@ -356,7 +420,12 @@ export function RegisterPage() {
           <button
             type="submit"
             disabled={
-              loading || !privacyAccepted || !termsAccepted || legal === null
+              loading ||
+              !privacyAccepted ||
+              !termsAccepted ||
+              !businessTermsAccepted ||
+              !form.company_name.trim() ||
+              legal === null
             }
             className="flex w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
           >

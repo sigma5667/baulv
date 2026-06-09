@@ -40,6 +40,16 @@ class User(Base):
     # acceptance lives in the ``consent_snapshots`` table.
     current_privacy_version: Mapped[str | None] = mapped_column(String(20))
     current_terms_version: Mapped[str | None] = mapped_column(String(20))
+    # v24.4.8 — Version der Unternehmer-Bestätigung iSd § 1 UGB, die
+    # dieser User aktuell akzeptiert hat. NULL = "grandfathered"
+    # (Konto existierte vor v24.4.8 und hat noch nie bestätigt). Wird
+    # bei Registrierung gesetzt (Pflichtfeld in RegisterPage v24.4.8+),
+    # beim ConsentRefreshModal-Flow erneut bestätigt nach Klausel-
+    # Bumps, und vor jedem Stripe-Checkout serverseitig geprüft —
+    # NULL → 400 mit Hinweis, der ConsentRefreshModal zu durchlaufen.
+    current_business_terms_version: Mapped[str | None] = mapped_column(
+        String(20)
+    )
     # v23.8 — DSGVO Art. 6(1)(a) consent for anonymised usage
     # analytics. Default False; the analytics service short-circuits
     # without writing if this flag is False, so opt-in must be a

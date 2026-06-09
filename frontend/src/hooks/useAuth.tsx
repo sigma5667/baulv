@@ -31,9 +31,13 @@ interface AuthContextType {
     email: string;
     password: string;
     full_name: string;
-    company_name?: string;
+    /** v24.4.8 — Pflichtfeld (war optional). B2B-only Angebot,
+     * ohne Firmenname keine UGB-Signal-Konsistenz. */
+    company_name: string;
     accepted_privacy_version: string;
     accepted_terms_version: string;
+    /** v24.4.8 — Unternehmer-Bestätigung iSd § 1 UGB. Pflicht. */
+    accepted_business_terms_version: string;
     marketing_optin: boolean;
     /** v23.8 — analytics opt-in (default false). */
     analytics_consent?: boolean;
@@ -47,6 +51,9 @@ interface AuthContextType {
   refreshConsent: (data: {
     accepted_privacy_version: string;
     accepted_terms_version: string;
+    /** v24.4.8 — Unternehmer-Bestätigung. Wird vom Modal als 3.
+     * Pflicht-Checkbox erfasst (analog Privacy + Terms). */
+    accepted_business_terms_version: string;
     marketing_optin: boolean;
     analytics_consent: boolean;
     industry_segment?: IndustrySegment | null;
@@ -100,9 +107,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       email: string;
       password: string;
       full_name: string;
-      company_name?: string;
+      company_name: string;
       accepted_privacy_version: string;
       accepted_terms_version: string;
+      accepted_business_terms_version: string;
       marketing_optin: boolean;
       analytics_consent?: boolean;
       industry_segment?: IndustrySegment | null;
@@ -117,6 +125,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async (data: {
       accepted_privacy_version: string;
       accepted_terms_version: string;
+      accepted_business_terms_version: string;
       marketing_optin: boolean;
       analytics_consent: boolean;
       industry_segment?: IndustrySegment | null;

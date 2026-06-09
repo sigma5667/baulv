@@ -38,6 +38,7 @@ from app.db.models.consent import (
 )
 from app.db.models.user import User
 from app.legal_versions import (
+    BUSINESS_TERMS_VERSION,
     PRIVACY_POLICY_VERSION,
     TERMS_VERSION,
 )
@@ -83,8 +84,10 @@ def test_register_payload_requires_privacy_and_terms_versions():
             email="x@example.com",
             password="strongpass123",
             full_name="Test",
+            company_name="Test GmbH",
             # accepted_privacy_version missing
             accepted_terms_version=TERMS_VERSION,
+            accepted_business_terms_version=BUSINESS_TERMS_VERSION,
         )
 
 
@@ -109,6 +112,7 @@ async def test_register_success_sets_versions_and_writes_snapshot(
         company_name="Tester GmbH",
         accepted_privacy_version=PRIVACY_POLICY_VERSION,
         accepted_terms_version=TERMS_VERSION,
+        accepted_business_terms_version=BUSINESS_TERMS_VERSION,
         marketing_optin=True,
     )
     request = _mock_request(ip="203.0.113.42", user_agent="ua/1.0")
@@ -158,8 +162,13 @@ async def test_register_marketing_optin_defaults_to_false(
         email=f"def-{uuid.uuid4()}@example.com",
         password="strongpass123",
         full_name="Tester",
+        # v24.4.8 — company_name + UGB-Bestätigung sind jetzt Pflicht
+        # (B2B-only Angebot). Wir setzen sie explizit damit das Default-
+        # Marketing-Optin der eigentliche Test-Inhalt bleibt.
+        company_name="Tester GmbH",
         accepted_privacy_version=PRIVACY_POLICY_VERSION,
         accepted_terms_version=TERMS_VERSION,
+        accepted_business_terms_version=BUSINESS_TERMS_VERSION,
         # marketing_optin omitted — must default to False
     )
     request = _mock_request()
@@ -201,8 +210,10 @@ async def test_register_rejects_stale_privacy_version(
         email=f"stale-{uuid.uuid4()}@example.com",
         password="strongpass123",
         full_name="Tester",
+        company_name="Tester GmbH",
         accepted_privacy_version="0.99",  # not the current value
         accepted_terms_version=TERMS_VERSION,
+        accepted_business_terms_version=BUSINESS_TERMS_VERSION,
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -222,8 +233,10 @@ async def test_register_rejects_stale_terms_version(
         email=f"stale-t-{uuid.uuid4()}@example.com",
         password="strongpass123",
         full_name="Tester",
+        company_name="Tester GmbH",
         accepted_privacy_version=PRIVACY_POLICY_VERSION,
         accepted_terms_version="0.99",  # not the current value
+        accepted_business_terms_version=BUSINESS_TERMS_VERSION,
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -263,6 +276,7 @@ async def test_refresh_consent_after_privacy_bump_writes_privacy_update_snapshot
     payload = ConsentRefreshRequest(
         accepted_privacy_version=PRIVACY_POLICY_VERSION,
         accepted_terms_version=TERMS_VERSION,
+        accepted_business_terms_version=BUSINESS_TERMS_VERSION,
         marketing_optin=False,
     )
 
@@ -305,6 +319,7 @@ async def test_refresh_consent_after_terms_bump_writes_terms_update_snapshot(
     payload = ConsentRefreshRequest(
         accepted_privacy_version=PRIVACY_POLICY_VERSION,
         accepted_terms_version=TERMS_VERSION,
+        accepted_business_terms_version=BUSINESS_TERMS_VERSION,
         marketing_optin=False,
     )
 
