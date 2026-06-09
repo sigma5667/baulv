@@ -82,23 +82,45 @@ Diese Inline-Zahl ist die zuverlässigste Quelle für den Wandumfang.
 CAD-Programm des Architekten und ist auf 2 Nachkommastellen genau.
 
 ================================================================
-SUCHHIERARCHIE FÜR perimeter_m
+SUCHHIERARCHIE FÜR perimeter_m (in dieser Reihenfolge)
 ================================================================
 
-Prüfe in dieser Reihenfolge, sobald du sie findest stoppst du:
+Wichtig vorweg: Die FLÄCHE wird IMMER abgelesen, nie berechnet
+(siehe Feld ``area_m2`` unten). Nur der UMFANG darf — falls
+kein expliziter Aufdruck vorhanden ist — aus den am Plan
+stehenden Wandlängen ADDIERT werden.
 
-  1. Inline-Beschriftung im Raum (zweite m-Zahl direkt unter der
-     Fläche, ohne Hochzeichen).
-       → Übernimm den Wert. Setze perimeter_source = "labeled".
+Priorität 1 — AUFGEDRUCKTER UMFANG
+  Steht im Raumstempel ein expliziter Umfang-Wert ("U: 24,32 m",
+  "U= 24,32 m", oder die zweite m-Zahl direkt unter der Fläche
+  ohne Hochzeichen, wie sie in vielen österreichischen CAD-Outputs
+  vorkommt) → übernimm ihn 1:1, ohne eigene Berechnung. Das ist
+  die zuverlässigste Quelle (CAD-Output, 2 Nachkommastellen).
+    → perimeter_source = "labeled"
 
-  2. Vermassungskette an den Raumwänden — die einzelnen mm-Werte
-     entlang der Wände aufsummieren und durch 1000 teilen.
-       → Setze perimeter_source = "computed".
+Priorität 2 — WAND-MASSKETTEN ADDIEREN
+  Kein Umfang aufgedruckt, aber die Wand-Maßketten dieses Raums
+  sind klar erkennbar → ADDIERE die am Plan stehenden Wandlängen
+  des Raums. KEIN Messen, KEIN Schätzen, KEIN Pixel-Zählen — nur
+  die tatsächlich beschrifteten Zahlen aufsummieren. mm-Werte vor
+  dem Summieren durch 1000 teilen.
+    → perimeter_source = "computed"
 
-  3. Weder Beschriftung noch eindeutige Vermassung erkennbar:
-       → perimeter_m = null,  perimeter_source = null.
-     Das Backend füllt einen konservativen Schätzwert aus der Fläche
-     nach (4·√A·1.10), du musst nichts schätzen.
+  Verwende NUR ECHTE Wandlängen des aktuellen Raums. Siehe
+  NEGATIVBEISPIELE unten — Höhenkoten, Gefälle-/Prozentangaben,
+  Leitungs-Labels und Maße benachbarter Räume sind KEINE Wand-
+  längen, auch wenn sie wie Zahlen aussehen.
+
+Priorität 3 — UNSICHER ODER NICHT ZUORDENBAR
+  Weder ein aufgedruckter Umfang noch klar zuordenbare Wandmaße
+  (z.B. die Maßketten könnten zum Nachbarraum gehören; du bist
+  dir nicht sicher welche Zahl welcher Wand entspricht):
+    → perimeter_m = null
+    → perimeter_source = null
+  Das Backend füllt einen konservativen Schätzwert aus der Fläche
+  nach (4·√A·1.10), du musst NICHT schätzen. Eine ehrliche Lücke
+  ("Bitte eintragen") ist besser als ein Rateversuch — die
+  Mengenermittlung lebt davon dass die Werte stimmen.
 
 ================================================================
 NEGATIVBEISPIELE — NIEMALS als perimeter_m verwenden
@@ -109,9 +131,20 @@ etwas anderes — verwechsle sie NICHT:
 
   - "STUK +2,05" / "STUK 235"    → Sturzunterkante (Höhe!)
   - "FPH 90" / "FPH 82,5"         → Fensterparapethöhe
-  - "+1,49" / "-0,40" / "428,30"  → Höhenkoten (Meter über NN
-                                    oder Bezugskote)
+  - "+1,49" / "-0,40" / "428,30"
+    / "425,80" / "426,10"          → Höhenkoten (Meter über NN oder
+                                    Bezugskote, oft am Geländerand
+                                    und auf Schwellen / Podesten)
   - "TH = +430,20"                → Türschwellenhöhe / Höhenkote
+  - "4 %" / "1,5 %" / "2,0 %"     → Gefälle-/Neigungsangabe (Dach,
+                                    Entwässerung, Rampe, Terrasse) —
+                                    KEINE Länge
+  - "KS -1,92" / "KS +0,15"
+    / "RS +0,40"                   → Kanal-Sohle / Rohrleitungs-Sohle
+                                    (Höhenkote einer Leitung), keine
+                                    Wandlänge
+  - "DN 100" / "DN 150" / "Ø 80"  → Leitungsdurchmesser / Rohr-
+                                    nennweite, keine Längen
   - kleine Zahlen (5, 8, 12, 20, 25) zwischen Wänden
                                   → Wandstärken in cm (Mauerwerk,
                                     Vorsatzschale)
@@ -120,6 +153,11 @@ etwas anderes — verwechsle sie NICHT:
                                     der Innenraum-Umfang muss daraus
                                     erst rekonstruiert werden, das
                                     ist Strategie #2 oben.
+  - Maße AN benachbarten Räumen   → gehören dem Nachbarraum, nicht
+                                    dem aktuellen — nur Maße ZWISCHEN
+                                    den Wänden DES Raums nehmen, den
+                                    du gerade auswertest. Im Zweifel
+                                    lieber Priorität 3 (Lücke).
   - "1:50" / "M 1:100"            → Plan-Maßstab
   - Plan-Nummern (z.B. "50.02")   → Dokumentenkennung
 
@@ -129,21 +167,35 @@ PLAUSIBILITÄTSCHECK (vor dem JSON-Output)
 
 Faustregel: für rechteckige Räume gilt grob
 
-  perimeter_m ≈ 4 · √(area_m2) · (1.0 bis 1.2)
+  perimeter_m ≈ 4 · √(area_m2)   · (1.0 bis 1.2)
 
-Beispiel: 20 m² Raum → erwarteter Umfang ca. 18-22 m.
+Beispiele:
+  -  6 m² Raum → erwarteter Umfang ca.  9,8 – 11,8 m
+  - 12 m² Raum → erwarteter Umfang ca. 13,9 – 16,6 m
+  - 20 m² Raum → erwarteter Umfang ca. 17,9 – 21,5 m
+  - 30 m² Raum → erwarteter Umfang ca. 21,9 – 26,3 m
 
 Bevor du das JSON ausgibst, prüfe für jeden Raum diese Bandbreite.
-Wenn deine Extraktion massiv abweicht (>30 % über oder unter dem
-erwarteten Bereich), hast du wahrscheinlich:
+Wenn dein ermittelter Umfang massiv abweicht (deutlich über +30 %
+oder unter −30 % des erwarteten Bereichs), hast du wahrscheinlich:
   - Fläche und Umfang verwechselt
-  - Eine Höhen- oder Wandstärken-Zahl als Umfang gelesen
-  - Einen Maßstabs- oder Höhenkoten-Wert erwischt
+  - Eine Höhen-/Wandstärken-/Gefälle-Zahl als Umfang gelesen
+  - Eine Höhenkote oder einen Leitungs-Wert (KS …) erwischt
+  - Maße eines Nachbarraums mitgerechnet
 
-In diesen Fällen: korrigiere die Extraktion oder setze perimeter_m
-auf null und perimeter_source auf null. Eine ehrliche Lücke ist
-deutlich besser als ein systematisch falsch eingeschätzter Wert,
-der direkt in die Mengenermittlung fließt.
+In diesen Fällen: VERWERFE die Extraktion. Setze
+  - perimeter_m = null
+  - perimeter_source = null
+
+NICHT versuchen, die Zahl "passend zu machen" indem du multiplizierst,
+dividierst oder einzelne Werte weglässt. Eine ehrliche Lücke ist
+deutlich besser als ein systematisch falsch eingeschätzter Wert —
+der Wert würde sonst direkt in die Mengenermittlung und das LV
+fließen.
+
+Die FLÄCHE darfst du NIE über den Plausibilitätscheck korrigieren.
+Sie wird IMMER abgelesen — wenn keine Fläche aufgedruckt ist, setze
+area_m2 = null statt zu schätzen.
 
 ================================================================
 FELDER PRO RAUM
