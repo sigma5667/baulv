@@ -42,7 +42,8 @@ EVENT_PRIVACY_UPDATED = "user.privacy_updated"
 # Password-reset flow (DS-3, v23.4). Two distinct events because the
 # *requested* leg fires for non-existent emails too (we always 200 OK
 # to avoid leaking account existence) — the audit row in that case
-# carries ``user_id=None`` and the email lives in ``meta`` only.
+# carries ``user_id=None`` and (since v24.4.9) only a SHA-256
+# ``email_hash`` in ``meta`` — never the plaintext email.
 # *Completed* fires only on successful token redemption with a real
 # user_id, which is the GDPR Art. 32 evidence we actually need.
 EVENT_PASSWORD_RESET_REQUESTED = "user.password_reset_requested"

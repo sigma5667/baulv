@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import logging
@@ -312,6 +313,41 @@ def _normalise_industry(raw: str | None) -> str | None:
     return None
 
 
+def _email_audit_hash(email: str) -> str:
+    """SHA-256-Pseudonymisierung einer Email für Audit-Log-Meta-Felder.
+
+    v24.4.9 — überall dort verwendet, wo eine Email als Beweis-Spur in
+    ``audit_log.meta`` landet aber nicht als Klartext überleben soll.
+    Konkret zwei Konflikte mit DSGVO Art. 17:
+
+      * Account-Löschung: die Audit-Zeile überlebt den User-Delete
+        (FK-SET-NULL), darf aber keine personenbezogenen Daten
+        weiter führen. Klartext-Email war's bisher.
+      * Password-Reset-Probes: Bot-Versuche auf nicht-existierende
+        Konten landeten als Klartext-Email im Audit-Log; ein Lese-
+        Zugriff auf die Tabelle hätte eine Liste aller jemals
+        geprobten Emails enthalten (Account-Enumeration-Risiko).
+
+    Format: ``sha256(settings.analytics_salt + ':' + email)`` als
+    64-char hex. Gleiches GRUNDPRINZIP (SHA-256 + analytics_salt)
+    wie ``app.services.analytics.hash_user_id`` — aber bewusst NICHT
+    byte-identisches Format: dort ist es ``sha256(user_id_hex + '::'
+    + salt)`` (Salt hinten, ``::``-Separator), hier Salt vorne mit
+    ``:``-Separator. Die beiden Hash-Räume sind also getrennt;
+    innerhalb DIESES Helpers gilt: derselbe Hash für dieselbe Email
+    + Salt erlaubt forensische Korrelation ("wurde die Email zweimal
+    angefragt?") ohne Klartext zu speichern.
+
+    Der Salt rotiert prinzipiell nicht; falls doch, bleibt die
+    Korrelation innerhalb einer Salt-Generation erhalten und bricht
+    nur über den Bump hinweg (dokumentiert in
+    ``app/config.py:analytics_salt``).
+    """
+    return hashlib.sha256(
+        f"{settings.analytics_salt}:{email}".encode("utf-8")
+    ).hexdigest()
+
+
 def _is_admin(user: User) -> bool:
     """v23.8 — admin gate.
 
@@ -492,23 +528,17 @@ async def login(
         # Liste aller Email-Adressen die jemals einen Login-Versuch
         # gemacht haben (= potenzielle Account-Enumeration).
         #
-        # Neue Regel:
-        #   * User existiert → ``email`` plain. Es ist die Email des
-        #     Owners selbst, die landet im AuditLog den NUR der Owner
-        #     selbst sieht. Bonus: User sieht klar welche Email-Variante
-        #     beim fehlgeschlagenen Login getippt wurde.
-        #   * User existiert NICHT → ``email_hash`` (SHA-256 mit
-        #     ``settings.analytics_salt``). Wir können trotzdem über
-        #     den Hash erkennen ob dieselbe Email mehrfach geprobed
-        #     wurde (Rate-Limit-Pivot), ohne die Email selbst zu lagern.
-        if user is not None:
-            audit_meta = {"email": attempted_email}
-        else:
-            import hashlib
-            digest = hashlib.sha256(
-                f"{settings.analytics_salt}:{attempted_email}".encode("utf-8")
-            ).hexdigest()
-            audit_meta = {"email_hash": digest}
+        # v24.4.9 — BEIDE Branches hashen. Die frühere Ausnahme
+        # ("User existiert → Klartext, der Owner sieht ja nur seine
+        # eigene Email") ist im Review gefallen: dieser Branch feuert
+        # nur nach exaktem DB-Match auf ``User.email``, der Wert ist
+        # also IMMER identisch mit der Konto-Email — der Klartext
+        # trägt null Information, die der Owner nicht eh hat. Hashen
+        # schließt dafür die Art-17-Lücke: nach Account-Löschung
+        # überlebt die Audit-Zeile (FK-SET-NULL) bis zu 730 Tage,
+        # und eine Klartext-Email eines gelöschten Kontos darf darin
+        # nicht mehr stehen.
+        audit_meta = {"email_hash": _email_audit_hash(attempted_email)}
         await log_event(
             db,
             event_type=EVENT_LOGIN_FAILED,
@@ -935,7 +965,8 @@ async def request_password_reset(
     Behind the constant response, four branches:
 
     1. Email matches no user → audit row with ``user_id=None`` and
-       ``meta.email`` for forensic context. No token, no email.
+       ``meta.email_hash`` (v24.4.9 — SHA-256 statt Klartext) for
+       forensic context. No token, no email.
     2. Email matches a user but they've already requested 3 resets
        in the last hour → audit row with ``meta.rate_limited=True``,
        no new token, no email.
@@ -966,12 +997,23 @@ async def request_password_reset(
         # No account. Audit the *attempt* anyway — repeated probes
         # show up in the operator's audit-grep as a flat sequence
         # of ``user_id=None`` reset_requested events.
+        #
+        # v24.4.9 — die Email landet als SHA-256-Hash statt Klartext.
+        # Sonst hätte ein Lese-Zugriff auf ``audit_log`` eine Liste
+        # aller jemals geprobten Emails enthalten (Account-Enumeration-
+        # Risiko), und nach einer eventuellen Re-Registrierung +
+        # Account-Löschung würde die Email weiter überleben.
+        # Forensische Korrelation ("dieselbe Email zweimal geprobed?")
+        # über den Hash bleibt möglich.
         await log_event(
             db,
             event_type=EVENT_PASSWORD_RESET_REQUESTED,
             user_id=None,
             request=request,
-            meta={"email": normalised_email, "result": "no_account"},
+            meta={
+                "email_hash": _email_audit_hash(normalised_email),
+                "result": "no_account",
+            },
         )
         return {"message": _PASSWORD_RESET_GENERIC_MSG}
 
@@ -986,13 +1028,17 @@ async def request_password_reset(
     )
     recent_count = count_result.scalar() or 0
     if recent_count >= PASSWORD_RESET_REQUESTS_PER_HOUR:
+        # v24.4.9 — Email als Hash. Selbst beim "existing user"-
+        # Branch hashen wir hier, weil dieser Audit-Eintrag den User-
+        # Delete überlebt (FK-SET-NULL) — wir wollen keine Klartext-
+        # Emails von gelöschten Konten in 730-Tage-Retention behalten.
         await log_event(
             db,
             event_type=EVENT_PASSWORD_RESET_REQUESTED,
             user_id=user.id,
             request=request,
             meta={
-                "email": normalised_email,
+                "email_hash": _email_audit_hash(normalised_email),
                 "result": "rate_limited",
                 "recent_count": recent_count,
             },
@@ -1003,12 +1049,17 @@ async def request_password_reset(
     # outstanding tokens for this user, so the most-recent email
     # always wins.
     plaintext = await mint_reset_token(db, user=user)
+    # v24.4.9 — Email als Hash, gleiches Argument wie im rate-limited-
+    # Branch darüber.
     await log_event(
         db,
         event_type=EVENT_PASSWORD_RESET_REQUESTED,
         user_id=user.id,
         request=request,
-        meta={"email": normalised_email, "result": "sent"},
+        meta={
+            "email_hash": _email_audit_hash(normalised_email),
+            "result": "sent",
+        },
     )
     # Email send is fire-and-forget from the user's perspective —
     # the response is the same whether or not Resend's API call
@@ -1218,14 +1269,19 @@ async def delete_my_account(
     # Write the audit entry BEFORE deleting the user. The audit table
     # FK uses ON DELETE SET NULL so the row will survive the cascade,
     # but we want the event captured while we still know the user ID.
+    #
+    # v24.4.9 — Email landet als SHA-256-Hash statt Klartext. Sonst
+    # würde nach dem User-Delete weiterhin die Klartext-Email in
+    # ``audit_log.meta`` sitzen während die user_id schon NULL ist
+    # (SET NULL) — eine halbe DSGVO-Art-17-Löschung. Der Hash erlaubt
+    # forensische Korrelation ohne Klartext-Personendatum zu führen.
     user_id = user.id
-    user_email = user.email
     await log_event(
         db,
         event_type=EVENT_ACCOUNT_DELETED,
         user_id=user_id,
         request=request,
-        meta={"email": user_email},
+        meta={"email_hash": _email_audit_hash(user.email)},
     )
 
     await delete_user_account(user, db)

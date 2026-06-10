@@ -459,12 +459,18 @@ def _cancel_stripe_subscription(user: User) -> None:
 
 
 async def _delete_user_plan_files(user: User, db: AsyncSession) -> None:
-    """Remove uploaded plan PDFs from local storage.
+    """Remove uploaded plan PDFs AND the user's logo dir from local storage.
 
-    Plans are stored under ``upload_path/<project_id>/`` so we remove
-    the per-project directory for every project the user owns. Anything
-    that doesn't exist is silently ignored — this is an idempotent
-    cleanup, not an integrity check.
+    Two on-disk locations carry per-user content:
+
+    * ``upload_path/<project_id>/`` — plan PDFs, one dir per project
+    * ``upload_path/logos/<user_id>/`` — uploaded logo files
+      (v24.3, siehe ``auth.py:_logo_dir_for``)
+
+    Beide werden best-effort entfernt; eine festsitzende Datei darf
+    die Account-Löschung nicht blockieren — wir loggen und machen weiter.
+    Anything that doesn't exist is silently ignored — this is an
+    idempotent cleanup, not an integrity check.
     """
     result = await db.execute(select(Project.id).where(Project.user_id == user.id))
     project_ids = [row[0] for row in result.all()]
@@ -481,6 +487,23 @@ async def _delete_user_plan_files(user: User, db: AsyncSession) -> None:
                 logger.warning(
                     "Failed to remove plan directory %s: %s", pdir, e
                 )
+
+    # v24.4.9 — Logo-Verzeichnis mitlöschen. Pfad-Layout siehe
+    # ``auth.py:_logo_dir_for``: ``upload_path/logos/<user_id>/``.
+    # Pre-v24.4.9 blieb der Logo-Ordner als verwaister File-System-
+    # Eintrag nach Account-Löschung stehen — ein gehostetes Firmenlogo
+    # (B2B-Geschäftsdatum, bei Einzelunternehmern potenziell
+    # personenbezogen) trotz DSGVO-Art-17-Löschanspruch. Idempotent:
+    # wenn der Ordner nicht existiert (User hat nie ein Logo
+    # hochgeladen), passiert nichts.
+    logo_dir = upload_root / "logos" / str(user.id)
+    if logo_dir.exists():
+        try:
+            shutil.rmtree(logo_dir)
+        except OSError as e:
+            logger.warning(
+                "Failed to remove logo directory %s: %s", logo_dir, e
+            )
 
 
 async def delete_user_account(user: User, db: AsyncSession) -> None:
