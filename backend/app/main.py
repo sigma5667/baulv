@@ -37,6 +37,33 @@ logger = logging.getLogger(__name__)
 STATIC_DIR = Path("/app/static")
 
 
+def _safe_static_file(*parts: str) -> Path | None:
+    """Resolve ``parts`` under ``STATIC_DIR`` and enforce containment.
+
+    Security-Härtung (Audit 2026-06): die manuellen ``FileResponse``-
+    Handler unten jointen User-kontrollierte Pfade ungeprüft an
+    ``STATIC_DIR`` und lieferten sie aus. Über ``..``/encodierte
+    Traversal-Sequenzen (die Starlettes Router NICHT kollabiert —
+    deshalb bringt dessen ``StaticFiles`` einen eigenen Schutz mit)
+    ließ sich aus ``/app/static`` herausnavigieren, z.B. ins
+    danebenliegende ``/app/uploads``.
+
+    Gibt den aufgelösten Pfad nur zurück, wenn er (a) nach
+    ``resolve()`` weiterhin innerhalb von ``STATIC_DIR`` liegt und
+    (b) eine existierende reguläre Datei ist — sonst ``None``.
+    """
+    base = STATIC_DIR.resolve()
+    try:
+        candidate = (STATIC_DIR / Path(*parts)).resolve()
+    except (ValueError, OSError):
+        return None
+    if not candidate.is_relative_to(base):
+        return None
+    if not candidate.is_file():
+        return None
+    return candidate
+
+
 def _prewarm_reportlab() -> None:
     """Import every reportlab module the PDF exporter touches.
 
@@ -279,8 +306,10 @@ def create_app() -> FastAPI:
 
         @app.get("/icons/{path:path}")
         async def icons(path: str):
-            f = STATIC_DIR / "icons" / path
-            if f.exists():
+            # Security-Härtung (Audit 2026-06) — Containment-geprüfter
+            # Zugriff statt ungeprüftem Join (siehe _safe_static_file).
+            f = _safe_static_file("icons", path)
+            if f is not None:
                 return FileResponse(str(f))
             return JSONResponse({"error": "not found"}, status_code=404)
 
@@ -355,8 +384,10 @@ def create_app() -> FastAPI:
             # Try to serve actual file first (e.g., favicon.ico). Static
             # files get normal (browser-default) caching — they're
             # either content-hashed or OS icons, both safe.
-            file_path = STATIC_DIR / full_path
-            if file_path.is_file():
+            # Security-Härtung (Audit 2026-06) — Containment-geprüfter
+            # Zugriff statt ungeprüftem Join (siehe _safe_static_file).
+            file_path = _safe_static_file(full_path)
+            if file_path is not None:
                 return FileResponse(str(file_path))
             # SPA fallback: always index.html, always no-cache. The
             # catch-all path matches empty string too, so ``/`` lands

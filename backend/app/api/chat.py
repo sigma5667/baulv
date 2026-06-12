@@ -40,7 +40,10 @@ async def create_session(
     """Create a chat session — requires Pro plan."""
     if data.project_id:
         await verify_project_owner(data.project_id, user, db)
-    session = ChatSession(**data.model_dump())
+    # Security-Härtung (Audit 2026-06) — Eigentümer explizit setzen.
+    # Vorher wurde kein Owner persistiert, wodurch projektlose Sessions
+    # herrenlos und für jeden zugreifbar waren.
+    session = ChatSession(**data.model_dump(), user_id=user.id)
     db.add(session)
     await db.flush()
     return session
@@ -54,7 +57,10 @@ async def list_sessions(
 ):
     if project_id:
         await verify_project_owner(project_id, user, db)
-    stmt = select(ChatSession)
+    # Security-Härtung (Audit 2026-06) — IMMER auf den eingeloggten User
+    # einschränken. Vorher war ``select(ChatSession)`` ohne project_id
+    # ungefiltert und gab die Sessions ALLER Mandanten zurück.
+    stmt = select(ChatSession).where(ChatSession.user_id == user.id)
     if project_id:
         stmt = stmt.where(ChatSession.project_id == project_id)
     stmt = stmt.order_by(ChatSession.created_at.desc())

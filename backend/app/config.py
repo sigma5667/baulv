@@ -1,5 +1,17 @@
+import logging
 from pydantic_settings import BaseSettings
 from pathlib import Path
+
+
+logger = logging.getLogger(__name__)
+
+# Platzhalter-Secrets, die im Repo für die lokale Entwicklung mitgeliefert
+# werden. In Produktion MÜSSEN sie per Umgebungsvariable überschrieben
+# werden — andernfalls bricht der Boot fail-closed ab
+# (siehe ``_enforce_production_secrets``).
+_DEFAULT_JWT_SECRET = "change-me-in-production-baulv-secret-2026"
+_DEFAULT_ANALYTICS_SALT = "change-me-in-production-baulv-analytics-salt-2026"
+_MIN_JWT_SECRET_LENGTH = 32
 
 
 def _fix_postgres_url(url: str) -> str:
@@ -179,4 +191,54 @@ class Settings(BaseSettings):
         return path
 
 
+def _enforce_production_secrets(s: "Settings") -> None:
+    """Fail the boot closed when production runs on dev placeholder secrets.
+
+    Security-Härtung (Audit 2026-06): ``jwt_secret`` signiert ALLE
+    Access-Tokens (HS256) und die Beta-Gate-HMAC; ``analytics_salt``
+    pseudonymisiert die ``usage_analytics``-Tabelle. Beide haben einen
+    im Repo öffentlich lesbaren Default. Vorher gab es — anders als der
+    config-Docstring behauptete — keinen Boot-Check, der den Default in
+    Produktion ablehnt: bei vergessener ENV-Variable lief die App mit
+    bekanntem Signing-Key (forge-bare Beta-Tokens) bzw. trivial
+    reversibler Pseudonymisierung.
+
+    Greift NUR bei ``environment == "production"`` — lokale Entwicklung
+    läuft unverändert mit den Defaults.
+    """
+    if s.environment.lower() != "production":
+        return
+
+    problems: list[str] = []
+
+    secret = (s.jwt_secret or "").strip()
+    if not secret or secret == _DEFAULT_JWT_SECRET:
+        problems.append(
+            "JWT_SECRET ist nicht gesetzt bzw. nutzt den Repo-Default"
+        )
+    elif len(secret) < _MIN_JWT_SECRET_LENGTH:
+        problems.append(
+            f"JWT_SECRET ist kürzer als {_MIN_JWT_SECRET_LENGTH} Zeichen"
+        )
+
+    salt = (s.analytics_salt or "").strip()
+    if not salt or salt == _DEFAULT_ANALYTICS_SALT:
+        problems.append(
+            "ANALYTICS_SALT ist nicht gesetzt bzw. nutzt den Repo-Default"
+        )
+
+    if problems:
+        raise RuntimeError(
+            "Unsichere Production-Konfiguration — Boot abgebrochen:\n  - "
+            + "\n  - ".join(problems)
+            + "\nBitte diese Umgebungsvariablen in Railway mit starken, "
+            "zufälligen Werten setzen (z.B. `openssl rand -hex 32`)."
+        )
+
+
 settings = Settings()
+
+# Fail-closed-Check der Production-Secrets direkt nach dem Laden der
+# Settings — bricht den Prozess-Start ab, bevor irgendein Endpoint mit
+# unsicherem Schlüssel erreichbar wird.
+_enforce_production_secrets(settings)

@@ -99,6 +99,7 @@ from app.legal_versions import (
 )
 from app.config import settings
 from app.subscriptions import BETA_PROJECT_LIMIT_SENTINEL, get_feature_matrix
+from app import auth_rate_limit
 
 logger = logging.getLogger(__name__)
 
@@ -388,6 +389,10 @@ async def register(
     failure rolls back the registration too — consent evidence is
     not best-effort.
     """
+    # Security-Härtung (Audit 2026-06) — Brute-Force-/Abuse-Bremse pro
+    # IP, bevor irgendeine DB-Arbeit passiert.
+    auth_rate_limit.enforce("register", request)
+
     # Version-mismatch guard. The frontend reads the canonical
     # versions from ``GET /api/legal/versions`` (or
     # ``/api/auth/me``'s ``required_*`` fields) and ships them back
@@ -514,6 +519,10 @@ async def login(
     db: AsyncSession = Depends(get_db),
 ):
     attempted_email = data.email.lower().strip()
+    # Security-Härtung (Audit 2026-06) — Brute-Force-Bremse pro IP UND
+    # pro Konto. Der Konto-Bucket greift auch, wenn ein Angreifer die
+    # IP (bzw. X-Forwarded-For) rotiert, um EIN Konto durchzuprobieren.
+    auth_rate_limit.enforce("login", request, account=attempted_email)
     result = await db.execute(select(User).where(User.email == attempted_email))
     user = result.scalars().first()
     if not user or not verify_password(data.password, user.password_hash):
@@ -1097,6 +1106,11 @@ async def confirm_password_reset(
        devices off. The user has to log in fresh after redeeming.
     4. An audit row records the completed reset with the user's id.
     """
+    # Security-Härtung (Audit 2026-06) — Brute-Force-Bremse pro IP gegen
+    # Token-Raten. (Die Token selbst haben 256 Bit Entropie und sind
+    # single-use; das Limit ist die zusätzliche Speed-Bump-Schicht.)
+    auth_rate_limit.enforce("password-reset-confirm", request)
+
     # v24.4.1+ — Passwort-Stärke via zentralem Helper.
     # Mindestlänge 10 + Common-Password-Blacklist. Konsistent mit
     # Register und Change-Password.

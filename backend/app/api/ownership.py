@@ -105,11 +105,19 @@ async def verify_lv_owner(
 async def verify_chat_session_owner(
     session_id: UUID, user: User, db: AsyncSession
 ) -> ChatSession:
-    """Verify that the chat session's project belongs to the user."""
+    """Verify that the chat session belongs to the user.
+
+    Security-Härtung (Audit 2026-06): Eigentum wird jetzt direkt über
+    ``ChatSession.user_id`` geprüft, nicht mehr nur transitiv über das
+    Projekt. Der frühere Pfad ließ projektlose ("globale") Sessions für
+    jeden authentifizierten User durch — ein IDOR, über den fremde
+    Sessions les-, umbenenn-, lösch- und beschreibbar waren.
+    """
     session = await db.get(ChatSession, session_id)
     if not session:
         raise HTTPException(404, "Chat-Session nicht gefunden")
-    if session.project_id:
-        await verify_project_owner(session.project_id, user, db)
-    # Sessions without a project_id are global — allow if user is authenticated
+    if session.user_id != user.id:
+        # Bewusst 404 (nicht 403): keine Existenz-Bestätigung fremder
+        # Session-IDs gegenüber einem anderen Mandanten.
+        raise HTTPException(404, "Chat-Session nicht gefunden")
     return session
