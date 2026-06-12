@@ -11,8 +11,10 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
+from sqlalchemy import text
 
 from app.config import settings
+from app.db.session import engine as _db_engine
 from app.api.router import api_router
 from app.mcp import build_mcp_app
 from app.middleware.security_headers import SecurityHeadersMiddleware
@@ -93,20 +95,79 @@ def _prewarm_reportlab() -> None:
         logger.warning("startup.reportlab_prewarm_failed exc=%s", exc)
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Run Alembic migrations on startup
-    try:
+# Feste 64-Bit-Konstante für den Migrations-Advisory-Lock. Beliebig,
+# muss nur über alle gunicorn-Worker identisch sein. (Hex für "baulv001".)
+_MIGRATION_LOCK_KEY = 0x6261756C76303031
+
+
+async def _run_migrations_with_lock() -> None:
+    """``alembic upgrade head`` unter einem Postgres-Advisory-Lock.
+
+    Wurzelursache des 027-DuplicateColumnError: dieser Lifespan feuert
+    pro gunicorn-Worker, es liefen also 2× ``upgrade head`` PARALLEL und
+    rannten in dieselbe DDL. Ein session-level Advisory-Lock serialisiert
+    das — Worker 2 wartet, bis Worker 1 fertig migriert hat, und sieht
+    dann "schon auf head" → no-op. Der Lock ist session-gebunden und wird
+    bei Prozess-Tod automatisch freigegeben (kein Dauer-Hang möglich).
+
+    Fail-open: scheitert schon der Lock-Connect (DB down etc.), wird die
+    Migration trotzdem versucht — die jetzt idempotente 027 macht auch
+    einen ungesperrten Lauf sicher.
+    """
+    def _run_alembic() -> None:
         result = subprocess.run(
             ["alembic", "upgrade", "head"],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, timeout=120,
         )
         if result.returncode == 0:
             logger.info("Alembic migrations applied successfully")
         else:
             logger.error("Alembic migration failed: %s", result.stderr)
-    except Exception as e:
-        logger.error("Failed to run migrations: %s", e)
+
+    lock_conn = None
+    try:
+        lock_conn = await _db_engine.connect()
+        await lock_conn.execute(
+            text("SELECT pg_advisory_lock(:k)"), {"k": _MIGRATION_LOCK_KEY}
+        )
+        try:
+            _run_alembic()
+        finally:
+            try:
+                await lock_conn.execute(
+                    text("SELECT pg_advisory_unlock(:k)"),
+                    {"k": _MIGRATION_LOCK_KEY},
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "advisory unlock failed (wird beim Disconnect "
+                    "freigegeben): %s", e,
+                )
+    except Exception as e:  # noqa: BLE001
+        # Lock-Connect/Acquire scheiterte — Migration trotzdem versuchen
+        # (idempotente 027 macht das sicher), damit ein Lock-Problem den
+        # Boot nicht migrationslos lässt.
+        logger.warning(
+            "Advisory-Lock nicht verfügbar (%s) — Migration ungesperrt.", e
+        )
+        try:
+            _run_alembic()
+        except Exception as e2:  # noqa: BLE001
+            logger.error("Failed to run migrations: %s", e2)
+    finally:
+        if lock_conn is not None:
+            try:
+                await lock_conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Run Alembic migrations on startup — serialisiert via Advisory-Lock,
+    # damit parallele gunicorn-Worker nicht dieselbe DDL rennen (siehe
+    # _run_migrations_with_lock).
+    await _run_migrations_with_lock()
 
     # Pre-warm reportlab — see _prewarm_reportlab docstring. This
     # runs before we yield so the first PDF export request doesn't

@@ -57,18 +57,65 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # 1. Spalte zunächst nullable anlegen (FK auf users, cascade).
-    op.add_column(
-        "chat_sessions",
-        sa.Column(
-            "user_id",
-            sa.Uuid(),
-            sa.ForeignKey("users.id", ondelete="CASCADE"),
-            nullable=True,
-        ),
-    )
+    # Idempotenz-Hotfix. Hintergrund: der FastAPI-Lifespan rief
+    # ``alembic upgrade head`` bei jedem Boot mit 2 gunicorn-Workern
+    # PARALLEL. Worker 1 legte ``user_id`` an, Worker 2 stolperte mit
+    # DuplicateColumnError → 027 blieb bei jedem Boot hängen
+    # (``alembic_version`` evtl. noch auf 026, die Spalte existiert aber
+    # bereits). Diese Version prüft JEDEN Schritt per Inspector und führt
+    # nur das aus, was noch fehlt — ein erneuter Lauf heilt den halb-
+    # fertigen Zustand UND verbucht 027 sauber. (Die Wurzelursache — der
+    # parallele Lauf — schließt zusätzlich der Advisory-Lock im Lifespan,
+    # siehe app/main.py:_run_migrations_with_lock.)
+    bind = op.get_bind()
 
-    # 2. Projektgebundene Sessions: Eigentümer aus dem Projekt erben.
+    def _has_column() -> bool:
+        return any(
+            c["name"] == "user_id"
+            for c in sa.inspect(bind).get_columns("chat_sessions")
+        )
+
+    def _user_id_nullable() -> bool:
+        for c in sa.inspect(bind).get_columns("chat_sessions"):
+            if c["name"] == "user_id":
+                return bool(c.get("nullable", True))
+        return True
+
+    def _has_user_fk() -> bool:
+        # Prüfung über Spalten/Referenz-Tabelle statt über den Constraint-
+        # Namen — deckt damit auch den auto-benannten Inline-FK der
+        # Original-Migration ab.
+        return any(
+            fk.get("referred_table") == "users"
+            and "user_id" in (fk.get("constrained_columns") or [])
+            for fk in sa.inspect(bind).get_foreign_keys("chat_sessions")
+        )
+
+    def _has_index() -> bool:
+        return any(
+            ix["name"] == "ix_chat_sessions_user_id"
+            for ix in sa.inspect(bind).get_indexes("chat_sessions")
+        )
+
+    # 1. Spalte (nullable) — nur wenn sie noch fehlt.
+    if not _has_column():
+        op.add_column(
+            "chat_sessions",
+            sa.Column("user_id", sa.Uuid(), nullable=True),
+        )
+
+    # 2. FK ON DELETE CASCADE — nur wenn auf user_id->users noch keiner
+    #    existiert.
+    if not _has_user_fk():
+        op.create_foreign_key(
+            "fk_chat_sessions_user_id_users",
+            "chat_sessions", "users",
+            ["user_id"], ["id"],
+            ondelete="CASCADE",
+        )
+
+    # 3. Projektgebundene Sessions: Eigentümer aus dem Projekt erben.
+    #    Inhärent idempotent — fasst nur NULL-Zeilen an.
     op.execute(
         sa.text(
             """
@@ -81,17 +128,32 @@ def upgrade() -> None:
         )
     )
 
-    # 3. Herrenlose (projektlose / unattribuierbare) Alt-Sessions
-    #    löschen. chat_messages cascaden über ihre FK.
+    # 4. Herrenlose (projektlose / unattribuierbare) Alt-Sessions löschen.
+    #    Inhärent idempotent — nur NULL-Zeilen. chat_messages cascaden.
     op.execute(sa.text("DELETE FROM chat_sessions WHERE user_id IS NULL"))
 
-    # 4. Jetzt Pflichtfeld + Index.
-    op.alter_column("chat_sessions", "user_id", nullable=False)
-    op.create_index(
-        "ix_chat_sessions_user_id", "chat_sessions", ["user_id"]
-    )
+    # 5. NOT NULL — nur wenn aktuell nullable.
+    if _user_id_nullable():
+        op.alter_column("chat_sessions", "user_id", nullable=False)
+
+    # 6. Index — nur wenn er noch fehlt.
+    if not _has_index():
+        op.create_index(
+            "ix_chat_sessions_user_id", "chat_sessions", ["user_id"]
+        )
 
 
 def downgrade() -> None:
-    op.drop_index("ix_chat_sessions_user_id", table_name="chat_sessions")
-    op.drop_column("chat_sessions", "user_id")
+    # Auch der Downgrade prüft Existenz, damit er aus jedem Teilzustand
+    # sauber durchläuft.
+    bind = op.get_bind()
+    if any(
+        ix["name"] == "ix_chat_sessions_user_id"
+        for ix in sa.inspect(bind).get_indexes("chat_sessions")
+    ):
+        op.drop_index("ix_chat_sessions_user_id", table_name="chat_sessions")
+    if any(
+        c["name"] == "user_id"
+        for c in sa.inspect(bind).get_columns("chat_sessions")
+    ):
+        op.drop_column("chat_sessions", "user_id")
