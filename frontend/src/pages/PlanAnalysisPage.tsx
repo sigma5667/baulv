@@ -2436,6 +2436,35 @@ function ceilingSourceLabel(source: string): string {
   }
 }
 
+// v24.4.x (Punkt 0) — Räume ohne Wandbezug (Außenflächen). Sie haben
+// zwar eine Bodenfläche, aber keine umschließenden Wände im Sinne einer
+// Wandflächen-Mengenermittlung — daher dürfen sie nicht in die
+// Wandflächen-Summe einfließen. Erkennung über zwei Wege, weil nicht
+// alle Begriffe als ``room_type``-Slug existieren: ``balkon``/``terrasse``
+// sind kanonische Typen; ``loggia``/``garten`` kommen nur im
+// Anzeige-Namen vor (z.B. "Garten TOP 1", "Loggia").
+const _AUSSENFLAECHE_KEYWORDS = ["balkon", "terrasse", "loggia", "garten"];
+
+function isAussenflaeche(room: Room): boolean {
+  const type = (room.room_type ?? "").toLowerCase();
+  if (type === "balkon" || type === "terrasse") return true;
+  const name = (room.name ?? "").toLowerCase();
+  return _AUSSENFLAECHE_KEYWORDS.some((kw) => name.includes(kw));
+}
+
+/**
+ * v24.4.x (Punkt 0) — zählt dieser Raum in die Wandflächen-Summe?
+ * Nur aktive Räume MIT echtem Umfang (> 0) UND mit Wandbezug. Balkone,
+ * Terrassen, Loggien, Gärten und umfanglose Räume fallen raus — die
+ * Zeile bleibt in der Tabelle sichtbar, zählt aber nicht in die Summe.
+ */
+function countsForWallSum(room: Room): boolean {
+  if (!room.is_active) return false;
+  if (isAussenflaeche(room)) return false;
+  if (room.perimeter_m === null || room.perimeter_m <= 0) return false;
+  return true;
+}
+
 /**
  * "Wandberechnung" table. One row per room, with inline toggle for the
  * per-room deductions flag, a per-row "Neu berechnen" action (the
@@ -2552,14 +2581,33 @@ function WallCalculationTable({
   // irreführend. (Pre-v24.4.3 war's bewusst ``rooms`` weil der
   // Mängelfilter nur die Anzeige, nicht die Berechnung änderte —
   // aber das Aktiv-Flag ändert tatsächlich die Berechnung.)
-  const totalNet = activeRooms.reduce(
+  // v24.4.x (Punkt 0) — die Wandflächen-Summe rechnet nur über Räume
+  // MIT Wandbezug und echtem Umfang (siehe ``countsForWallSum``).
+  // Außenflächen (Balkon/Terrasse/Loggia/Garten) und umfanglose Räume
+  // fallen raus — sonst stünde eine Wandfläche da, die es baulich nicht
+  // gibt.
+  const wallRooms = useMemo(
+    () => activeRooms.filter(countsForWallSum),
+    [activeRooms],
+  );
+  const totalNet = wallRooms.reduce(
     (acc, r) => acc + (r.wall_area_net_m2 ?? 0),
     0
   );
-  const totalGross = activeRooms.reduce(
+  const totalGross = wallRooms.reduce(
     (acc, r) => acc + (r.wall_area_gross_m2 ?? 0),
     0
   );
+  // v24.4.x (Punkt 0) — wie viele der gewerteten Räume rechnen noch mit
+  // der Standard-Höhe 2,50 (= Schätzung, keine echte Höhe aus Schnitt)?
+  // Sobald MINDESTENS einer dabei ist, ist die Summe (teils) geschätzt
+  // und darf nicht als belastbare Liefermenge gelten.
+  const estimatedWallRooms = wallRooms.filter(
+    (r) => r.ceiling_height_source === "default",
+  ).length;
+  // Aktive Räume, die NICHT in die Wandsumme zählen (Außenfläche oder
+  // ohne Umfang) — für den Transparenz-Hinweis "X nicht gewertet".
+  const excludedFromWall = activeRooms.length - wallRooms.length;
 
   return (
     <div>
@@ -2701,6 +2749,31 @@ function WallCalculationTable({
                 ? "Alle Räume zeigen"
                 : "Nur unvollständige zeigen"}
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* v24.4.x (Punkt 0) — Schätzungs-Hinweis. Erscheint, sobald
+          MINDESTENS ein in die Wandsumme gewerteter Raum noch mit der
+          Standard-Höhe 2,50 m rechnet (= keine echte Höhe aus einem
+          Schnitt). Die Wandfläche ist dann (teils) geschätzt und darf
+          nicht als belastbare Liefer-/Endmenge gelten. */}
+      {estimatedWallRooms > 0 && (
+        <div
+          role="status"
+          className="mb-3 flex items-start gap-2 rounded-md border border-amber-400 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+        >
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+          <div>
+            <p className="font-medium">
+              Schätzung — Höhe = Standard 2,50 m bei {estimatedWallRooms} von{" "}
+              {wallRooms.length} gewerteten Räumen.
+            </p>
+            <p className="mt-0.5 text-xs text-amber-800">
+              Solange keine echte Raumhöhe aus einem Schnittplan vorliegt,
+              ist die Wandfläche nur eine Schätzung und{" "}
+              <strong>keine belastbare Liefer-/Endmenge</strong>.
+            </p>
           </div>
         </div>
       )}
@@ -2992,16 +3065,22 @@ function WallCalculationTable({
                   weil eine KI-Konfidenz-Spalte rechts dazugekommen
                   ist (Raumtyp + Faktor + KI-Konfidenz).
                   v24.4.3 — Trailing-colSpan ist jetzt 4 (Raumtyp +
-                  Faktor + KI-Konfidenz + Aktiv); und der Counter
-                  zählt nur AKTIVE Räume, weil die Summen oben auch
-                  nur die aktiven enthalten. */}
+                  Faktor + KI-Konfidenz + Aktiv).
+                  v24.4.x (Punkt 0) — die Summe rechnet jetzt über
+                  ``wallRooms`` (Räume mit Wandbezug + Umfang), nicht
+                  mehr über alle aktiven. Label + Ausschluss-Zähler
+                  entsprechend, plus Schätzungs-Marker an der Summe. */}
               <td className="px-3 py-2" colSpan={showPlanColumn ? 5 : 4}>
-                Summe über {activeRooms.length}{" "}
-                {activeRooms.length === 1 ? "aktiven Raum" : "aktive Räume"}
-                {inactiveCount > 0 && (
+                Wandfläche über {wallRooms.length}{" "}
+                {wallRooms.length === 1 ? "Raum" : "Räume"} mit Umfang
+                {excludedFromWall > 0 && (
                   <span className="ml-2 text-xs font-normal text-muted-foreground">
-                    ({inactiveCount}{" "}
-                    {inactiveCount === 1 ? "ausgenommen" : "ausgenommen"})
+                    ({excludedFromWall} ohne Wandbezug/Umfang nicht gewertet)
+                  </span>
+                )}
+                {estimatedWallRooms > 0 && (
+                  <span className="ml-2 inline-block rounded bg-amber-200 px-1.5 py-0.5 text-xs font-normal text-amber-900">
+                    Schätzung · Höhe Standard 2,50 m
                   </span>
                 )}
               </td>
