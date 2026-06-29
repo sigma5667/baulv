@@ -161,6 +161,8 @@ def _replace_berechnungsnachweise(
     db: AsyncSession,
     pos: Position,
     measurement_lines: list,
+    *,
+    remove_existing: bool = True,
 ) -> None:
     """Replace all Berechnungsnachweise of an unlocked position.
 
@@ -170,8 +172,17 @@ def _replace_berechnungsnachweise(
 
     BN IDs are deliberately not preserved — see the module docstring.
     """
-    for bn in list(pos.berechnungsnachweise):
-        pos.berechnungsnachweise.remove(bn)
+    # A brand-new position has no persisted Berechnungsnachweise, and its
+    # ``berechnungsnachweise`` collection is unloaded right after the INSERT
+    # flush. Touching it on the async session would emit a lazy-load SELECT
+    # outside the async greenlet → MissingGreenlet → 500. Callers that just
+    # created the position pass ``remove_existing=False`` to skip that access
+    # (the collection is empty by definition). Existing positions were
+    # eager-loaded (selectinload chain in calculate_lv), so removing through
+    # the collection is safe there.
+    if remove_existing:
+        for bn in list(pos.berechnungsnachweise):
+            pos.berechnungsnachweise.remove(bn)
     for line in measurement_lines:
         nachweis = Berechnungsnachweis(
             position_id=pos.id,
@@ -311,7 +322,11 @@ async def calculate_lv(
             await db.flush()
             existing_positions[key] = pos
             positions_created += 1
-            _replace_berechnungsnachweise(db, pos, pos_qty.measurement_lines)
+            # New position: its BN collection is unloaded after flush; skip the
+            # removal access to avoid an async lazy-load (MissingGreenlet).
+            _replace_berechnungsnachweise(
+                db, pos, pos_qty.measurement_lines, remove_existing=False
+            )
             continue
 
         if pos.is_locked:
