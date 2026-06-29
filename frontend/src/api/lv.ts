@@ -16,7 +16,14 @@ export const createLV = async (projectId: string, lv: LVCreate): Promise<LV> => 
   return data;
 };
 
-export const calculateLV = async (lvId: string): Promise<{ positions_calculated: number }> => {
+export const calculateLV = async (
+  lvId: string
+): Promise<{
+  positions_calculated: number;
+  rooms_incomplete?: number;
+  incomplete_room_names?: string[];
+  warning?: string;
+}> => {
   const { data } = await api.post(`/lv/${lvId}/calculate`);
   return data;
 };

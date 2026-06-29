@@ -78,3 +78,16 @@ class PositionQuantity:
     measurement_lines: list[MeasurementLine] = field(default_factory=list)
     gruppe_name: str = ""
     gruppe_nummer: str = ""
+
+
+@dataclass
+class CalculationResult:
+    """Outcome of an LV calculation run.
+
+    Carries the calculated positions plus the names of rooms that were
+    excluded because they lack core geometry (area/perimeter). The caller
+    surfaces ``incomplete_rooms`` to the user instead of silently dropping
+    them — same idea as the editor already showing 0,00 m² for such rooms.
+    """
+    positions: list["PositionQuantity"]
+    incomplete_rooms: list[str] = field(default_factory=list)

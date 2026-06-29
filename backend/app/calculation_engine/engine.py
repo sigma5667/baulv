@@ -51,6 +51,7 @@ from sqlalchemy.orm import selectinload
 
 from app.calculation_engine.registry import TradeRegistry
 from app.calculation_engine.types import (
+    CalculationResult,
     OpeningData,
     PositionQuantity,
     RoomWithOpenings,
@@ -123,9 +124,15 @@ async def load_rooms_for_project(project_id: UUID, db: AsyncSession) -> list[Roo
         openings = [
             OpeningData(
                 opening_type=o.opening_type,
-                width_m=Decimal(str(o.width_m)),
-                height_m=Decimal(str(o.height_m)),
-                count=o.count,
+                # Openings from an incomplete plan analysis can carry NULL
+                # dimensions/count. Coerce them so a missing measurement
+                # contributes 0 area instead of crashing the whole run
+                # (Decimal(str(None)) -> InvalidOperation; Decimal * None ->
+                # TypeError). Mirrors the room area/perimeter `or 0` handling
+                # below; a recorded opening counts as at least 1.
+                width_m=Decimal(str(o.width_m or 0)),
+                height_m=Decimal(str(o.height_m or 0)),
+                count=o.count or 1,
             )
             for o in room.openings
         ]
@@ -194,7 +201,7 @@ def _replace_berechnungsnachweise(
 async def calculate_lv(
     lv_id: UUID,
     db: AsyncSession,
-) -> list[PositionQuantity]:
+) -> CalculationResult:
     """Run the calculation engine for an LV and upsert the result.
 
     See module docstring for the full upsert contract. Returns the raw
@@ -224,6 +231,15 @@ async def calculate_lv(
             "Bitte laden Sie zuerst einen Bauplan hoch und analysieren Sie ihn, "
             "oder erstellen Sie Räume manuell über Gebäude → Stockwerk → Einheit → Raum."
         )
+
+    # Rooms missing core geometry (area/perimeter) are excluded from the
+    # measurement — load_rooms_for_project coerces their NULLs to 0 and the
+    # trade calculators skip zero-area rooms. Record them so the response can
+    # tell the user "X Räume unvollständig, nicht einbezogen" instead of them
+    # vanishing silently.
+    incomplete_rooms = [
+        r.name for r in rooms if r.area_m2 <= 0 or r.perimeter_m <= 0
+    ]
 
     calculator = TradeRegistry.get(lv.trade)
     results = calculator.calculate(rooms)
@@ -370,4 +386,4 @@ async def calculate_lv(
         positions_locked_skipped,
     )
 
-    return results
+    return CalculationResult(positions=results, incomplete_rooms=incomplete_rooms)

@@ -187,9 +187,11 @@ export function LVEditorPage() {
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["lv", activeLvId] });
       setErrorMsg(null);
-      setSuccessMsg(
-        `Berechnung abgeschlossen: ${data.positions_calculated} Positionen berechnet.`
-      );
+      let msg = `Berechnung abgeschlossen: ${data.positions_calculated} Positionen berechnet.`;
+      if (data.warning) {
+        msg += ` Hinweis: ${data.warning}`;
+      }
+      setSuccessMsg(msg);
     },
     onError: (err) => {
       // Always log so failures are debuggable in the browser console.

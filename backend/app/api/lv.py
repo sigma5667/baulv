@@ -418,12 +418,23 @@ async def run_calculation(
         )
 
     try:
-        results = await calculate_lv(lv_id, db)
-        return {
+        result = await calculate_lv(lv_id, db)
+        positions = result.positions
+        response = {
             "lv_id": str(lv_id),
-            "positions_calculated": len(results),
-            "total_measurement_lines": sum(len(r.measurement_lines) for r in results),
+            "positions_calculated": len(positions),
+            "total_measurement_lines": sum(len(r.measurement_lines) for r in positions),
+            "rooms_incomplete": len(result.incomplete_rooms),
+            "incomplete_room_names": result.incomplete_rooms,
         }
+        if result.incomplete_rooms:
+            n = len(result.incomplete_rooms)
+            response["warning"] = (
+                f"{n} {'Raum' if n == 1 else 'Räume'} unvollständig "
+                f"(fehlende Fläche/Umfang), nicht einbezogen: "
+                + ", ".join(result.incomplete_rooms)
+            )
+        return response
     except ValueError as e:
         raise HTTPException(400, str(e))
 
