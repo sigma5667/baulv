@@ -8,6 +8,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   Send,
   Plus,
@@ -551,14 +552,15 @@ function MessageRow({ message }: { message: ChatMessage }) {
 
 /**
  * Markdown renderer for assistant messages. Styles are scoped to this
- * block so they don't leak to user bubbles. We intentionally don't
- * enable GFM (tables, task lists) — the chat answers rarely need them
- * and skipping the dep keeps the bundle slim.
+ * block so they don't leak to user bubbles. GFM (remark-gfm) is enabled
+ * so the advisor's pipe tables render as real <table>s instead of raw
+ * "| … |" text — it also brings task lists, strikethrough and autolinks.
  */
 function MarkdownBody({ content }: { content: string }) {
   return (
     <div className="prose-chat">
       <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
         components={{
           p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
           ul: ({ children }) => (
@@ -581,6 +583,22 @@ function MarkdownBody({ content }: { content: string }) {
             <strong className="font-semibold">{children}</strong>
           ),
           em: ({ children }) => <em className="italic">{children}</em>,
+          table: ({ children }) => (
+            <div className="mb-2 overflow-x-auto last:mb-0">
+              <table className="w-full border-collapse text-xs">{children}</table>
+            </div>
+          ),
+          thead: ({ children }) => <thead className="bg-muted">{children}</thead>,
+          tbody: ({ children }) => <tbody>{children}</tbody>,
+          tr: ({ children }) => <tr className="border-b border-border">{children}</tr>,
+          th: ({ children }) => (
+            <th className="border border-border px-2 py-1 text-left font-semibold">
+              {children}
+            </th>
+          ),
+          td: ({ children }) => (
+            <td className="border border-border px-2 py-1 align-top">{children}</td>
+          ),
           code: ({ children, className }) => {
             const isBlock = (className ?? "").startsWith("language-");
             if (isBlock) {
