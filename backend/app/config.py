@@ -97,6 +97,15 @@ class Settings(BaseSettings):
     # muss den Ordner manuell aufräumen (kein Auto-Cleanup).
     debug_save_crops: bool = False
 
+    # v24.5 — Stufe 4a: Trockenlauf für den PDF-Textlayer-Backfill der
+    # Raum-Flächen. "off" (Default) = Pipeline exakt wie heute (das Modul
+    # wird nicht einmal importiert). "measure" = misst + loggt die
+    # Backfill-Quote pro Seite, schreibt NICHTS in die DB. ("apply" für den
+    # späteren, schreibenden 4b-Einbau ist noch nicht gebaut und verhält
+    # sich derzeit wie "measure" — kein Schreibzugriff.)
+    # Setzen per Env-Var TEXTLAYER_BACKFILL_MODE.
+    textlayer_backfill_mode: str = "off"
+
     # v24.4.2 — Coming-Soon-Gate vor der öffentlichen Marketing-
     # Oberfläche. Solange baulv.at in der geschlossenen Test-Phase
     # läuft, fragt das Frontend an dieser Stelle einen geteilten

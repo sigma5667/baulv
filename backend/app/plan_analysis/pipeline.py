@@ -490,6 +490,24 @@ async def analyze_plan(plan_id: UUID, db: AsyncSession) -> dict:
             )
             total_rooms += rooms_created
 
+        # v24.5 — Stufe 4a TROCKENLAUF (measure-only). Läuft NUR bei aktivem
+        # Flag; Default "off" überspringt den Block komplett (das Modul wird
+        # dann nicht einmal importiert -> Pipeline exakt wie zuvor). Schreibt
+        # NICHTS, ändert das Vision-Ergebnis NICHT. Jeder Fehler hier wird
+        # geschluckt, damit der Trockenlauf die Analyse niemals kippen kann.
+        if settings.textlayer_backfill_mode != "off" and doc is not None:
+            from app.plan_analysis import textlayer_backfill as _tb
+            for _pn, _res in all_results:
+                try:
+                    _pdict = await loop.run_in_executor(
+                        fitz_executor, lambda p=_pn: doc[p - 1].get_text("dict")
+                    )
+                    logger.info(_tb.format_log(_tb.measure_page(_pdict, _res, page=_pn), plan_id))
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "textlayer_backfill.measure_failed page=%d", _pn, exc_info=True
+                    )
+
         # Decide the final status. If at least one page produced rooms,
         # call it "completed" (partial success is still useful); if
         # nothing came back at all, mark it failed so the user knows.
