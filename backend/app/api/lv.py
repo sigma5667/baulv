@@ -509,6 +509,21 @@ _CEILING_POSITION_KEYWORDS: tuple[str, ...] = (
     "decke",          # decken, deckenanstrich, deckenmalerei, decken-
 )
 
+# Leibung (reveal) keywords. Leibungs-Positionen werden vom
+# Calculation-Engine als ``Öffnungsumfang × Leibungstiefe`` (§3.5
+# Leibungen, malerarbeiten.py) gerechnet — das ist eine EIGENE,
+# viel kleinere Menge als die Netto-Wandfläche. Ihr Text enthält
+# aber "anstrich" ("Leibungsbeschichtung … 2× Anstrich" / Gruppe
+# "Leibungsanstrich"), wodurch der Wand-Fan-out sie sonst als
+# Wand-Position matchen und mit der vollen Wandfläche überschreiben
+# würde. Diese Liste sortiert sie VOR dem Wand-/Decken-Match aus,
+# sodass die Position ihren korrekten Calc-Engine-Wert behält.
+# AT/DE-Schreibvarianten ("Leibung"/"Laibung") beide abgedeckt.
+_LEIBUNG_POSITION_KEYWORDS: tuple[str, ...] = (
+    "leibung",        # leibung, leibungen, leibungsbeschichtung, -anstrich
+    "laibung",        # österreichische/ältere Schreibweise
+)
+
 
 def _position_haystack(position: "Position") -> str:
     """Normalized kurztext+langtext for keyword matching."""
@@ -522,6 +537,22 @@ def _is_m2_position(position: "Position") -> bool:
     einheit = (position.einheit or "").lower().strip()
     # Accept "m2", "m²", "qm"; reject anything else.
     return einheit in {"m2", "m²", "qm"}
+
+
+def _is_leibung_position(position: "Position") -> bool:
+    """True iff this position is a Leibung (reveal) position.
+
+    Leibung is measured as opening-perimeter × reveal-depth by the
+    calculation engine (``MalerarbeitenCalculator._calc_leibung``),
+    NOT as net wall area. Such positions must never receive the
+    wall-area fan-out even though their text contains "anstrich".
+    We deliberately do NOT gate this on ``_is_m2_position`` — a
+    Leibung position should be excluded from wall/ceiling routing
+    regardless of unit, and excluding a non-m² row is harmless.
+    """
+    return any(
+        kw in _position_haystack(position) for kw in _LEIBUNG_POSITION_KEYWORDS
+    )
 
 
 def _is_ceiling_position(position: "Position") -> bool:
@@ -670,9 +701,26 @@ async def sync_wall_areas(
         wall_updated = 0
         ceiling_updated = 0
         skipped_locked = 0
+        leibung_skipped = 0
         for pos in positions:
-            # Ceiling check runs FIRST — "Deckenanstrich" matches both the
-            # ceiling keyword and several wall keywords ("anstrich"), so
+            # Leibung (reveals) check runs BEFORE wall/ceiling. Leibungs-
+            # Positionen werden vom Calc-Engine als Öffnungsumfang ×
+            # Leibungstiefe gerechnet (§3.5) — eine eigene, kleine Menge,
+            # NICHT die Wandfläche. Ihr Text enthält "anstrich", also
+            # würde der Wand-Match unten sie sonst mit der vollen
+            # Wandfläche überschreiben. Hier unbedingt überspringen,
+            # damit die Position ihren korrekten Wert behält (auch wenn
+            # gesperrt — Skippen lässt den Wert ohnehin unangetastet).
+            if _is_leibung_position(pos):
+                leibung_skipped += 1
+                logger.info(
+                    "sync_wall_areas.skip_leibung lv_id=%s position_id=%s "
+                    "kurztext=%r",
+                    lv_id, pos.id, (pos.kurztext or "")[:60],
+                )
+                continue
+            # Ceiling check runs before wall — "Deckenanstrich" matches both
+            # the ceiling keyword and several wall keywords ("anstrich"), so
             # the order here is load-bearing. Don't reorder.
             if _is_ceiling_position(pos):
                 if pos.is_locked:
@@ -715,8 +763,9 @@ async def sync_wall_areas(
 
         logger.info(
             "sync_wall_areas.done lv_id=%s wall_updated=%d "
-            "ceiling_updated=%d skipped_locked=%d",
+            "ceiling_updated=%d skipped_locked=%d leibung_skipped=%d",
             lv_id, wall_updated, ceiling_updated, skipped_locked,
+            leibung_skipped,
         )
 
         return {
@@ -729,6 +778,10 @@ async def sync_wall_areas(
             # meaningful — the UI toast just wants a total count.
             "positions_updated": wall_updated + ceiling_updated,
             "positions_skipped_locked": skipped_locked,
+            # v24.5 — Leibungs-Positionen, die bewusst NICHT mit der
+            # Wandfläche überschrieben wurden (behalten ihren
+            # Calc-Engine-Wert). Additiv; ändert keine bestehende Semantik.
+            "positions_skipped_leibung": leibung_skipped,
             "rooms_considered": len(rooms),
         }
     except HTTPException:
