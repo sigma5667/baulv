@@ -1,3 +1,13 @@
+/* Self-hosted fonts (bundled by Vite from node_modules — the built
+   site makes zero third-party requests; keep it that way). Latin
+   subset covers German incl. Umlauts and the Euro sign (U+20AC). */
+@import "@fontsource/ibm-plex-sans/latin-400.css";
+@import "@fontsource/ibm-plex-sans/latin-500.css";
+@import "@fontsource/ibm-plex-sans/latin-600.css";
+@import "@fontsource/ibm-plex-sans/latin-700.css";
+@import "@fontsource/ibm-plex-mono/latin-400.css";
+@import "@fontsource/ibm-plex-mono/latin-500.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -32,5 +42,37 @@
   body {
     @apply bg-background text-foreground;
     font-family: "Inter", system-ui, -apple-system, sans-serif;
+  }
+  /* Visible keyboard focus everywhere. :focus-visible only, so mouse
+     clicks don't paint rings on buttons. */
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+}
+
+/* Landing page: staggered reveal of the plan→Mengenermittlung hero.
+   Elements carry .lp-a plus an inline animation-delay. `both` keeps
+   them hidden during the delay and visible after. */
+@keyframes lp-fade-rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.lp-a {
+  animation: lp-fade-rise 0.5s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lp-a {
+    animation: none;
+    opacity: 1;
+    transform: none;
   }
 }

@@ -5,6 +5,13 @@ const config: Config = {
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
   theme: {
     extend: {
+      fontFamily: {
+        // Self-hosted via @fontsource (see index.css). Scoped to the
+        // landing page via `font-plex` on its root — the app shell
+        // keeps the system stack until Plex is rolled out deliberately.
+        plex: ['"IBM Plex Sans"', "Inter", "system-ui", "-apple-system", "sans-serif"],
+        plexmono: ['"IBM Plex Mono"', "ui-monospace", "SFMono-Regular", "monospace"],
+      },
       colors: {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
