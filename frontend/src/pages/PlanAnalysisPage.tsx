@@ -1856,7 +1856,12 @@ function RoomTable({
                         setInlineSavingId(room.id);
                         updateMutation.mutate({
                           id: room.id,
-                          updates: { height_m: next ?? undefined },
+                          // v24.6 — null muss auf die Leitung: mit
+                          // "?? undefined" droppte axios den Key und
+                          // der Backend-Fallback "Höhe leeren →
+                          // Geschoss-Höhe" war von dieser Zelle aus
+                          // unerreichbar.
+                          updates: { height_m: next },
                         });
                       }}
                     />
@@ -2431,6 +2436,9 @@ function ceilingSourceLabel(source: string): string {
       return "Grundriss";
     case "manual":
       return "Manuell";
+    case "floor":
+      // v24.6 — Höhe kommt aus der Geschoss-Vorgabe des Stockwerks.
+      return "Geschoss";
     default:
       return "Standard";
   }

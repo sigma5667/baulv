@@ -1467,8 +1467,16 @@ function FloorForm({
   const [level, setLevel] = useState<string>(
     initial?.level_number?.toString() ?? ""
   );
+  // Empty when the Stockwerk has no Geschoss-Höhe. We deliberately do
+  // NOT pre-fill the 2,50 default (same reasoning as RoomForm above,
+  // ~1650): the form always submits floor_height_m, so a pre-filled
+  // value the user never touches would be persisted as a real
+  // Geschoss-Höhe on a name-only edit — silently activating the
+  // fan-out on Bestandsstockwerke (v24.6 Option A). Empty input →
+  // backend keeps floor_height_m null → rooms stay on the honest
+  // 2,50/„Standard" default. The placeholder still shows „2,50".
   const [height, setHeight] = useState<string>(
-    initial?.floor_height_m?.toString() ?? DEFAULT_FLOOR_HEIGHT_M.toString()
+    initial?.floor_height_m?.toString().replace(".", ",") ?? ""
   );
 
   return (

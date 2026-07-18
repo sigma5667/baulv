@@ -42,6 +42,11 @@ from app.api.ownership import (
     verify_floor_owner,
     verify_unit_owner,
 )
+# Single source of truth für die Wandflächen-Neuberechnung inkl.
+# Geschoss-Höhen-Auflösung (v24.6) — bewusst aus rooms.py importiert
+# statt dupliziert, damit PUT /floors und die Raum-Endpoints nie
+# auseinanderlaufen können.
+from app.api.rooms import _recalculate_walls_and_persist
 
 logger = logging.getLogger(__name__)
 
@@ -201,9 +206,54 @@ async def update_floor(
     db: AsyncSession = Depends(get_db),
 ):
     floor = await verify_floor_owner(floor_id, user, db)
-    for key, value in data.model_dump(exclude_unset=True).items():
+    updates = data.model_dump(exclude_unset=True)
+    old_floor_height = (
+        float(floor.floor_height_m) if floor.floor_height_m is not None else None
+    )
+    for key, value in updates.items():
         setattr(floor, key, value)
     await db.flush()
+
+    # v24.6 — Geschoss-Höhe fan-out. Ändert sich ``floor_height_m``,
+    # werden alle Räume dieses Stockwerks, deren Höhe nur ein Platz-
+    # halter ist (source ``default`` oder ``floor``), synchron neu
+    # aufgelöst und ihre Wandflächen-Caches neu berechnet — der User
+    # sieht die neuen Zahlen sofort, kein Stale-Cache bis zum nächsten
+    # Raum-Edit. Räume mit echter Höhe (manual/schnitt/grundriss)
+    # bleiben unberührt. Der Recalc-Helper löst die Geschoss-Höhe
+    # selbst auf (Single Source of Truth); der Source-Filter hier
+    # spart nur die unnötigen Recalcs der geschützten Räume.
+    #
+    # Option A ("nur bewusste Aktionen"): der Fan-out feuert nur bei
+    # einer ECHTEN Wertänderung. Das Stockwerk-Formular schickt die
+    # vorbefüllte Raumhöhe auch beim bloßen Umbenennen immer mit; ein
+    # unveränderter Echo-Wert darf schlafende Alt-Höhen aus der Zeit,
+    # als das Feld wirkungslos war, nicht rückwirkend aktivieren.
+    new_floor_height = (
+        float(floor.floor_height_m) if floor.floor_height_m is not None else None
+    )
+    height_really_changed = "floor_height_m" in updates and (
+        (old_floor_height is None) != (new_floor_height is None)
+        or (
+            old_floor_height is not None
+            and new_floor_height is not None
+            and abs(old_floor_height - new_floor_height) > 1e-9
+        )
+    )
+    if height_really_changed:
+        stmt = (
+            select(Room)
+            .join(Unit, Room.unit_id == Unit.id)
+            .where(
+                Unit.floor_id == floor_id,
+                Room.ceiling_height_source.in_(["default", "floor"]),
+            )
+            .options(selectinload(Room.openings))
+        )
+        rooms = (await db.execute(stmt)).scalars().all()
+        for room in rooms:
+            await _recalculate_walls_and_persist(room, db)
+        await db.flush()
     return floor
 
 

@@ -15,9 +15,18 @@ export interface Opening {
  * * ``schnitt``   — extracted from a Schnittzeichnung
  * * ``grundriss`` — labelled on the floorplan (e.g. "RH=2.50")
  * * ``manual``    — the user typed it in
+ * * ``floor``     — inherited from the Stockwerk's Geschoss-Höhe
+ *                   (the "Raumhöhe (m)" field on the floor form,
+ *                   v24.6). Follows later changes to that value;
+ *                   overridden by any real measurement above.
  * * ``default``   — assumed 2.50 m because nothing else was available
  */
-export type CeilingHeightSource = "schnitt" | "grundriss" | "manual" | "default";
+export type CeilingHeightSource =
+  | "schnitt"
+  | "grundriss"
+  | "manual"
+  | "floor"
+  | "default";
 
 /**
  * Provenance of the ``perimeter_m`` value. Confidence ladder

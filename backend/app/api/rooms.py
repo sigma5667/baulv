@@ -27,11 +27,16 @@ from app.api.ownership import (
 router = APIRouter()
 
 
-# Accepted ceiling_height_source values, shared with the pipeline.
+# Accepted ceiling_height_source values for API payloads.
 # Values outside this set collapse to ``default`` so the DB can't end
 # up with a stray typo that the frontend's amber-warning logic
-# wouldn't recognise.
-_CEILING_SOURCE_VALUES = {"schnitt", "grundriss", "manual", "default"}
+# wouldn't recognise. ``floor`` (v24.6) is minted by the backend when
+# a room inherits the Stockwerk's Geschoss-Höhe (``Floor.floor_height_m``)
+# and is accepted here so the marker survives API round-trips. The
+# pipeline keeps a SEPARATE Vision-facing whitelist WITHOUT ``floor``
+# (pipeline.py): Vision must never claim that source — a hallucinated
+# ``floor`` would tag a real extracted height as overwritable.
+_CEILING_SOURCE_VALUES = {"schnitt", "grundriss", "manual", "default", "floor"}
 
 
 def _normalise_ceiling_source(value: str | None) -> str:
@@ -63,7 +68,28 @@ def _normalise_perimeter_source(value: str | None) -> str | None:
     return None
 
 
-async def _recalculate_walls_and_persist(room: Room) -> WallCalculationResponse:
+async def _resolve_floor_height(db: AsyncSession, unit_id: UUID) -> float | None:
+    """Geschoss-Höhe (``Floor.floor_height_m``) of the unit's Stockwerk.
+
+    Returns ``None`` when no Geschoss-Höhe is set. Non-positive values
+    (the schema doesn't forbid a typed 0) are treated as "not set" so
+    they can never zero out a wall calculation.
+    """
+    stmt = (
+        select(Floor.floor_height_m)
+        .join(Unit, Unit.floor_id == Floor.id)
+        .where(Unit.id == unit_id)
+    )
+    value = (await db.execute(stmt)).scalar_one_or_none()
+    if value is None:
+        return None
+    height = float(value)
+    return height if height > 0 else None
+
+
+async def _recalculate_walls_and_persist(
+    room: Room, db: AsyncSession | None = None
+) -> WallCalculationResponse:
     """Run the calculator for one room, write results back, return payload.
 
     The caller must have loaded ``room.openings`` via ``selectinload``
@@ -99,7 +125,48 @@ async def _recalculate_walls_and_persist(room: Room) -> WallCalculationResponse:
     ``height_m = 2.50`` + ``ceiling_height_source = 'default'``.
     The frontend then renders the value with the subtle "Standard"
     hint, exactly matching what the calc used.
+
+    Geschoss-Höhe resolution (v24.6, Option A: nur bewusste Aktionen)
+    -----------------------------------------------------------------
+    When ``db`` is provided and the room's height is only a
+    placeholder (``ceiling_height_source`` in ``default`` / ``floor``),
+    the Stockwerk's ``floor_height_m`` — if set — is written onto the
+    room before the calc runs and the source flips to ``floor``. If
+    the Geschoss-Höhe was cleared, ``floor`` rooms fall back to the
+    2,50 m default. Priority is strict: rooms whose height is a real
+    measurement (``manual`` / ``schnitt`` / ``grundriss``) are never
+    touched.
+
+    ``db`` is deliberately passed by only three callers — room
+    creation (``create_room``), an explicit height-clear in
+    ``update_room``, and the Geschoss-Höhen fan-out in
+    ``update_floor`` (buildings.py). Every other recalc entry point
+    (renames and other inline edits, opening CRUD, the recompute
+    buttons) passes no ``db`` and therefore never re-sources a room:
+    Bestandsräume keep their numbers until the user acts on a height
+    or on the Stockwerk's Geschoss-Höhe. Dormant ``floor_height_m``
+    values from the pre-v24.6 era (Quick-Add seeds, the form's 2,50
+    pre-fill) thus stay inert until deliberately re-saved.
     """
+
+    # Geschoss-Höhe resolution — see docstring. Keyed off the source
+    # marker, NOT off ``height_m is None``: since the v24.3.1
+    # write-back every ``default`` room carries a literal 2,50 in
+    # ``height_m``, so the marker is the only reliable signal that
+    # the stored value is a placeholder rather than a measurement.
+    if db is not None and (room.ceiling_height_source or "default") in (
+        "default",
+        "floor",
+    ):
+        floor_height = await _resolve_floor_height(db, room.unit_id)
+        if floor_height is not None:
+            room.height_m = floor_height
+            room.ceiling_height_source = "floor"
+        elif room.ceiling_height_source == "floor":
+            # Geschoss-Höhe wurde gelöscht → sauber zurück auf den
+            # 2,50-Default (der Calc füllt den Wert unten wieder).
+            room.height_m = None
+            room.ceiling_height_source = "default"
 
     # Auto-estimate guarantee — see docstring.
     if room.perimeter_m is None or float(room.perimeter_m) <= 0:
@@ -242,7 +309,7 @@ async def create_room(
     stmt = select(Room).where(Room.id == room.id).options(selectinload(Room.openings))
     result = await db.execute(stmt)
     room = result.scalars().first()
-    await _recalculate_walls_and_persist(room)
+    await _recalculate_walls_and_persist(room, db)
     await db.flush()
     return room
 
@@ -324,10 +391,27 @@ async def update_room(
         updates["ceiling_height_source"] = _normalise_ceiling_source(
             updates["ceiling_height_source"]
         )
-    elif "height_m" in updates and updates["height_m"] is not None:
-        # User typed a height but didn't specify the source → treat
-        # the new value as manual.
-        updates["ceiling_height_source"] = "manual"
+    elif "height_m" in updates:
+        if updates["height_m"] is None:
+            # Clearing the height is a deliberate act on the value →
+            # drop the marker back to ``default`` so the recalc below
+            # picks up the Geschoss-Höhe when one is set — deleting a
+            # height falls back to the Stockwerk-Vorgabe, not to a
+            # stale ``manual`` marker (v24.6 Produktentscheidung).
+            updates["ceiling_height_source"] = "default"
+        elif room.height_m is None or abs(
+            float(room.height_m) - float(updates["height_m"])
+        ) > 1e-9:
+            # User typed a NEW height → manual measurement.
+            updates["ceiling_height_source"] = "manual"
+        # else: unchanged echo. Both edit dialogs (RoomForm on
+        # StructurePage, RoomEditRow on PlanAnalysisPage) always
+        # resubmit the pre-filled height even when the user only
+        # touched other fields. An unchanged value is no measurement
+        # — keep the current source, otherwise every rename would
+        # silently detach ``floor``/``default`` rooms from the
+        # Geschoss-Höhe (and flip ``schnitt``/``grundriss`` rooms to
+        # a lying ``manual`` badge).
 
     # Mirror behaviour for ``perimeter_source``: if the user supplies
     # a new perimeter (without explicitly setting the source), tag
@@ -355,7 +439,14 @@ async def update_room(
     # Recompute walls so the cached gross/net stays in sync with the
     # new perimeter / height / deductions_enabled. Cheap — the
     # calculator is pure arithmetic.
-    await _recalculate_walls_and_persist(room)
+    #
+    # Option A ("nur bewusste Aktionen", v24.6): the Geschoss-Höhe is
+    # resolved here ONLY when this request deliberately cleared the
+    # height — never as a side effect of an unrelated inline edit.
+    # Bestandsräume behalten ihre Zahlen, bis der User an der Höhe
+    # selbst (oder an der Geschoss-Höhe des Stockwerks) dreht.
+    height_cleared = "height_m" in updates and updates["height_m"] is None
+    await _recalculate_walls_and_persist(room, db if height_cleared else None)
     await db.flush()
     return room
 
@@ -394,6 +485,8 @@ async def calculate_walls_for_room(
     room = result.scalars().first()
     if not room:
         raise HTTPException(404, "Raum nicht gefunden")
+    # Kein ``db`` → keine Geschoss-Höhen-Auflösung (Option A): der
+    # Recompute-Button rechnet nur nach, er hängt keine Räume um.
     payload = await _recalculate_walls_and_persist(room)
     await db.flush()
     return payload
@@ -453,6 +546,8 @@ async def bulk_calculate_walls(
                 room.perimeter_m = estimated
                 room.perimeter_source = "estimated"
 
+        # Kein ``db`` → keine Geschoss-Höhen-Auflösung (Option A): der
+        # Recompute-Button rechnet nur nach, er hängt keine Räume um.
         payload = await _recalculate_walls_and_persist(room)
         results.append(payload)
 
@@ -482,6 +577,8 @@ async def create_opening(
     stmt = select(Room).where(Room.id == room_id).options(selectinload(Room.openings))
     room = (await db.execute(stmt)).scalars().first()
     if room is not None:
+        # Kein ``db`` → keine Geschoss-Höhen-Auflösung (Option A):
+        # Öffnungs-Edits ändern nur die Abzüge, nie die Höhenquelle.
         await _recalculate_walls_and_persist(room)
         await db.flush()
     return opening
@@ -507,6 +604,8 @@ async def update_opening(
     )
     room = (await db.execute(stmt)).scalars().first()
     if room is not None:
+        # Kein ``db`` → keine Geschoss-Höhen-Auflösung (Option A):
+        # Öffnungs-Edits ändern nur die Abzüge, nie die Höhenquelle.
         await _recalculate_walls_and_persist(room)
         await db.flush()
     return opening
@@ -527,5 +626,7 @@ async def delete_opening(
     stmt = select(Room).where(Room.id == room_id).options(selectinload(Room.openings))
     room = (await db.execute(stmt)).scalars().first()
     if room is not None:
+        # Kein ``db`` → keine Geschoss-Höhen-Auflösung (Option A):
+        # Öffnungs-Edits ändern nur die Abzüge, nie die Höhenquelle.
         await _recalculate_walls_and_persist(room)
         await db.flush()

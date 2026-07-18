@@ -67,9 +67,15 @@ from app.services.wall_calculator import (
 )
 
 
-# Accepted values for the ceiling_height_source column. Any other
-# string the model hands back collapses to "default" — the frontend's
-# amber warning treats that as "user please confirm".
+# Accepted values for the ceiling_height_source column AS CLAIMED BY
+# VISION. Any other string the model hands back collapses to
+# "default" — the frontend's amber warning treats that as "user
+# please confirm". Deliberately does NOT contain ``floor`` (v24.6):
+# that marker is minted exclusively by the backend when a room
+# inherits the Stockwerk's Geschoss-Höhe (see the fan-out branch in
+# ``_store_extraction_result`` and rooms.py, whose API-facing set
+# DOES accept it). A hallucinated Vision ``floor`` would otherwise
+# tag a real extracted height as an overwritable placeholder.
 _CEILING_SOURCE_VALUES = {"schnitt", "grundriss", "manual", "default"}
 
 
@@ -1836,8 +1842,24 @@ async def _store_extraction_result(
             # If the model returned no height, force ``default`` even
             # if it also claimed "grundriss" — a missing value can't
             # have come from any specific plan region.
-            if room_data.get("height_m") in (None, 0, 0.0):
+            height_m = room_data.get("height_m")
+            if height_m in (None, 0, 0.0):
                 ceiling_source = "default"
+                # v24.6 — Geschoss-Höhe fan-out: hat das Stockwerk
+                # eine Raumhöhen-Vorgabe (``floor_height_m``), erbt
+                # der Raum sie statt des 2,50-Defaults. Source
+                # ``floor`` hält die Herkunft sichtbar, damit spätere
+                # Änderungen der Geschoss-Höhe diese Räume wieder-
+                # finden. Echte Vision-Messwerte (der Zweig oben, wo
+                # height_m gesetzt ist) bleiben unberührt.
+                floor_height = (
+                    float(floor.floor_height_m)
+                    if floor.floor_height_m is not None
+                    else None
+                )
+                if floor_height is not None and floor_height > 0:
+                    height_m = floor_height
+                    ceiling_source = "floor"
 
             # Vision either returned a perimeter (good case),
             # nothing-but-an-area (we estimate), or nothing at all
@@ -1874,7 +1896,7 @@ async def _store_extraction_result(
                 area_m2=room_data.get("area_m2"),
                 perimeter_m=persisted_perimeter,
                 perimeter_source=perimeter_source,
-                height_m=room_data.get("height_m"),
+                height_m=height_m,
                 ceiling_height_source=ceiling_source,
                 # v24.4 — Vision liefert idealerweise schon einen
                 # Slug aus der erweiterten Prompt-Liste, schickt aber
@@ -1931,7 +1953,7 @@ async def _store_extraction_result(
             # land at gross 0 — that's the "please enter" signal.
             calc = calculate_wall_areas(
                 perimeter_m=persisted_perimeter,
-                height_m=room_data.get("height_m"),
+                height_m=height_m,
                 is_staircase=bool(room_data.get("is_staircase", False)),
                 deductions_enabled=True,
                 openings=opening_inputs,
