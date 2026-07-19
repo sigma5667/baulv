@@ -626,6 +626,24 @@ _VISION_DPI_LADDER = (200, 150, 112, 100)
 # ~70 % vs the equivalent PNG.
 _VISION_JPEG_QUALITY = 85
 
+# v24.7 — Anthropic lehnt Bilder mit einer Kante > 8000 px hart ab
+# (400: "image dimensions exceed max allowed size: 8000 pixels").
+# Die DPI-Leiter prüft diese Grenze VOR dem Byte-Check: ein A0-Plan
+# bei 200 DPI ist ~9360 px breit, komprimiert als PNG aber oft nur
+# 2–3 MB — der reine Byte-Check hat solche Bilder durchgelassen
+# (Messlauf-Bug, repro: "50.07-Index 3 - SCHNITTE.pdf" → 8937 px).
+_VISION_API_MAX_EDGE_PX = 8000
+
+# v24.7 — Trigger-Schwelle des universellen Dimensions-Guards
+# (``_cap_image_for_vision``). Anthropic skaliert alles über 1568 px
+# Long-Edge intern sowieso auf ≤1568 herunter — Pixel jenseits davon
+# erreichen das Modell nie, ein größeres Bild bringt also keinerlei
+# Genauigkeit, nur 400-Risiko und Upload-Bytes. Bilder bis zu dieser
+# Kante gehen unverändert durch (kein Re-Encode); größere werden auf
+# ``_VISION_LONG_EDGE_PX`` (1536) gebracht — dieselbe Zielgröße, die
+# der Two-Pass-Grundriss-Pfad seit v24.4.6 überall benutzt.
+_VISION_GUARD_TRIGGER_PX = 1568
+
 
 # ---------------------------------------------------------------------------
 # v24.4.6 — Two-Pass-Konstanten (Building-BBox-Probe + High-Res-Crop)
@@ -746,6 +764,22 @@ def _render_page_for_vision(
                 page_number, dpi, exc,
             )
             last_exception = exc
+            continue
+
+        # v24.7 — Pixel-Check VOR dem Byte-Check. Anthropic lehnt
+        # jede Kante > 8000 px hart mit 400 ab; ein A0-Plan bei
+        # 200 DPI ist ~9360 px breit, als PNG aber oft nur 2–3 MB —
+        # der Byte-Check allein hat solche Bilder durchgelassen.
+        # Nächste Leiter-Stufe statt encoden (150 DPI bringt A0 auf
+        # ~7000 px). Fällt die Seite bei JEDER Stufe durch, greift
+        # unten die bestehende "Plan zu groß"-Meldung.
+        if max(pix.width, pix.height) > _VISION_API_MAX_EDGE_PX:
+            logger.info(
+                "pdf_to_images.pixel_limit_exceeded page=%d dpi=%d "
+                "size=%dx%d limit=%d — trying next DPI",
+                page_number, dpi, pix.width, pix.height,
+                _VISION_API_MAX_EDGE_PX,
+            )
             continue
 
         # First try PNG (lossless, preferred for clean CAD output).
@@ -929,6 +963,59 @@ def _pdf_to_images(
         doc.close()
 
 
+def _cap_image_for_vision(
+    image_bytes: bytes, mime_type: str,
+) -> tuple[bytes, str, int | None, int | None]:
+    """v24.7 — universeller Dimensions-Guard vor JEDEM API-Bild-Versand.
+
+    Liefert ``(bytes, mime, width, height)``. Bilder mit Long-Edge
+    ≤ ``_VISION_GUARD_TRIGGER_PX`` (1568) gehen byte-identisch durch;
+    größere werden per LANCZOS auf ``_VISION_LONG_EDGE_PX`` (1536)
+    gebracht und als JPEG zurückgegeben. Warum das keine Genauigkeit
+    kostet, steht am ``_VISION_GUARD_TRIGGER_PX``-Kommentar: die API
+    skaliert intern eh auf ≤1568 px herunter.
+
+    Alle drei Sender laufen über diesen Guard:
+      * ``_extract_rooms_from_image``  (Grundriss-Sonnet, inkl.
+        Single-Pass-Fallback auf die Leiter-Bytes — der zweite
+        verwundbare Pfad neben dem Schnitt)
+      * ``_find_building_bbox``        (Grundriss-Haiku-Probe; per
+        Konstruktion schon 1536 px → No-op-Sicherheitsnetz)
+      * ``_vision_call``               (Schnitt-Sonnet — der Pfad,
+        der den 8000-px-400er im Messlauf ausgelöst hat)
+
+    Fail-open: können die Bytes nicht dekodiert werden (in Tests
+    z. B. Fake-Bytes), gehen sie unverändert raus — dann sind
+    ``width``/``height`` beide ``None``. Der Guard darf die Analyse
+    nie an der eigenen Diagnose-Schicht scheitern lassen.
+
+    Synchron + CPU-lastig (Pillow-Decode): Async-Callers schicken
+    ihn über ``run_in_executor`` statt den Event-Loop zu blockieren.
+    """
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            width, height = img.size
+        if max(width, height) <= _VISION_GUARD_TRIGGER_PX:
+            return image_bytes, mime_type, width, height
+        resized, new_w, new_h = _resize_long_edge_pillow(
+            image_bytes, target_long_edge=_VISION_LONG_EDGE_PX,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "vision.dimension_guard_failed err=%s: %s — sending image "
+            "unmodified",
+            type(exc).__name__, str(exc)[:200],
+        )
+        return image_bytes, mime_type, None, None
+    logger.info(
+        "vision.image_capped from=%dx%d to=%dx%d bytes=%d->%d",
+        width, height, new_w, new_h, len(image_bytes), len(resized),
+    )
+    return resized, "image/jpeg", new_w, new_h
+
+
 async def _extract_rooms_from_image(
     image_bytes: bytes,
     page_number: int,
@@ -952,6 +1039,14 @@ async def _extract_rooms_from_image(
 
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
 
+    # v24.7 — Dimensions-Guard. Relevant vor allem für den Single-
+    # Pass-Fallback, der die rohen DPI-Leiter-Bytes bekommt (bis zu
+    # ~8000 px); die Two-Pass-Crops/Kacheln sind schon auf 1536 px.
+    # Executor: Pillow-Decode eines 4-MB-PNGs blockiert sonst den
+    # Event-Loop.
+    image_bytes, mime_type, _, _ = await asyncio.get_event_loop().run_in_executor(
+        None, _cap_image_for_vision, image_bytes, mime_type
+    )
     image_b64 = base64.b64encode(image_bytes).decode("utf-8")
 
     # Wrap in wait_for so a stalled API call can't hang indefinitely.
@@ -1625,6 +1720,18 @@ async def _extract_rooms_two_pass(
         "two_pass.low_res_rendered page=%d w=%d h=%d bytes=%d",
         page_number, low_res_w, low_res_h, len(low_res_bytes),
     )
+    # v24.7 — Dimensions-Guard vor dem Haiku-Versand. Die Probe ist
+    # per Konstruktion schon 1536 px, der Guard ist also ein No-op-
+    # Sicherheitsnetz für den Fall, dass sich der Probe-Render je
+    # ändert. Wichtig: w/h synchron nachführen — Fail-Safe-Check und
+    # BBox→PDF-Mapping unten müssen im Koordinatenraum des Bilds
+    # rechnen, das Haiku wirklich gesehen hat. (Fail-open des Guards
+    # liefert None-Dims → Render-Dims behalten.)
+    low_res_bytes, _, _guard_w, _guard_h = await loop.run_in_executor(
+        None, _cap_image_for_vision, low_res_bytes, "image/jpeg"
+    )
+    if _guard_w is not None and _guard_h is not None:
+        low_res_w, low_res_h = _guard_w, _guard_h
     _save_debug_crop(
         low_res_bytes, plan_id=plan_id, page_number=page_number, stage="low_res",
     )
@@ -2219,6 +2326,12 @@ async def _vision_call(
     import anthropic
 
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    # v24.7 — Dimensions-Guard. Der Schnitt-Pfad schickt die rohen
+    # DPI-Leiter-Bytes (kein Two-Pass-Resize davor) — genau hier kam
+    # der 8000-px-400er aus dem Messlauf her.
+    image_bytes, mime_type, _, _ = await asyncio.get_event_loop().run_in_executor(
+        None, _cap_image_for_vision, image_bytes, mime_type
+    )
     image_b64 = base64.b64encode(image_bytes).decode("utf-8")
     message = await asyncio.wait_for(
         client.messages.create(

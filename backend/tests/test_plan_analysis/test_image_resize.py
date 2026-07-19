@@ -24,11 +24,15 @@ import pytest
 
 from app.plan_analysis.pipeline import (
     PlanAnalysisError,
+    _cap_image_for_vision,
     _format_page_error,
     _render_page_for_vision,
     _translate_anthropic_error,
+    _VISION_API_MAX_EDGE_PX,
     _VISION_DPI_LADDER,
+    _VISION_GUARD_TRIGGER_PX,
     _VISION_IMAGE_MAX_BYTES,
+    _VISION_LONG_EDGE_PX,
 )
 
 
@@ -56,11 +60,19 @@ class _FakePixmap:
         *,
         png_raises: Exception | None = None,
         jpeg_raises: Exception | None = None,
+        width: int = 1000,
+        height: int = 700,
     ):
         self._png = b"P" * png_size
         self._jpeg = b"J" * jpeg_size
         self._png_raises = png_raises
         self._jpeg_raises = jpeg_raises
+        # v24.7 — the ladder checks pixel dimensions against the
+        # Anthropic 8000-px edge limit before encoding. Defaults are
+        # comfortably under the limit so pre-v24.7 tests keep their
+        # byte-size-driven paths.
+        self.width = width
+        self.height = height
 
     def tobytes(self, output: str = "png", jpg_quality: int = 95):
         if output == "png":
@@ -225,6 +237,148 @@ def test_render_raises_when_even_min_dpi_jpeg_too_big():
     msg = excinfo.value.detail
     assert "zu groß" in msg.lower()
     assert "auflösung" in msg.lower() or "bereiche" in msg.lower()
+
+
+# ---------------------------------------------------------------------------
+# v24.7 — pixel-dimension checks (Anthropic 8000-px edge limit)
+# ---------------------------------------------------------------------------
+
+
+def test_render_skips_dpi_when_pixel_edge_exceeds_api_limit():
+    """v24.7 — der Messlauf-Bug: ein A0-Schnitt-Plan rendert bei
+    200 DPI auf 8937 px Breite, komprimiert als PNG aber auf nur
+    ~2,5 MB. Der reine Byte-Check ließ das Bild durch → API 400
+    ("image dimensions exceed max allowed size: 8000 pixels").
+    Die Leiter muss die Stufe am PIXEL-Check überspringen und bei
+    150 DPI (~6700 px) liefern."""
+    fits_bytes = _VISION_IMAGE_MAX_BYTES // 2
+    page = _FakePage([
+        # 200 DPI: Bytes klein genug, aber 8937 px > 8000 → skip.
+        _FakePixmap(fits_bytes, fits_bytes // 2, width=8937, height=3867),
+        # 150 DPI: 6703 px — unter dem Limit, PNG passt.
+        _FakePixmap(fits_bytes, fits_bytes // 2, width=6703, height=2900),
+    ])
+
+    data, mime = _render_page_for_vision(page, page_number=1)
+
+    assert mime == "image/png"
+    assert len(data) == fits_bytes
+    assert page.calls == 2
+
+
+def test_render_pixel_check_uses_max_of_both_edges():
+    """Auch ein Hochkant-Bild (Höhe > 8000, Breite klein) muss die
+    Stufe überspringen — die API prüft jede Kante."""
+    fits_bytes = _VISION_IMAGE_MAX_BYTES // 2
+    page = _FakePage([
+        _FakePixmap(fits_bytes, fits_bytes, width=3000, height=8500),
+        _FakePixmap(fits_bytes, fits_bytes, width=2250, height=6375),
+    ])
+
+    _data, _mime = _render_page_for_vision(page, page_number=1)
+
+    assert page.calls == 2
+
+
+def test_render_raises_when_every_dpi_exceeds_pixel_limit():
+    """Seite ist so riesig, dass selbst 100 DPI über 8000 px liegt →
+    dieselbe deutsche "Plan zu groß"-Meldung wie beim Byte-Überlauf."""
+    page = _FakePage([
+        _FakePixmap(1_000_000, 500_000, width=12_000, height=9_000)
+    ] * len(_VISION_DPI_LADDER))
+
+    with pytest.raises(PlanAnalysisError) as excinfo:
+        _render_page_for_vision(page, page_number=1)
+
+    msg = excinfo.value.detail
+    assert "zu groß" in msg.lower()
+    assert page.calls == len(_VISION_DPI_LADDER)
+
+
+def test_render_pixel_limit_matches_api_contract():
+    """8000 ist Anthropics dokumentiertes Hard-Limit — pinnen, damit
+    ein Refactor die Grenze nicht versehentlich lockert."""
+    assert _VISION_API_MAX_EDGE_PX == 8000
+    assert _VISION_GUARD_TRIGGER_PX == 1568
+    assert _VISION_LONG_EDGE_PX == 1536
+
+
+# ---------------------------------------------------------------------------
+# v24.7 — universal dimension guard (_cap_image_for_vision)
+# ---------------------------------------------------------------------------
+
+
+def _make_png(width: int, height: int) -> bytes:
+    """Echtes PNG über Pillow — der Guard dekodiert wirklich."""
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), "white").save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _open_size(data: bytes) -> tuple[int, int]:
+    import io
+
+    from PIL import Image
+
+    with Image.open(io.BytesIO(data)) as img:
+        return img.size
+
+
+def test_cap_image_passes_small_images_through_byte_identical():
+    """Bilder unter der Trigger-Schwelle dürfen NICHT re-encoded
+    werden — der Two-Pass-Pfad liefert schon 1536er, jede erneute
+    JPEG-Kompression wäre ein Qualitätsverlust ohne Gegenwert."""
+    data = _make_png(1200, 800)
+
+    out, mime, w, h = _cap_image_for_vision(data, "image/png")
+
+    assert out is data
+    assert mime == "image/png"
+    assert (w, h) == (1200, 800)
+
+
+def test_cap_image_tolerates_exactly_1568():
+    """1568 ist Anthropics interne Downscale-Grenze — genau dort noch
+    kein Resize (verhindert sinnlose Re-Encodes bei 1537-px-Proben
+    aus fitz-Rundung)."""
+    data = _make_png(_VISION_GUARD_TRIGGER_PX, 900)
+
+    out, mime, _w, _h = _cap_image_for_vision(data, "image/jpeg")
+
+    assert out is data
+    assert mime == "image/jpeg"
+
+
+def test_cap_image_resizes_oversized_to_1536_jpeg():
+    """Der 8937-px-Fall (Messlauf-Repro, verkleinert nachgestellt):
+    Long-Edge muss auf 1536 fallen, Seitenverhältnis erhalten,
+    Ausgabe JPEG."""
+    data = _make_png(8100, 2000)
+
+    out, mime, w, h = _cap_image_for_vision(data, "image/png")
+
+    assert mime == "image/jpeg"
+    assert (w, h) == _open_size(out)
+    assert max(w, h) == _VISION_LONG_EDGE_PX
+    # Seitenverhältnis 8100:2000 → 1536:379 (Rundung ±1 px).
+    assert abs(h - round(1536 * 2000 / 8100)) <= 1
+
+
+def test_cap_image_fails_open_on_undecodable_bytes():
+    """Fake-Bytes (Tests, defekte Renders) → unverändert durchreichen
+    statt die Analyse an der Guard-Schicht scheitern zu lassen.
+    Dims sind dann unbekannt (None) — Caller behalten ihre eigenen."""
+    data = b"definitely not an image"
+
+    out, mime, w, h = _cap_image_for_vision(data, "image/png")
+
+    assert out is data
+    assert mime == "image/png"
+    assert w is None and h is None
 
 
 # ---------------------------------------------------------------------------
