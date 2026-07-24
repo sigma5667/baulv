@@ -41,6 +41,13 @@ _LIMITS: dict[tuple[str, str], tuple[int, int]] = {
     ("login", "acct"): (8, 900),                   # 8 / 15 min pro E-Mail
     ("register", "ip"): (15, 3600),                # 15 / h pro IP
     ("password-reset-confirm", "ip"): (20, 900),   # 20 / 15 min pro IP
+    # Warteliste (v25). Der acct-Bucket bremst Mail-Bombing: ohne ihn
+    # könnte ein Angreifer mit rotierenden IPs eine fremde Adresse
+    # beliebig oft mit Bestätigungs-Mails fluten.
+    ("waitlist", "ip"): (10, 3600),                # 10 / h pro IP
+    ("waitlist", "acct"): (3, 3600),               # 3 / h pro E-Mail
+    ("waitlist-confirm", "ip"): (20, 900),         # 20 / 15 min pro IP
+    ("waitlist-unsubscribe", "ip"): (20, 900),     # 20 / 15 min pro IP
 }
 
 _buckets: dict[tuple[str, str, str], deque[float]] = defaultdict(deque)

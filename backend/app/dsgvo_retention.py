@@ -52,3 +52,13 @@ MCP_AUDIT_LOG_RETENTION_DAYS: int = 730
 # programmatically can tell "no retention" apart from "value not
 # yet decided".
 CONSENT_SNAPSHOT_RETENTION_DAYS: int | None = None
+
+# Warteliste (v25): nie bestätigte ``pending``-Einträge werden
+# gelöscht, sobald ihr Confirm-Token so viele Tage abgelaufen ist.
+# Ohne Double-Opt-In-Bestätigung gibt es keine Rechtsgrundlage, die
+# Adresse länger zu behalten (Art. 5(1)(e)); die Gnadenfrist nach
+# Token-Ablauf deckt "Mail kam verspätet an, User meldet sich neu an"
+# ab, ohne die Zeile sofort zu verlieren. ``confirmed``- und
+# ``unsubscribed``-Zeilen sind ausgenommen: confirmed ist die aktive
+# Einwilligung, unsubscribed der Art.-7-Nachweis der Abmeldung.
+WAITLIST_PENDING_GRACE_DAYS: int = 30

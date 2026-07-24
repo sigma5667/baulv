@@ -38,10 +38,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.audit import AuditLogEntry
 from app.db.models.mcp_audit import McpAuditLogEntry
+from app.db.models.waitlist_entry import WaitlistEntry
 from app.db.session import async_session_factory
 from app.dsgvo_retention import (
     AUDIT_LOG_RETENTION_DAYS,
     MCP_AUDIT_LOG_RETENTION_DAYS,
+    WAITLIST_PENDING_GRACE_DAYS,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,10 +60,15 @@ class CleanupResult:
 
     audit_log_deleted: int
     mcp_audit_log_deleted: int
+    waitlist_pending_deleted: int
 
     @property
     def total(self) -> int:
-        return self.audit_log_deleted + self.mcp_audit_log_deleted
+        return (
+            self.audit_log_deleted
+            + self.mcp_audit_log_deleted
+            + self.waitlist_pending_deleted
+        )
 
 
 async def cleanup_audit_logs(db: AsyncSession) -> int:
@@ -98,6 +105,27 @@ async def cleanup_mcp_audit_logs(db: AsyncSession) -> int:
     return deleted
 
 
+async def cleanup_stale_waitlist_pending(db: AsyncSession) -> int:
+    """Delete never-confirmed waitlist entries whose confirm token
+    expired more than ``WAITLIST_PENDING_GRACE_DAYS`` ago.
+
+    Nur ``status='pending'`` — ``confirmed`` ist die aktive
+    Einwilligung, ``unsubscribed`` der Art.-7-Nachweis der Abmeldung;
+    beide bleiben stehen. Same shape as :func:`cleanup_audit_logs`.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(
+        days=WAITLIST_PENDING_GRACE_DAYS
+    )
+    stmt = delete(WaitlistEntry).where(
+        WaitlistEntry.status == "pending",
+        WaitlistEntry.token_expires_at < cutoff,
+    )
+    result = await db.execute(stmt)
+    await db.flush()
+    deleted = int(result.rowcount or 0)
+    return deleted
+
+
 async def run_all_cleanups(db: AsyncSession | None = None) -> CleanupResult:
     """Execute both cleanups in one transaction and log the result.
 
@@ -119,6 +147,7 @@ async def run_all_cleanups(db: AsyncSession | None = None) -> CleanupResult:
         try:
             audit_deleted = await cleanup_audit_logs(session)
             mcp_deleted = await cleanup_mcp_audit_logs(session)
+            waitlist_deleted = await cleanup_stale_waitlist_pending(session)
             if own_session:
                 await session.commit()
         except Exception:
@@ -130,14 +159,17 @@ async def run_all_cleanups(db: AsyncSession | None = None) -> CleanupResult:
     result = CleanupResult(
         audit_log_deleted=audit_deleted,
         mcp_audit_log_deleted=mcp_deleted,
+        waitlist_pending_deleted=waitlist_deleted,
     )
     # Structured log line — single source of truth for "did the
     # nightly cleanup do anything". Grep target:
     # ``dsgvo.cleanup audit_log_deleted=``.
     logger.info(
-        "dsgvo.cleanup audit_log_deleted=%d mcp_audit_log_deleted=%d total=%d",
+        "dsgvo.cleanup audit_log_deleted=%d mcp_audit_log_deleted=%d "
+        "waitlist_pending_deleted=%d total=%d",
         result.audit_log_deleted,
         result.mcp_audit_log_deleted,
+        result.waitlist_pending_deleted,
         result.total,
     )
     return result

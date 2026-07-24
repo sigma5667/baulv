@@ -78,5 +78,6 @@ async def trigger_audit_cleanup(
     return {
         "audit_log_deleted": result.audit_log_deleted,
         "mcp_audit_log_deleted": result.mcp_audit_log_deleted,
+        "waitlist_pending_deleted": result.waitlist_pending_deleted,
         "total": result.total,
     }

@@ -1,8 +1,10 @@
-import { Link } from "react-router-dom";
+import { useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { ArrowDown, ArrowRight } from "lucide-react";
 import { BetaBanner } from "../components/BetaBanner";
 import { Footer } from "../components/layout/Footer";
 import { SupportChat } from "../components/SupportChat";
+import { joinWaitlist } from "../api/waitlist";
 
 /**
  * Landing page, v25 redesign: "technisches Blatt".
@@ -367,6 +369,200 @@ function HeroTransformation() {
   );
 }
 
+/**
+ * Wortlaut der Einwilligungs-Checkbox — MUSS zeichengleich mit
+ * ``WAITLIST_CONSENT_TEXT`` in ``backend/app/services/waitlist.py``
+ * bleiben (dort als Version gepinnt; jede Anmeldung referenziert
+ * die Version als Art.-7-Nachweis). Beim Ändern beide Stellen
+ * gemeinsam bumpen.
+ */
+const WAITLIST_CONSENT_TEXT =
+  "Ich möchte per E-Mail informiert werden, wenn BauLV startet.";
+
+/** ``?ref=``-Wert auf das Backend-Whitelist-Alphabet vorfiltern. */
+const SOURCE_RE = /^[a-z0-9_-]{1,64}$/;
+
+const INPUT_CLASSES =
+  "w-full border border-slate-300 bg-white px-3 py-2.5 text-sm " +
+  "focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary";
+
+/**
+ * Warteliste-Formular (v25): E-Mail + Firma Pflicht, Name optional,
+ * Einwilligung als eigene, NICHT vorangehakte Checkbox. Nach dem
+ * Absenden ersetzt der "Prüfen Sie Ihr Postfach"-Zustand das
+ * Formular — bewusst KEINE Aussage darüber, ob die Adresse schon
+ * gelistet war (das Backend antwortet in jedem Zweig identisch).
+ */
+function WaitlistForm() {
+  const [searchParams] = useSearchParams();
+  // Kampagnen-Herkunft aus ?ref= — einmal pro Mount gelesen.
+  const source = useMemo(() => {
+    const raw = (searchParams.get("ref") ?? "").trim().toLowerCase();
+    return SOURCE_RE.test(raw) ? raw : null;
+  }, [searchParams]);
+
+  const [email, setEmail] = useState("");
+  const [company, setCompany] = useState("");
+  const [name, setName] = useState("");
+  const [consent, setConsent] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [doneMessage, setDoneMessage] = useState("");
+  const [error, setError] = useState("");
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    if (!consent) {
+      setError(
+        "Bitte bestätigen Sie die Einwilligung, per E-Mail informiert zu werden.",
+      );
+      return;
+    }
+    setLoading(true);
+    try {
+      const message = await joinWaitlist({
+        email: email.trim(),
+        company_name: company.trim(),
+        name: name.trim() || null,
+        consent,
+        source,
+      });
+      setDoneMessage(message);
+    } catch (err: any) {
+      if (err?.response?.status === 429) {
+        setError(
+          "Zu viele Versuche. Bitte versuchen Sie es in einigen Minuten erneut.",
+        );
+      } else {
+        setError(
+          typeof err?.response?.data?.detail === "string"
+            ? err.response.data.detail
+            : "Das hat leider nicht geklappt. Bitte versuchen Sie es später erneut.",
+        );
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (doneMessage) {
+    return (
+      <div className="border border-slate-200 bg-white p-6 sm:p-8">
+        <p className="font-plexmono text-[11px] uppercase tracking-wider text-primary">
+          Prüfen Sie Ihr Postfach
+        </p>
+        <p className="mt-3 text-slate-700">{doneMessage}</p>
+        <p className="mt-4 text-sm leading-relaxed text-slate-500">
+          Der Bestätigungslink ist 7 Tage gültig. Ohne Bestätigung
+          erhalten Sie keine weiteren E-Mails, und Ihr Eintrag wird
+          automatisch gelöscht.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <form
+      onSubmit={handleSubmit}
+      className="border border-slate-200 bg-white p-6 sm:p-8"
+    >
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="sm:col-span-2">
+          <label htmlFor="wl-email" className="mb-1 block text-sm font-medium">
+            E-Mail-Adresse
+          </label>
+          <input
+            id="wl-email"
+            type="email"
+            required
+            autoComplete="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className={INPUT_CLASSES}
+            placeholder="name@firma.at"
+          />
+        </div>
+        <div>
+          <label
+            htmlFor="wl-company"
+            className="mb-1 block text-sm font-medium"
+          >
+            Firma
+          </label>
+          <input
+            id="wl-company"
+            type="text"
+            required
+            minLength={2}
+            maxLength={200}
+            autoComplete="organization"
+            value={company}
+            onChange={(e) => setCompany(e.target.value)}
+            className={INPUT_CLASSES}
+            placeholder="Muster Bau GmbH"
+          />
+        </div>
+        <div>
+          <label htmlFor="wl-name" className="mb-1 block text-sm font-medium">
+            Name{" "}
+            <span className="font-normal text-slate-400">(optional)</span>
+          </label>
+          <input
+            id="wl-name"
+            type="text"
+            maxLength={200}
+            autoComplete="name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className={INPUT_CLASSES}
+          />
+        </div>
+      </div>
+
+      {/* Einwilligung — eigene Box, nie vorangehakt. Wortlaut ist
+          der gepinnte Consent-Text (siehe Konstante oben). */}
+      <label className="mt-4 flex cursor-pointer items-start gap-3 border border-slate-300 p-4">
+        <input
+          type="checkbox"
+          required
+          checked={consent}
+          onChange={(e) => setConsent(e.target.checked)}
+          className="mt-0.5 h-4 w-4 shrink-0 accent-primary"
+        />
+        <span className="text-sm leading-relaxed text-slate-700">
+          {WAITLIST_CONSENT_TEXT}{" "}
+          <Link
+            to="/datenschutz"
+            className="text-primary hover:underline"
+            onClick={(e) => e.stopPropagation()}
+          >
+            Hinweise zum Datenschutz
+          </Link>
+        </span>
+      </label>
+
+      {error && (
+        <p className="mt-4 border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {error}
+        </p>
+      )}
+
+      <button
+        type="submit"
+        disabled={loading}
+        className="mt-5 inline-flex w-full items-center justify-center gap-2 bg-primary px-6 py-3 text-base font-medium text-primary-foreground hover:bg-blue-700 disabled:opacity-50 sm:w-auto"
+      >
+        {loading ? "Wird eingetragen..." : "Auf die Warteliste"}
+        <ArrowRight className="h-5 w-5" />
+      </button>
+      <p className="mt-3 text-xs leading-relaxed text-slate-500">
+        Unverbindlich — es entsteht kein Vertrag, es fallen keine
+        Kosten an. Abmeldung jederzeit über den Link in jeder E-Mail.
+      </p>
+    </form>
+  );
+}
+
 const STEPS = [
   {
     nr: "01",
@@ -415,8 +611,8 @@ const PLANS = [
     price: "€ 49",
     interval: "/ Monat netto",
     features: ["3 aktive Projekte", "Manueller LV-Editor", "PDF-Export"],
-    cta: "Kostenlos testen",
-    href: "/register",
+    cta: "Auf die Warteliste",
+    href: "#warteliste",
     popular: false,
   },
   {
@@ -432,8 +628,8 @@ const PLANS = [
       "Excel + PDF Export",
       "Prioritäts-Support",
     ],
-    cta: "Kostenlos testen",
-    href: "/register",
+    cta: "Auf die Warteliste",
+    href: "#warteliste",
     popular: true,
   },
   {
@@ -487,24 +683,29 @@ export function LandingPage() {
             <Link to="/login" className="text-sm font-medium text-primary hover:text-blue-700">
               Anmelden
             </Link>
-            <Link
-              to="/register"
+            {/* v25 Warteliste: primärer CTA für Fremde ist der
+                Eintrag, nicht /register — die Registrierung liegt
+                hinter dem Beta-Gate und wäre eine Sackgasse. Die
+                Route selbst bleibt bestehen (Beta-Tester kommen über
+                den Gate-Flow hinein), sie wird nur nicht beworben. */}
+            <a
+              href="#warteliste"
               className="bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-blue-700"
             >
-              Kostenlos testen
-            </Link>
+              Auf die Warteliste
+            </a>
           </div>
           {/* Mobile */}
           <div className="flex items-center gap-3 md:hidden">
             <Link to="/login" className="text-sm font-medium text-primary">
               Login
             </Link>
-            <Link
-              to="/register"
+            <a
+              href="#warteliste"
               className="bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground"
             >
-              Testen
-            </Link>
+              Warteliste
+            </a>
           </div>
         </div>
       </nav>
@@ -525,13 +726,13 @@ export function LandingPage() {
               nachvollziehbarem Rechenweg.
             </p>
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-              <Link
-                to="/register"
+              <a
+                href="#warteliste"
                 className="inline-flex items-center justify-center gap-2 bg-primary px-6 py-3 text-base font-medium text-primary-foreground hover:bg-blue-700"
               >
-                Kostenlos testen
+                Auf die Warteliste
                 <ArrowRight className="h-5 w-5" />
-              </Link>
+              </a>
               <a
                 href="#ablauf"
                 className="inline-flex items-center justify-center gap-2 border border-slate-300 px-6 py-3 text-base font-medium text-slate-700 hover:bg-slate-50"
@@ -540,7 +741,7 @@ export function LandingPage() {
               </a>
             </div>
             <p className="mt-4 text-sm text-slate-500">
-              Kostenloses Konto · in der Beta mit allen Pro-Funktionen · Start-Gewerk
+              Unverbindlich eintragen · kein Vertrag, keine Zahlungsdaten · Start-Gewerk
               Malerarbeiten
             </p>
           </div>
@@ -689,15 +890,10 @@ export function LandingPage() {
                     </li>
                   ))}
                 </ul>
-                {plan.href.startsWith("mailto:") ? (
-                  <a
-                    href={plan.href}
-                    className="inline-flex items-center justify-center gap-2 border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
-                  >
-                    {plan.cta}
-                    <ArrowRight className="h-4 w-4" />
-                  </a>
-                ) : (
+                {/* Interne Routen als <Link>, mailto: und #anker als
+                    natives <a> — ein <Link to="#warteliste"> würde
+                    react-router als Pfad-Navigation deuten. */}
+                {plan.href.startsWith("/") ? (
                   <Link
                     to={plan.href}
                     className={`inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium ${
@@ -709,6 +905,18 @@ export function LandingPage() {
                     {plan.cta}
                     <ArrowRight className="h-4 w-4" />
                   </Link>
+                ) : (
+                  <a
+                    href={plan.href}
+                    className={`inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium ${
+                      plan.popular
+                        ? "bg-primary text-primary-foreground hover:bg-blue-700"
+                        : "border border-slate-300 text-slate-700 hover:bg-slate-50"
+                    }`}
+                  >
+                    {plan.cta}
+                    <ArrowRight className="h-4 w-4" />
+                  </a>
                 )}
               </div>
             ))}
@@ -721,23 +929,30 @@ export function LandingPage() {
         </div>
       </section>
 
-      {/* Abschluss-CTA — bleibt auf dem weißen Blatt; die dicke
-          Tinte-Linie schließt die Seite wie ein Plankopf-Feld ab. */}
-      <section className="border-t-2 border-slate-900">
+      {/* Abschluss: Warteliste (v25) — bleibt auf dem weißen Blatt;
+          die dicke Tinte-Linie schließt die Seite wie ein
+          Plankopf-Feld ab. Alle CTAs der Seite ankern hierher. */}
+      <section id="warteliste" className="border-t-2 border-slate-900">
         <div className="mx-auto max-w-6xl px-6 py-16 md:py-20">
-          <h2 className="max-w-2xl text-2xl font-semibold tracking-tight md:text-3xl">
-            Laden Sie einen Plan hoch und prüfen Sie das Ergebnis selbst.
-          </h2>
-          <p className="mt-3 max-w-2xl text-slate-600">
-            Kostenloses Konto, keine Zahlungsdaten. Der beste Test ist Ihr eigener Grundriss.
-          </p>
-          <Link
-            to="/register"
-            className="mt-8 inline-flex items-center gap-2 bg-primary px-6 py-3 text-base font-medium text-primary-foreground hover:bg-blue-700"
-          >
-            Kostenlos testen
-            <ArrowRight className="h-5 w-5" />
-          </Link>
+          <div className="grid gap-12 lg:grid-cols-2">
+            <div>
+              <h2 className="text-2xl font-semibold tracking-tight md:text-3xl">
+                Beim Start dabei sein.
+              </h2>
+              <p className="mt-3 text-slate-600">
+                BauLV ist in der geschlossenen Beta. Tragen Sie sich
+                unverbindlich ein — wir melden uns per E-Mail, sobald
+                BauLV für Sie freigeschaltet ist.
+              </p>
+              <p className="mt-4 text-sm leading-relaxed text-slate-500">
+                Kein Vertrag, keine Kosten, keine Zahlungsdaten. Sie
+                bestätigen Ihre Anmeldung per E-Mail (Double-Opt-In)
+                und können sich jederzeit über den Link in jeder
+                E-Mail wieder abmelden.
+              </p>
+            </div>
+            <WaitlistForm />
+          </div>
         </div>
       </section>
 

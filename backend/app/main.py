@@ -164,6 +164,15 @@ async def _run_migrations_with_lock() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # v25 — Boot-Guard VOR allem anderen (auch vor den Migrationen):
+    # Warteliste einschalten mit Platzhalter-Firmendaten im Mail-
+    # Footer (§ 14 UGB) bricht den Start hart ab. Absichtlich kein
+    # try/except — der Crash IST das Feature.
+    from app.services.email_footer import (
+        assert_company_data_ready_for_waitlist,
+    )
+    assert_company_data_ready_for_waitlist(settings.waitlist_enabled)
+
     # Run Alembic migrations on startup — serialisiert via Advisory-Lock,
     # damit parallele gunicorn-Worker nicht dieselbe DDL rennen (siehe
     # _run_migrations_with_lock).
@@ -182,11 +191,12 @@ async def lifespan(app: FastAPI):
     logger.info(
         "startup.settings beta_unlock_all_features=%s "
         "anthropic_api_key_present=%s anthropic_api_key_len=%d "
-        "frontend_url=%s",
+        "frontend_url=%s waitlist_enabled=%s",
         settings.beta_unlock_all_features,
         bool(anthropic_key.strip()),
         len(anthropic_key),
         settings.frontend_url,
+        settings.waitlist_enabled,
     )
     if settings.beta_unlock_all_features:
         # A loud, unambiguous banner line that a grep for

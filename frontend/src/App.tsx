@@ -24,6 +24,8 @@ import { ChatPage } from "./pages/ChatPage";
 import { ImpressumPage } from "./pages/ImpressumPage";
 import { DatenschutzPage } from "./pages/DatenschutzPage";
 import { AGBPage } from "./pages/AGBPage";
+import { WartelisteBestaetigenPage } from "./pages/WartelisteBestaetigenPage";
+import { WartelisteAbmeldenPage } from "./pages/WartelisteAbmeldenPage";
 import { ApiPricingPage } from "./pages/ApiPricingPage";
 import { DevelopersPage } from "./pages/DevelopersPage";
 import { PrivacySettingsPage } from "./pages/PrivacySettingsPage";
@@ -63,6 +65,19 @@ function AuthenticatedApp() {
   );
 }
 
+/**
+ * v25 Warteliste — Öffentlich-Schalter für die Landing-Route.
+ *
+ * ``VITE_PUBLIC_LANDING=true`` nimmt NUR ``/`` aus dem Beta-Gate;
+ * ``/login``, ``/register``, ``/api-pricing``, ``/developers`` und
+ * die App bleiben unverändert dahinter. Default AUS: solange das
+ * Impressum Platzhalter trägt, darf die Seite nicht öffentlich
+ * werben (§ 5 ECG). Erst Firmendaten eintragen, dann die Variable
+ * auf dem Deploy setzen (Vite backt sie beim Build ein — auf
+ * Railway also Env-Variable setzen + neu deployen).
+ */
+const PUBLIC_LANDING = import.meta.env.VITE_PUBLIC_LANDING === "true";
+
 export default function App() {
   const { user, isLoading } = useAuth();
 
@@ -99,6 +114,8 @@ export default function App() {
             </div>
           ) : user ? (
             <Navigate to="/app" replace />
+          ) : PUBLIC_LANDING ? (
+            <LandingPage />
           ) : (
             <PublicWithGate>
               <LandingPage />
@@ -167,6 +184,19 @@ export default function App() {
       <Route path="/impressum" element={<ImpressumPage />} />
       <Route path="/datenschutz" element={<DatenschutzPage />} />
       <Route path="/agb" element={<AGBPage />} />
+
+      {/* Warteliste-Bestätigen/-Abmelden (v25) — wie die Legal-
+          Routes bewusst OHNE Beta-Gate: die Links kommen aus
+          E-Mails und müssen ohne Beta-Code funktionieren; Abmelden
+          muss sogar immer möglich sein. */}
+      <Route
+        path="/warteliste/bestaetigen"
+        element={<WartelisteBestaetigenPage />}
+      />
+      <Route
+        path="/warteliste/abmelden"
+        element={<WartelisteAbmeldenPage />}
+      />
 
       {/* v23.7 — public marketing + technical landing pages for the
           MCP API. Auch in der Beta-Phase hinter dem Gate, damit

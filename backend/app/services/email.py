@@ -5,6 +5,7 @@ don't fail at module-load time. The module surface is one helper
 per email type:
 
 * ``send_password_reset_email`` — DS-3 (v23.4) reset link.
+* ``send_waitlist_confirm_email`` — Warteliste Double-Opt-In (v25).
 
 Future flows (privacy-version refresh notifications, account-
 deletion confirmations, etc.) plug in here as additional helpers
@@ -262,6 +263,140 @@ https://baulv.at
     # the operator can grep on the password-reset path specifically.
     logger.info(
         "email.password_reset.%s recipient=%s",
+        "sent" if sent else "failed",
+        to_email,
+    )
+    return sent
+
+
+# ---------------------------------------------------------------------------
+# Warteliste: Double-Opt-In-Bestätigung (v25)
+# ---------------------------------------------------------------------------
+
+
+def send_waitlist_confirm_email(
+    *,
+    to_email: str,
+    confirm_token: str,
+    unsubscribe_token: str,
+    name: str | None = None,
+) -> bool:
+    """Send the German waitlist double-opt-in email.
+
+    Parameters
+    ----------
+    to_email
+        Recipient (lowercase-normalised by the endpoint). The
+        endpoint response is identical whether or not this send
+        succeeds — same anti-enumeration stance as the password
+        reset.
+    confirm_token
+        Plaintext URL-safe confirm token. Embedded as ``?token=…``
+        into the frontend confirm page link. **Never logged** — the
+        DB holds only its SHA-256.
+    unsubscribe_token
+        Self-describing HMAC unsubscribe token (see
+        ``app/services/waitlist.py``). Goes into the footer via the
+        central §14-UGB component so this mail — like every future
+        one — carries a working Abmelde-Link.
+    name
+        Optional friendly name for the salutation.
+    """
+    # Token-Disziplin wie beim Passwort-Reset: nie loggen, auch nicht
+    # bei DEBUG. Nur Empfänger + Versuchsstatus.
+    logger.info("email.waitlist_confirm.attempt recipient=%s", to_email)
+
+    from app.services.email_footer import footer_html, footer_text
+
+    salutation = f"Hallo {name}," if name else "Hallo,"
+    base = settings.app_base_url.rstrip("/")
+    confirm_link = f"{base}/warteliste/bestaetigen?token={confirm_token}"
+    unsubscribe_link = (
+        f"{base}/warteliste/abmelden?token={unsubscribe_token}"
+    )
+
+    subject = "Bitte bestätigen: Ihre Anmeldung zur BauLV-Warteliste"
+
+    # Wording deliberately mirrors the HTML version (anti-phishing
+    # heuristics flag text/HTML mismatches) and states the two legal
+    # facts plainly: nothing happens without the click, and the entry
+    # creates no contract.
+    text_body = f"""{salutation}
+
+Sie haben sich auf die Warteliste von BauLV eingetragen.
+
+Bitte bestätigen Sie Ihre Anmeldung über den folgenden Link:
+
+{confirm_link}
+
+Der Link ist 7 Tage gültig. Ohne Bestätigung erhalten Sie keine
+weiteren E-Mails von uns, und Ihr Eintrag wird automatisch gelöscht.
+
+Der Eintrag ist unverbindlich - es entsteht kein Vertrag und es
+fallen keine Kosten an. Wir melden uns per E-Mail, sobald BauLV
+startet.
+
+Falls Sie sich nicht eingetragen haben, ignorieren Sie diese E-Mail
+einfach.
+
+Viele Grüße
+Ihr BauLV-Team
+{footer_text(unsubscribe_link)}"""
+
+    html_body = f"""<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Anmeldung bestätigen - BauLV</title>
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; line-height: 1.6; color: #1f2937; max-width: 560px; margin: 0 auto; padding: 24px;">
+  <h1 style="font-size: 20px; font-weight: 600; color: #111827; margin: 0 0 16px;">
+    Anmeldung bestätigen
+  </h1>
+  <p style="margin: 0 0 16px;">{salutation}</p>
+  <p style="margin: 0 0 16px;">
+    Sie haben sich auf die Warteliste von BauLV eingetragen.
+    Klicken Sie auf den Button, um Ihre Anmeldung zu bestätigen:
+  </p>
+  <p style="margin: 24px 0;">
+    <a href="{confirm_link}"
+       style="display: inline-block; padding: 12px 24px; background: #2563eb;
+              color: #ffffff; text-decoration: none; border-radius: 6px;
+              font-weight: 500;">
+      Anmeldung bestätigen
+    </a>
+  </p>
+  <p style="margin: 0 0 16px; font-size: 14px; color: #6b7280;">
+    Oder kopieren Sie diese Adresse in Ihren Browser:<br>
+    <span style="word-break: break-all;">{confirm_link}</span>
+  </p>
+  <p style="margin: 0 0 16px; font-size: 14px; color: #6b7280;">
+    Der Link ist <strong>7 Tage</strong> gültig. Ohne Bestätigung
+    erhalten Sie keine weiteren E-Mails von uns, und Ihr Eintrag wird
+    automatisch gelöscht.
+  </p>
+  <p style="margin: 0 0 16px; font-size: 14px; color: #6b7280;">
+    Der Eintrag ist unverbindlich &mdash; es entsteht kein Vertrag und
+    es fallen keine Kosten an. Wir melden uns per E-Mail, sobald BauLV
+    startet.
+  </p>
+  <p style="margin: 24px 0 0; font-size: 14px; color: #6b7280;">
+    Falls Sie sich nicht eingetragen haben, ignorieren Sie diese
+    E-Mail einfach.
+  </p>
+  {footer_html(unsubscribe_link)}
+</body>
+</html>
+"""
+
+    sent = _send(
+        to_email=to_email,
+        subject=subject,
+        html_body=html_body,
+        text_body=text_body,
+    )
+    logger.info(
+        "email.waitlist_confirm.%s recipient=%s",
         "sent" if sent else "failed",
         to_email,
     )

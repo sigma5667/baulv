@@ -34,7 +34,8 @@ api.interceptors.response.use(
         p === "/password-reset" ||
         p.startsWith("/impressum") ||
         p.startsWith("/datenschutz") ||
-        p.startsWith("/agb");
+        p.startsWith("/agb") ||
+        p.startsWith("/warteliste");
       if (!isPublic) {
         window.location.href = "/login";
       }

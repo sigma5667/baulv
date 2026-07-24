@@ -118,6 +118,19 @@ class Settings(BaseSettings):
     # (HMAC-Signatur enthält den Code, siehe ``app/api/beta_gate.py``).
     beta_access_code: str = ""
 
+    # v25 — Master-Schalter für die öffentliche Warteliste. Default
+    # AUS (*fail-safe* wie ``beta_access_code``): ohne explizit
+    # gesetztes ``WAITLIST_ENABLED=true`` antworten die drei
+    # öffentlichen Endpoints (signup/confirm/unsubscribe) mit einem
+    # neutralen 503, schreiben nichts in die DB und verschicken keine
+    # Mail. Der Admin-Auslese-Endpoint bleibt bewusst offen (hinter
+    # ``require_admin``) — Bestandsdaten einsehen muss auch bei
+    # geschlossener Liste gehen. Boot-Guard in ``app/main.py``:
+    # Einschalten mit Platzhalter-Firmendaten im Mail-Footer
+    # (§ 14 UGB) bricht den Start hart ab — siehe
+    # ``email_footer.assert_company_data_ready_for_waitlist``.
+    waitlist_enabled: bool = False
+
     # Optional Redis URL (e.g. ``redis://default:pwd@host:6379/0``) used
     # by the MCP per-key rate-limiter. When **set**, the limiter uses
     # Redis token-bucket counters (correct under multi-worker / multi-

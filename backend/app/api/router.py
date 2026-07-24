@@ -13,6 +13,7 @@ from app.api.api_keys import router as api_keys_router
 from app.api.admin import router as admin_router
 from app.api.stripe_api import router as stripe_router
 from app.api.beta_gate import router as beta_router
+from app.api.waitlist import router as waitlist_router
 
 api_router = APIRouter()
 
@@ -40,6 +41,12 @@ api_router.include_router(support_chat_router, tags=["Support Chat"])
 # semantics and why it's intentionally not enforced on protected API
 # routes (JWT is the real auth boundary; the gate is a soft UI cover).
 api_router.include_router(beta_router, prefix="/beta", tags=["Beta Gate"])
+# Public, unauthenticated: Warteliste mit Double-Opt-In (v25).
+# Rate-limited pro IP UND pro E-Mail (app/auth_rate_limit.py); der
+# Admin-Auslese-Endpoint darunter ist über ``require_admin`` gedeckt.
+api_router.include_router(
+    waitlist_router, prefix="/waitlist", tags=["Waitlist"]
+)
 # Admin-only — gated by the ``ADMIN_EMAILS`` allow-list (see
 # app/api/admin.py). Empty allow-list means every endpoint here
 # returns 403, so production stays locked unless explicitly opened.
