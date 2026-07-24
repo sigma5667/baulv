@@ -46,8 +46,20 @@ PRIVACY_POLICY_VERSION: str = "1.2"
 PRIVACY_POLICY_DATE: str = "2026-05-18"
 
 # Allgemeine Geschäftsbedingungen (Terms of Service)
-TERMS_VERSION: str = "1.0"
-TERMS_DATE: str = "2026-04-27"
+# v1.1 (2026-06-12) — AGB durchgehend als B2B-Angebot ausgerichtet:
+# neuer Abschnitt 1.2 (Vertrag ausschließlich mit Unternehmern iSd § 1 UGB,
+# Verbraucher ausgeschlossen, Verweis auf die technische Unternehmer-
+# Bestätigung); Abschnitt 7 (FAGG-Verbraucher-Widerruf) ersetzt durch
+# "kein Widerrufsrecht, da B2B"; Abschnitt 10 (Haftung) von pauschalem
+# "as is" auf eine differenzierte Klausel umgestellt (leichte
+# Fahrlässigkeit begrenzt; Vorsatz/grobe Fahrlässigkeit/Personenschäden/
+# PHG ausdrücklich NICHT ausgeschlossen); Netto-Preis-Klarstellung
+# (§ 5); KSchG-Verbraucher-Verweise (§§ 10, 13) entfernt. Bestandsuser
+# bekommen den ConsentRefreshModal beim nächsten Login (terms_version
+# 1.0 → 1.1). ``BUSINESS_TERMS_VERSION`` bleibt unverändert — der
+# Wortlaut der Unternehmer-Bestätigungs-Checkbox selbst ändert sich nicht.
+TERMS_VERSION: str = "1.1"
+TERMS_DATE: str = "2026-06-12"
 
 # Unternehmer-Bestätigung (B2B-Abgrenzung gegen FAGG / KSchG)
 # v24.4.8 (2026-06-09) — erstmalige Einführung. BauLV ist ein

@@ -361,6 +361,13 @@ export function SubscriptionPage() {
           );
         })}
       </div>
+
+      {/* v24.4.x — Netto-Preis-/B2B-Hinweis. Konsistent mit AGB §5
+          (Nettopreise, da Vertrag ausschließlich mit Unternehmern). */}
+      <p className="mt-4 text-center text-xs text-muted-foreground">
+        Alle Preise netto in Euro, zzgl. gesetzlicher USt. Angebot
+        ausschließlich für Unternehmer (§&nbsp;1 UGB).
+      </p>
     </div>
   );
 }

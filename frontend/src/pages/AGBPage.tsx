@@ -46,6 +46,21 @@ export function AGBPage() {
               Vertragsbestandteil, wenn der Anbieter ihnen ausdrücklich
               schriftlich zustimmt.
             </p>
+            <p className="mt-3 rounded-md border-l-2 border-amber-500 bg-amber-50/40 p-3">
+              <strong>1.2 Ausschließlich Unternehmer (B2B).</strong> Verträge
+              über die Nutzung der Software kommen ausschließlich mit
+              Unternehmern im Sinne des § 1 UGB zustande — also mit Personen,
+              die das Geschäft im Rahmen ihrer gewerblichen, geschäftlichen
+              oder beruflichen Tätigkeit abschließen. Verbraucher im Sinne des
+              § 1 KSchG sind von der Nutzung ausgeschlossen; mit ihnen kommt
+              kein Vertrag zustande. Die Unternehmereigenschaft wird im
+              Registrierungs- und im Bestellvorgang technisch abgefragt und ist
+              ausdrücklich zu bestätigen; ohne diese Bestätigung sind weder eine
+              Registrierung noch ein kostenpflichtiger Vertragsschluss möglich.
+              Auf dieses Vertragsverhältnis finden die besonderen
+              Verbraucherschutzbestimmungen (insbesondere KSchG und FAGG) daher
+              keine Anwendung.
+            </p>
           </div>
 
           <div>
@@ -107,8 +122,10 @@ export function AGBPage() {
               einzuziehen.
             </p>
             <p>
-              Alle angegebenen Preise verstehen sich in Euro zuzüglich der
-              gesetzlichen Umsatzsteuer, sofern nicht anders angegeben.
+              Alle angegebenen Preise sind Nettopreise in Euro und verstehen
+              sich zuzüglich der gesetzlichen Umsatzsteuer. Da der Vertrag
+              ausschließlich mit Unternehmern zustande kommt (Abschnitt 1.2),
+              erfolgt die Preisauszeichnung netto.
             </p>
           </div>
 
@@ -129,27 +146,14 @@ export function AGBPage() {
 
           <div>
             <h2 className="mb-2 text-lg font-semibold">
-              7. Widerrufsrecht für Verbraucher
+              7. Kein Verbraucher-Widerrufsrecht
             </h2>
-            <p className="mb-2">
-              Ist der Kunde Verbraucher im Sinne des Konsumentenschutzgesetzes
-              (KSchG) bzw. Fern- und Auswärtsgeschäfte-Gesetz (FAGG), so steht
-              ihm ein <strong>Widerrufsrecht von 14 Tagen</strong> ab
-              Vertragsschluss zu, ohne Angabe von Gründen.
-            </p>
-            <p className="mb-2">
-              Der Widerruf ist durch eine eindeutige Erklärung (z.&nbsp;B.
-              E-Mail) gegenüber dem Anbieter zu erklären.
-            </p>
             <p>
-              <strong>Erlöschen des Widerrufsrechts:</strong> Das Widerrufsrecht
-              erlischt bei Verträgen über die Erbringung von Dienstleistungen,
-              wenn der Anbieter die Dienstleistung vollständig erbracht hat und
-              mit der Ausführung der Dienstleistung erst begonnen hat, nachdem
-              der Verbraucher dazu seine ausdrückliche Zustimmung gegeben und
-              gleichzeitig seine Kenntnis davon bestätigt hat, dass er sein
-              Widerrufsrecht bei vollständiger Vertragserfüllung durch den
-              Anbieter verliert (§ 18 FAGG).
+              Da Verträge ausschließlich mit Unternehmern (§ 1 UGB) zustande
+              kommen (siehe Abschnitt 1.2), besteht kein Rücktritts- bzw.
+              Widerrufsrecht nach dem Fern- und Auswärtsgeschäfte-Gesetz
+              (FAGG) — dieses gilt nur für Verbraucher. Die
+              Kündigungsregelungen nach Abschnitt 6 bleiben hiervon unberührt.
             </p>
           </div>
 
@@ -186,25 +190,40 @@ export function AGBPage() {
               10. Gewährleistung und Haftung
             </h2>
             <p className="mb-2">
-              Die Software wird „wie besehen" („as is") zur Verfügung gestellt.
-              Der Anbieter übernimmt keine Gewähr für die Richtigkeit der von
-              der KI generierten Inhalte, insbesondere nicht für die
-              Vollständigkeit, Normkonformität oder Genauigkeit der aus Plänen
-              extrahierten Raumdaten und der vorgeschlagenen LV-Positionen.
-              Der Kunde ist verpflichtet, alle Ergebnisse vor der Verwendung
-              sorgfältig zu prüfen und gegebenenfalls zu korrigieren.
+              <strong>(1)</strong> Der Anbieter übernimmt keine Gewähr für die
+              Richtigkeit, Vollständigkeit, Normkonformität oder Genauigkeit der
+              von der KI erzeugten Inhalte — insbesondere nicht für die aus
+              Plänen extrahierten Raumdaten und die vorgeschlagenen
+              LV-Positionen. Der Kunde ist verpflichtet, alle Ergebnisse vor
+              ihrer Verwendung eigenverantwortlich zu prüfen und
+              erforderlichenfalls zu korrigieren; sie ersetzen keine fachliche
+              Prüfung durch den Kunden.
             </p>
             <p className="mb-2">
-              Der Anbieter haftet nur für Schäden, die auf Vorsatz oder grober
-              Fahrlässigkeit beruhen. Eine Haftung für leichte Fahrlässigkeit
-              — mit Ausnahme von Personenschäden — ist ausgeschlossen. Die
-              Haftung für mittelbare Schäden, entgangenen Gewinn, Folgeschäden
-              und Datenverlust ist, soweit gesetzlich zulässig, ausgeschlossen.
+              <strong>(2)</strong> Der Anbieter haftet unbeschränkt für Schäden
+              aus der Verletzung des Lebens, des Körpers oder der Gesundheit
+              sowie für Schäden, die auf Vorsatz oder grober Fahrlässigkeit
+              beruhen.
+            </p>
+            <p className="mb-2">
+              <strong>(3)</strong> Für leichte Fahrlässigkeit haftet der Anbieter
+              nur bei der Verletzung einer wesentlichen Vertragspflicht (einer
+              Pflicht, deren Erfüllung die ordnungsgemäße Durchführung des
+              Vertrags überhaupt erst ermöglicht und auf deren Einhaltung der
+              Kunde regelmäßig vertrauen darf), und der Höhe nach begrenzt auf
+              den bei Vertragsschluss typischerweise vorhersehbaren Schaden. Im
+              Übrigen ist die Haftung für leichte Fahrlässigkeit ausgeschlossen.
+            </p>
+            <p className="mb-2">
+              <strong>(4)</strong> Die Haftung für mittelbare Schäden,
+              entgangenen Gewinn, Folgeschäden und Datenverlust ist im
+              gesetzlich zulässigen Umfang ausgeschlossen; dies gilt nicht in
+              den Fällen der Absätze (2) und (3).
             </p>
             <p>
-              Zwingende gesetzliche Haftungsregelungen — insbesondere nach dem
-              Produkthaftungsgesetz (PHG) und dem Konsumentenschutzgesetz
-              (KSchG) — bleiben unberührt.
+              <strong>(5)</strong> Zwingende gesetzliche Haftungsbestimmungen,
+              insbesondere nach dem Produkthaftungsgesetz (PHG), bleiben
+              unberührt.
             </p>
           </div>
 
@@ -249,10 +268,12 @@ export function AGBPage() {
               UN-Kaufrechts (CISG).
             </p>
             <p>
-              Gerichtsstand für alle Streitigkeiten aus oder im Zusammenhang
-              mit diesem Vertrag ist — soweit gesetzlich zulässig —{" "}
-              [GERICHTSSTAND EINTRAGEN]. Für Verbraucher im Sinne des KSchG
-              verbleibt es bei den gesetzlich zwingenden Gerichtsständen.
+              Als Gerichtsstand für alle Streitigkeiten aus oder im
+              Zusammenhang mit diesem Vertrag wird das sachlich zuständige
+              Gericht am Sitz des Anbieters ([GERICHTSSTAND EINTRAGEN])
+              vereinbart. Diese Gerichtsstandsvereinbarung ist zulässig, da der
+              Vertrag ausschließlich mit Unternehmern geschlossen wird
+              (§ 104 JN).
             </p>
           </div>
 
@@ -272,7 +293,12 @@ export function AGBPage() {
 
           <div>
             <h2 className="mb-2 text-lg font-semibold">Stand</h2>
-            <p>Diese AGB sind gültig ab April 2026.</p>
+            <p>
+              Fassung Version 1.1 (Stand: Juni 2026). Wesentliche Änderung
+              gegenüber Version 1.0: durchgehende Ausrichtung als B2B-Angebot
+              ausschließlich für Unternehmer (§ 1 UGB), Wegfall des
+              Verbraucher-Widerrufsrechts, differenzierte Haftungsregelung.
+            </p>
           </div>
         </section>
       </main>
