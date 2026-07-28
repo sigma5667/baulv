@@ -30,6 +30,7 @@ import { ApiPricingPage } from "./pages/ApiPricingPage";
 import { DevelopersPage } from "./pages/DevelopersPage";
 import { PrivacySettingsPage } from "./pages/PrivacySettingsPage";
 import { AdminAnalyticsPage } from "./pages/AdminAnalyticsPage";
+import { WartelisteAdminPage } from "./pages/WartelisteAdminPage";
 
 function AuthenticatedApp() {
   return (
@@ -57,6 +58,12 @@ function AuthenticatedApp() {
           <Route
             path="/admin/analytics"
             element={<AdminAnalyticsPage />}
+          />
+          {/* v25.1 — Warteliste-Übersicht + Update-Versand. Gleiches
+              Muster: unconditional mount, lokaler 403-Fallback. */}
+          <Route
+            path="/admin/warteliste"
+            element={<WartelisteAdminPage />}
           />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

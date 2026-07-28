@@ -377,7 +377,9 @@ function HeroTransformation() {
  * gemeinsam bumpen.
  */
 const WAITLIST_CONSENT_TEXT =
-  "Ich möchte per E-Mail informiert werden, wenn BauLV startet.";
+  "Ich möchte per E-Mail über den Entwicklungsstand und den Start " +
+  "von BauLV informiert werden. Die Einwilligung kann ich jederzeit " +
+  "über den Abmelde-Link widerrufen.";
 
 /** ``?ref=``-Wert auf das Backend-Whitelist-Alphabet vorfiltern. */
 const SOURCE_RE = /^[a-z0-9_-]{1,64}$/;

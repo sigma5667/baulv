@@ -28,12 +28,13 @@ ist die Zeile ``confirmed`` und derselbe Token läuft ins generische
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import auth_rate_limit
@@ -43,8 +44,16 @@ from app.config import settings
 from app.db.models.user import User
 from app.db.models.waitlist_entry import WaitlistEntry
 from app.db.session import get_db
-from app.schemas.waitlist import WaitlistSignupRequest, WaitlistTokenRequest
-from app.services.email import send_waitlist_confirm_email
+from app.schemas.waitlist import (
+    WaitlistSignupRequest,
+    WaitlistTokenRequest,
+    WaitlistUpdateSendRequest,
+)
+from app.services.email import (
+    render_waitlist_update_bodies,
+    send_waitlist_confirm_email,
+    send_waitlist_update_email,
+)
 from app.services.waitlist import (
     WAITLIST_CONSENT_VERSION,
     hash_confirm_token,
@@ -318,25 +327,84 @@ async def unsubscribe_waitlist(
 async def list_waitlist_entries(
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
+    limit: int = 50,
+    offset: int = 0,
 ):
-    """Warteliste auslesen — nur ``ADMIN_EMAILS``.
+    """Warteliste-Übersicht — nur ``ADMIN_EMAILS``.
 
-    Liefert Status-Zählung plus alle Einträge (neueste zuerst). Die
-    ``counts``-Trennung ist die operative Regel schlechthin: nur
-    ``confirmed`` darf je Marketing-Mails bekommen.
+    v25.1 — vom Voll-Dump zur Übersicht ausgebaut: Status-Zählung
+    (``counts``-Trennung ist die operative Regel schlechthin: nur
+    ``confirmed`` darf je Marketing-Mails bekommen), Herkunfts-
+    Aufschlüsselung nach ``source`` (welche Anzeige wirkt?),
+    Anmeldungen der letzten 7/30 Tage, und die Einträge paginiert
+    (neueste zuerst) statt unbegrenzt.
+
+    ``limit``/``offset`` sind bewusst schlichte Query-Parameter mit
+    Python-Clamping statt ``fastapi.Query``-Validierung — die Tests
+    rufen die Funktion direkt auf (ohne ASGI-Schicht), ein
+    Query-Default-Objekt wäre dort ein falscher Wert.
     """
+    limit = max(1, min(int(limit), 200))
+    offset = max(0, int(offset))
+
+    # Aggregate in SQL statt alle Zeilen zu laden — die Einträge
+    # selbst kommen separat und paginiert.
+    status_rows = (
+        await db.execute(
+            select(WaitlistEntry.status, func.count())
+            .group_by(WaitlistEntry.status)
+        )
+    ).all()
+    counts = {"pending": 0, "confirmed": 0, "unsubscribed": 0}
+    for status_value, n in status_rows:
+        counts[status_value] = int(n)
+    total = sum(counts.values())
+
+    source_rows = (
+        await db.execute(
+            select(WaitlistEntry.source, func.count())
+            .group_by(WaitlistEntry.source)
+            .order_by(func.count().desc())
+        )
+    ).all()
+    sources = [
+        {"source": source_value, "count": int(n)}
+        for source_value, n in source_rows
+    ]
+
+    now = datetime.now(timezone.utc)
+
+    async def _signups_since(days: int) -> int:
+        return int(
+            (
+                await db.execute(
+                    select(func.count()).where(
+                        WaitlistEntry.signup_at >= now - timedelta(days=days)
+                    )
+                )
+            ).scalar_one()
+            or 0
+        )
+
+    signups_last_7d = await _signups_since(7)
+    signups_last_30d = await _signups_since(30)
+
     result = await db.execute(
-        select(WaitlistEntry).order_by(WaitlistEntry.signup_at.desc())
+        select(WaitlistEntry)
+        .order_by(WaitlistEntry.signup_at.desc())
+        .limit(limit)
+        .offset(offset)
     )
     rows = result.scalars().all()
 
-    counts = {"pending": 0, "confirmed": 0, "unsubscribed": 0}
-    for row in rows:
-        counts[row.status] = counts.get(row.status, 0) + 1
-
     return {
-        "total": len(rows),
+        "total": total,
         "counts": counts,
+        "sources": sources,
+        "signups_last_7d": signups_last_7d,
+        "signups_last_30d": signups_last_30d,
+        "limit": limit,
+        "offset": offset,
         "entries": [
             {
                 "email": row.email,
@@ -351,4 +419,124 @@ async def list_waitlist_entries(
             }
             for row in rows
         ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# v25.1 — Admin-Update-Versand
+# ---------------------------------------------------------------------------
+
+# Pause zwischen zwei Einzel-Sends. Resend erlaubt im Default ~2
+# Requests/Sekunde; 0,6 s hält uns sicher darunter, auch wenn
+# parallel eine Double-Opt-In-Mail rausgeht. Modul-Konstante statt
+# Literal, damit Tests sie auf 0 patchen koennen.
+_UPDATE_SEND_PACE_S = 0.6
+
+# Doppel-Klick-Schutz: ein Versand zur Zeit (pro Prozess). Bei
+# belegtem Lock antwortet der Endpoint 409 statt denselben Empfaengern
+# eine zweite Mail zu schicken. Bewusst nur in-process — die App
+# laeuft single-service auf Railway, und der Schaden eines theoretischen
+# Doppel-Versands ueber zwei Worker waere eine doppelte Mail, kein
+# Datenverlust.
+_update_send_lock = asyncio.Lock()
+
+
+@router.post("/admin/send-update")
+async def send_waitlist_update(
+    data: WaitlistUpdateSendRequest,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update-Mail an alle ``confirmed``-Eintraege — nur ``ADMIN_EMAILS``.
+
+    Versand-Regeln (v25.1):
+
+    * NUR ``status == 'confirmed'`` — pending hat die Einwilligung
+      noch nicht bestaetigt, unsubscribed hat sie widerrufen.
+    * EINZELN pro Empfaenger (kein BCC): jede Mail traegt den
+      individuellen HMAC-Abmelde-Link, niemand sieht fremde Adressen.
+    * Sequenziell mit ``_UPDATE_SEND_PACE_S`` Pause (Resend-Limit);
+      der eigentliche Send laeuft via ``asyncio.to_thread``, damit der
+      Event-Loop waehrenddessen frei bleibt.
+    * Ein fehlgeschlagener Send bricht NICHT ab — die Antwort traegt
+      ``sent``/``failed`` getrennt.
+    * ``dry_run=true``: Empfaengerzahl + gerenderte Vorschau (exakt
+      der Text des Echtlaufs, gleiche Render-Funktion), NULL Sends.
+    * Schalter-Regel wie ueberall: ``WAITLIST_ENABLED`` aus → 503.
+    """
+    _require_waitlist_enabled()
+
+    result = await db.execute(
+        select(WaitlistEntry)
+        .where(WaitlistEntry.status == "confirmed")
+        .order_by(WaitlistEntry.signup_at.asc())
+    )
+    recipients = result.scalars().all()
+
+    if data.dry_run:
+        # Vorschau mit Beispiel-Empfaenger — der Abmelde-Link im
+        # Echtlauf ist pro Empfaenger individuell, fuer die Vorschau
+        # reicht ein illustrativer.
+        preview_email = (
+            recipients[0].email if recipients else "beispiel@firma.at"
+        )
+        base = settings.app_base_url.rstrip("/")
+        preview_link = (
+            f"{base}/warteliste/abmelden?token="
+            f"{mint_unsubscribe_token(preview_email)}"
+        )
+        preview_text, _ = render_waitlist_update_bodies(
+            body_text=data.body,
+            unsubscribe_link=preview_link,
+            name=None,
+        )
+        logger.info(
+            "waitlist.update_send.dry_run admin=%s recipients=%d",
+            admin.email, len(recipients),
+        )
+        return {
+            "dry_run": True,
+            "recipients": len(recipients),
+            "sent": 0,
+            "failed": 0,
+            "preview": {"subject": data.subject, "text": preview_text},
+        }
+
+    if _update_send_lock.locked():
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Ein Update-Versand läuft bereits. Bitte warten Sie, "
+                "bis er abgeschlossen ist."
+            ),
+        )
+
+    async with _update_send_lock:
+        sent = 0
+        failed = 0
+        for i, row in enumerate(recipients):
+            ok = await asyncio.to_thread(
+                send_waitlist_update_email,
+                to_email=row.email,
+                subject=data.subject,
+                body_text=data.body,
+                unsubscribe_token=mint_unsubscribe_token(row.email),
+                name=row.name,
+            )
+            if ok:
+                sent += 1
+            else:
+                failed += 1
+            if i < len(recipients) - 1:
+                await asyncio.sleep(_UPDATE_SEND_PACE_S)
+
+    logger.info(
+        "waitlist.update_send.done admin=%s recipients=%d sent=%d failed=%d",
+        admin.email, len(recipients), sent, failed,
+    )
+    return {
+        "dry_run": False,
+        "recipients": len(recipients),
+        "sent": sent,
+        "failed": failed,
     }

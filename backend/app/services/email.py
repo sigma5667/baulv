@@ -6,6 +6,9 @@ per email type:
 
 * ``send_password_reset_email`` — DS-3 (v23.4) reset link.
 * ``send_waitlist_confirm_email`` — Warteliste Double-Opt-In (v25).
+* ``send_waitlist_update_email`` — Warteliste Entwicklungs-Update an
+  einen einzelnen bestätigten Empfänger (v25.1); Renderer separat
+  (``render_waitlist_update_bodies``) für den Admin-Trockenlauf.
 
 Future flows (privacy-version refresh notifications, account-
 deletion confirmations, etc.) plug in here as additional helpers
@@ -333,7 +336,8 @@ Der Link ist 7 Tage gültig. Ohne Bestätigung erhalten Sie keine
 weiteren E-Mails von uns, und Ihr Eintrag wird automatisch gelöscht.
 
 Der Eintrag ist unverbindlich - es entsteht kein Vertrag und es
-fallen keine Kosten an. Wir melden uns per E-Mail, sobald BauLV
+fallen keine Kosten an. Nach der Bestätigung informieren wir Sie
+per E-Mail über den Entwicklungsstand und melden uns, sobald BauLV
 startet.
 
 Falls Sie sich nicht eingetragen haben, ignorieren Sie diese E-Mail
@@ -377,8 +381,9 @@ Ihr BauLV-Team
   </p>
   <p style="margin: 0 0 16px; font-size: 14px; color: #6b7280;">
     Der Eintrag ist unverbindlich &mdash; es entsteht kein Vertrag und
-    es fallen keine Kosten an. Wir melden uns per E-Mail, sobald BauLV
-    startet.
+    es fallen keine Kosten an. Nach der Bestätigung informieren wir
+    Sie per E-Mail über den Entwicklungsstand und melden uns, sobald
+    BauLV startet.
   </p>
   <p style="margin: 24px 0 0; font-size: 14px; color: #6b7280;">
     Falls Sie sich nicht eingetragen haben, ignorieren Sie diese
@@ -397,6 +402,108 @@ Ihr BauLV-Team
     )
     logger.info(
         "email.waitlist_confirm.%s recipient=%s",
+        "sent" if sent else "failed",
+        to_email,
+    )
+    return sent
+
+
+def render_waitlist_update_bodies(
+    *,
+    body_text: str,
+    unsubscribe_link: str,
+    name: str | None = None,
+) -> tuple[str, str]:
+    """Text- + HTML-Body einer Warteliste-Update-Mail (v25.1).
+
+    Als pure Render-Funktion ausgekoppelt, damit der Admin-Endpoint
+    im Trockenlauf-Modus EXAKT das anzeigen kann, was der Echtlauf
+    verschickt (gleiche Funktion, gleicher Footer) — und damit das
+    HTML-Escaping ohne Mail-Mock testbar ist.
+
+    ``body_text`` ist Plain-Text vom Admin: für die HTML-Variante
+    wird er escaped (kein HTML-Injection über das Admin-Formular)
+    und an Leerzeilen in ``<p>``-Absätze zerlegt; einfache
+    Zeilenumbrüche werden ``<br>``. Der §14-UGB-Footer hängt IMMER
+    mit ``unsubscribe_link`` dran — das ist eine Marketing-Mail,
+    der Abmelde-Link ist Pflicht (DSGVO Art. 7 Abs. 3).
+    """
+    import html as html_mod
+
+    from app.services.email_footer import footer_html, footer_text
+
+    salutation = f"Hallo {name}," if name else "Hallo,"
+
+    text_body = f"""{salutation}
+
+{body_text.strip()}
+
+Viele Grüße
+Ihr BauLV-Team
+{footer_text(unsubscribe_link)}"""
+
+    paragraphs = [
+        p.strip()
+        for p in html_mod.escape(body_text.strip()).split("\n\n")
+        if p.strip()
+    ]
+    body_html = "".join(
+        f'<p style="margin: 0 0 16px;">{p.replace(chr(10), "<br>")}</p>'
+        for p in paragraphs
+    )
+    html_body = f"""<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>BauLV-Update</title>
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; line-height: 1.6; color: #1f2937; max-width: 560px; margin: 0 auto; padding: 24px;">
+  <p style="margin: 0 0 16px;">{salutation}</p>
+  {body_html}
+  <p style="margin: 24px 0 0;">Viele Grüße<br>Ihr BauLV-Team</p>
+  {footer_html(unsubscribe_link)}
+</body>
+</html>
+"""
+    return text_body, html_body
+
+
+def send_waitlist_update_email(
+    *,
+    to_email: str,
+    subject: str,
+    body_text: str,
+    unsubscribe_token: str,
+    name: str | None = None,
+) -> bool:
+    """Eine Warteliste-Update-Mail an EINEN Empfänger (v25.1).
+
+    Aufgerufen vom Admin-Endpoint ``POST /api/waitlist/admin/
+    send-update`` — einzeln pro Empfänger (kein BCC: jede Mail trägt
+    den individuellen HMAC-Abmelde-Token des Empfängers, und kein
+    Empfänger sieht die Adressen der anderen). Batching/Pacing gegen
+    das Resend-Rate-Limit macht der Endpoint, nicht diese Funktion.
+    """
+    logger.info("email.waitlist_update.attempt recipient=%s", to_email)
+
+    base = settings.app_base_url.rstrip("/")
+    unsubscribe_link = (
+        f"{base}/warteliste/abmelden?token={unsubscribe_token}"
+    )
+    text_body, html_body = render_waitlist_update_bodies(
+        body_text=body_text,
+        unsubscribe_link=unsubscribe_link,
+        name=name,
+    )
+
+    sent = _send(
+        to_email=to_email,
+        subject=subject,
+        html_body=html_body,
+        text_body=text_body,
+    )
+    logger.info(
+        "email.waitlist_update.%s recipient=%s",
         "sent" if sent else "failed",
         to_email,
     )

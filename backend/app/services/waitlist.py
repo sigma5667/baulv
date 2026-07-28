@@ -45,10 +45,16 @@ from datetime import datetime, timedelta, timezone
 
 from app.config import settings
 
-# v1.0 (2026-07-19) — Erst-Wortlaut der Einwilligungs-Checkbox.
-WAITLIST_CONSENT_VERSION: str = "1.0"
+# v1.0 (2026-07-19) — Erst-Wortlaut: nur Start-Benachrichtigung.
+# v1.1 (2026-07-24) — Zweck erweitert auf regelmäßige Entwicklungs-
+# Updates + Widerrufs-Hinweis in den Wortlaut gehoben. Gebumpt BEVOR
+# die Liste je öffentlich war (WAITLIST_ENABLED war nie an) — es
+# existieren keine v1.0-Einwilligungen, daher kein Re-Consent nötig.
+WAITLIST_CONSENT_VERSION: str = "1.1"
 WAITLIST_CONSENT_TEXT: str = (
-    "Ich möchte per E-Mail informiert werden, wenn BauLV startet."
+    "Ich möchte per E-Mail über den Entwicklungsstand und den Start "
+    "von BauLV informiert werden. Die Einwilligung kann ich jederzeit "
+    "über den Abmelde-Link widerrufen."
 )
 
 # 7 Tage — lang genug für "Mail am Freitag, Klick am Montag", kurz

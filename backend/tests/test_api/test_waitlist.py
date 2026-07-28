@@ -34,8 +34,10 @@ SQLite aus dem conftest) statt die FastAPI-App zu starten.
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -44,21 +46,26 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import auth_rate_limit
+from app.api import waitlist as waitlist_api
 from app.api.admin import require_admin
 from app.api.waitlist import (
     confirm_waitlist,
     join_waitlist,
     list_waitlist_entries,
+    send_waitlist_update,
     unsubscribe_waitlist,
 )
 from app.config import Settings, settings
+from app.schemas.waitlist import WaitlistUpdateSendRequest
 from app.services import email_footer
+from app.services.email import render_waitlist_update_bodies
 from app.services.email_footer import assert_company_data_ready_for_waitlist
 from app.db.models.user import User
 from app.db.models.waitlist_entry import WaitlistEntry
 from app.services.audit_cleanup import cleanup_stale_waitlist_pending
 from app.schemas.waitlist import WaitlistSignupRequest, WaitlistTokenRequest
 from app.services.waitlist import (
+    WAITLIST_CONSENT_TEXT,
     WAITLIST_CONSENT_VERSION,
     hash_confirm_token,
     mint_confirm_token,
@@ -73,6 +80,7 @@ from app.services.waitlist import (
 
 
 _SEND_PATCH = "app.api.waitlist.send_waitlist_confirm_email"
+_UPDATE_SEND_PATCH = "app.api.waitlist.send_waitlist_update_email"
 
 
 @pytest.fixture(autouse=True)
@@ -135,6 +143,8 @@ async def _seed_entry(
     status: str = "pending",
     token_plaintext: str | None = None,
     expires_delta: timedelta = timedelta(days=7),
+    source: str | None = None,
+    signup_at: datetime | None = None,
 ) -> tuple[WaitlistEntry, str]:
     """Direkt eine Zeile einpflanzen; Returns ``(row, plaintext)``."""
     plaintext = token_plaintext or mint_confirm_token()[0]
@@ -144,11 +154,12 @@ async def _seed_entry(
         company_name="Muster Bau GmbH",
         name=None,
         status=status,
-        signup_at=datetime.now(timezone.utc),
+        signup_at=signup_at or datetime.now(timezone.utc),
         signup_ip="unknown",
         confirm_token_hash=hash_confirm_token(plaintext),
         token_expires_at=datetime.now(timezone.utc) + expires_delta,
         consent_text_version=WAITLIST_CONSENT_VERSION,
+        source=source,
     )
     db.add(row)
     await db.commit()
@@ -669,3 +680,235 @@ def test_boot_guard_is_wired_into_app_startup():
     source = inspect.getsource(main.lifespan)
     assert "assert_company_data_ready_for_waitlist" in source
     assert "settings.waitlist_enabled" in source
+
+
+# ---------------------------------------------------------------------------
+# 14. Consent v1.1 — Wortlaut-Sync Backend <-> Landing-Checkbox
+# ---------------------------------------------------------------------------
+
+
+def test_consent_version_is_bumped_to_1_1():
+    """v1.1 (2026-07-24): Zweck um Entwicklungs-Updates erweitert.
+    Gepinnt, damit ein kuenftiger Wortlaut-Edit den Versions-Bump
+    nicht vergisst (Spalte ``consent_text_version`` ist der
+    Art.-7-Nachweis)."""
+    assert WAITLIST_CONSENT_VERSION == "1.1"
+    assert "Entwicklungsstand" in WAITLIST_CONSENT_TEXT
+    assert "widerrufen" in WAITLIST_CONSENT_TEXT
+
+
+def test_consent_text_matches_landing_page_checkbox():
+    """Die Zwei-Stellen-Regel, maschinell: der Checkbox-Wortlaut in
+    ``LandingPage.tsx`` muss zeichengleich mit der Backend-Konstante
+    sein. Der Test parst die TSX-Konstante (String-Fragmente einer
+    String-Verkettung) und vergleicht den zusammengesetzten Text."""
+    repo_root = Path(__file__).resolve().parents[3]
+    tsx_path = repo_root / "frontend" / "src" / "pages" / "LandingPage.tsx"
+    tsx = tsx_path.read_text(encoding="utf-8")
+
+    marker = "const WAITLIST_CONSENT_TEXT ="
+    assert marker in tsx, "Konstante in LandingPage.tsx nicht gefunden"
+    segment = tsx.split(marker, 1)[1].split(";", 1)[0]
+    fragments = re.findall(r'"([^"]*)"', segment)
+    assert "".join(fragments) == WAITLIST_CONSENT_TEXT
+
+
+# ---------------------------------------------------------------------------
+# 15. Admin-Uebersicht (v25.1) — Quellen, Verlauf, Pagination
+# ---------------------------------------------------------------------------
+
+
+async def test_admin_overview_sources_and_recent_counts(
+    db_session: AsyncSession,
+):
+    now = datetime.now(timezone.utc)
+    await _seed_entry(
+        db_session, email="neu@example.at", status="confirmed",
+        source="google", signup_at=now,
+    )
+    await _seed_entry(
+        db_session, email="aelter@example.at", status="pending",
+        source="google", signup_at=now - timedelta(days=10),
+    )
+    await _seed_entry(
+        db_session, email="alt@example.at", status="unsubscribed",
+        source=None, signup_at=now - timedelta(days=40),
+    )
+    admin = User(email="admin@baulv.at")
+
+    result = await list_waitlist_entries(admin=admin, db=db_session)
+
+    assert result["total"] == 3
+    assert result["counts"] == {
+        "pending": 1, "confirmed": 1, "unsubscribed": 1,
+    }
+    assert {"source": "google", "count": 2} in result["sources"]
+    assert {"source": None, "count": 1} in result["sources"]
+    assert result["signups_last_7d"] == 1
+    assert result["signups_last_30d"] == 2
+
+
+async def test_admin_overview_pagination(db_session: AsyncSession):
+    now = datetime.now(timezone.utc)
+    for i in range(3):
+        await _seed_entry(
+            db_session, email=f"p{i}@example.at", status="pending",
+            signup_at=now - timedelta(days=i),
+        )
+    admin = User(email="admin@baulv.at")
+
+    page = await list_waitlist_entries(
+        admin=admin, db=db_session, limit=1, offset=1,
+    )
+
+    # Aggregat-Zahlen bleiben Gesamt-Zahlen, nur ``entries`` ist
+    # paginiert: Seite 2 bei Groesse 1 = der zweitneueste Eintrag.
+    assert page["total"] == 3
+    assert len(page["entries"]) == 1
+    assert page["entries"][0]["email"] == "p1@example.at"
+    assert page["limit"] == 1 and page["offset"] == 1
+
+
+# ---------------------------------------------------------------------------
+# 16. Update-Versand (v25.1) — nur confirmed, einzeln, Trockenlauf
+# ---------------------------------------------------------------------------
+
+
+async def test_update_dry_run_counts_confirmed_and_sends_nothing(
+    db_session: AsyncSession,
+):
+    await _seed_entry(db_session, email="a@example.at", status="confirmed")
+    await _seed_entry(db_session, email="b@example.at", status="confirmed")
+    await _seed_entry(db_session, email="c@example.at", status="pending")
+    await _seed_entry(db_session, email="d@example.at", status="unsubscribed")
+    admin = User(email="admin@baulv.at")
+
+    with patch(_UPDATE_SEND_PATCH) as send_mock:
+        result = await send_waitlist_update(
+            WaitlistUpdateSendRequest(
+                subject="BauLV-Update Juli", body="Es geht voran.",
+                dry_run=True,
+            ),
+            admin=admin, db=db_session,
+        )
+
+    assert result["dry_run"] is True
+    assert result["recipients"] == 2
+    assert result["sent"] == 0 and result["failed"] == 0
+    send_mock.assert_not_called()
+    assert result["preview"]["subject"] == "BauLV-Update Juli"
+    assert "Es geht voran." in result["preview"]["text"]
+    # Die Vorschau zeigt den Abmelde-Link — er ist Pflichtteil jeder
+    # Update-Mail.
+    assert "/warteliste/abmelden?token=" in result["preview"]["text"]
+
+
+async def test_update_send_only_confirmed_each_with_own_token(
+    db_session: AsyncSession, monkeypatch,
+):
+    monkeypatch.setattr(waitlist_api, "_UPDATE_SEND_PACE_S", 0)
+    await _seed_entry(db_session, email="a@example.at", status="confirmed")
+    await _seed_entry(db_session, email="b@example.at", status="confirmed")
+    await _seed_entry(db_session, email="c@example.at", status="pending")
+    admin = User(email="admin@baulv.at")
+
+    with patch(_UPDATE_SEND_PATCH, return_value=True) as send_mock:
+        result = await send_waitlist_update(
+            WaitlistUpdateSendRequest(subject="Update", body="Text."),
+            admin=admin, db=db_session,
+        )
+
+    assert result == {
+        "dry_run": False, "recipients": 2, "sent": 2, "failed": 0,
+    }
+    assert send_mock.call_count == 2
+    sent_to = {c.kwargs["to_email"] for c in send_mock.call_args_list}
+    assert sent_to == {"a@example.at", "b@example.at"}
+    # Einzeln pro Empfaenger, jeder mit SEINEM deterministischen
+    # HMAC-Abmelde-Token — kein BCC, kein geteilter Link.
+    for call in send_mock.call_args_list:
+        assert call.kwargs["unsubscribe_token"] == mint_unsubscribe_token(
+            call.kwargs["to_email"]
+        )
+
+
+async def test_update_send_failure_does_not_abort_remaining(
+    db_session: AsyncSession, monkeypatch,
+):
+    monkeypatch.setattr(waitlist_api, "_UPDATE_SEND_PACE_S", 0)
+    await _seed_entry(db_session, email="a@example.at", status="confirmed")
+    await _seed_entry(db_session, email="b@example.at", status="confirmed")
+    admin = User(email="admin@baulv.at")
+
+    with patch(_UPDATE_SEND_PATCH, side_effect=[False, True]) as send_mock:
+        result = await send_waitlist_update(
+            WaitlistUpdateSendRequest(subject="Update", body="Text."),
+            admin=admin, db=db_session,
+        )
+
+    assert send_mock.call_count == 2
+    assert result["sent"] == 1 and result["failed"] == 1
+
+
+async def test_update_send_disabled_switch_is_503(
+    db_session: AsyncSession, monkeypatch,
+):
+    monkeypatch.setattr(settings, "waitlist_enabled", False)
+    admin = User(email="admin@baulv.at")
+
+    with patch(_UPDATE_SEND_PATCH) as send_mock:
+        with pytest.raises(HTTPException) as excinfo:
+            await send_waitlist_update(
+                WaitlistUpdateSendRequest(subject="Update", body="Text."),
+                admin=admin, db=db_session,
+            )
+
+    assert excinfo.value.status_code == 503
+    send_mock.assert_not_called()
+
+
+async def test_update_send_conflict_while_lock_held(
+    db_session: AsyncSession,
+):
+    admin = User(email="admin@baulv.at")
+
+    async with waitlist_api._update_send_lock:
+        with pytest.raises(HTTPException) as excinfo:
+            await send_waitlist_update(
+                WaitlistUpdateSendRequest(subject="Update", body="Text."),
+                admin=admin, db=db_session,
+            )
+
+    assert excinfo.value.status_code == 409
+
+
+async def test_update_send_empty_confirmed_list_is_clean_noop(
+    db_session: AsyncSession,
+):
+    await _seed_entry(db_session, email="c@example.at", status="pending")
+    admin = User(email="admin@baulv.at")
+
+    with patch(_UPDATE_SEND_PATCH) as send_mock:
+        result = await send_waitlist_update(
+            WaitlistUpdateSendRequest(subject="Update", body="Text."),
+            admin=admin, db=db_session,
+        )
+
+    assert result["recipients"] == 0
+    assert result["sent"] == 0 and result["failed"] == 0
+    send_mock.assert_not_called()
+
+
+def test_update_mail_html_escapes_admin_body():
+    """Der Admin-Body ist Plain-Text: HTML-Sonderzeichen duerfen im
+    HTML-Teil nur escaped ankommen; Leerzeilen werden Absaetze."""
+    text, html = render_waitlist_update_bodies(
+        body_text="Hallo <b>Welt</b> & Co.\n\nZweiter Absatz.",
+        unsubscribe_link="https://baulv.at/warteliste/abmelden?token=t123",
+    )
+
+    assert "<b>" not in html
+    assert "&lt;b&gt;Welt&lt;/b&gt; &amp; Co." in html
+    assert html.count('<p style="margin: 0 0 16px;">') >= 2
+    assert "Zweiter Absatz." in text
+    assert "https://baulv.at/warteliste/abmelden?token=t123" in text

@@ -23,3 +23,17 @@ class WaitlistSignupRequest(BaseModel):
 
 class WaitlistTokenRequest(BaseModel):
     token: str = Field(min_length=1, max_length=1024)
+
+
+class WaitlistUpdateSendRequest(BaseModel):
+    """Admin-Update-Versand (v25.1) — ``POST /api/waitlist/admin/send-update``.
+
+    ``body`` ist PLAIN-TEXT: die Mail-Schicht escaped ihn für die
+    HTML-Variante (kein HTML über das Admin-Formular). ``dry_run``
+    default False — der Trockenlauf ist ein bewusster erster Schritt
+    im Admin-UI, kein Server-Default.
+    """
+
+    subject: str = Field(min_length=1, max_length=200)
+    body: str = Field(min_length=1, max_length=10_000)
+    dry_run: bool = False
