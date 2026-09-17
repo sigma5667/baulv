@@ -6,6 +6,10 @@ Wir prüfen nur die deterministische Logik:
   * ``_bbox_fail_safe_reason`` — entscheidet anhand der Haiku-BBox, ob
     der Two-Pass-Pfad genommen oder auf den Single-Pass-Fallback
     zurückgefallen wird.
+  * ``_bbox_cuts_room_stamps_reason`` / ``_named_room_stamps`` (v24.8) —
+    zweite, schärfere Notbremse: schneidet die BBox Raumstempel des
+    PDF-Textlayers ab? Inklusive der beiden Fälle, die NICHT auslösen
+    dürfen (Raumtabelle am Blattrand, Garten/Terrasse).
   * ``_bbox_to_pdf_rect`` — Skalierungs-Mathe Low-Res-Pixel →
     PDF-Punkt + 5 %-Padding + Clamping auf Bildgrenzen.
   * ``_should_tile`` — physische PDF-Punkt-Schwelle für die
@@ -131,6 +135,161 @@ def test_bbox_fail_safe_usable():
         )
         is None
     )
+
+
+# ---------------------------------------------------------------------------
+# _named_room_stamps / _bbox_cuts_room_stamps_reason — Textlayer-gestützte
+# zweite Notbremse (v24.8). Die reine Flächen-Schwelle oben reicht nicht:
+# eine BBox mit 16 % Bildfläche kommt durch und kann trotzdem ein Drittel
+# des Gebäudes abschneiden.
+# ---------------------------------------------------------------------------
+
+
+def _stamp(x, y, name="BAD", area=4.76, nonroom=False):
+    """Ein Stempel wie ``harvest_stamps`` ihn liefert (PDF-Punkte)."""
+    return {"name": name, "area": area, "x": x, "y": y, "nonroom": nonroom}
+
+
+# Gemeinsame Geometrie für die Gate-Tests: 1:1 px→pt, BBox 100..500 in
+# beiden Achsen. Mit 0-Padding ist die Clip-Region exakt (100,100)-(500,500).
+_GATE_BBOX = {"x": 100, "y": 100, "width": 400, "height": 400}
+_GATE_GEOM = dict(
+    source_width_px=1000, source_height_px=1000,
+    pdf_width_pts=1000.0, pdf_height_pts=1000.0,
+    padding_frac=0.0,
+)
+
+
+def test_stamp_gate_ignores_anonymous_table_rows():
+    """Namenlose m²-Zeilen (= Raumtabelle am Blattrand) dürfen das Gate
+    NICHT auslösen.
+
+    Das ist die wichtigste Regression: auf einem echten Exposé-Plan lagen
+    12 von 17 Stempeln außerhalb der BBox — allesamt Tabellenzeilen. Würde
+    man sie mitzählen, fiele JEDER Plan mit Raumtabelle auf den
+    Single-Pass zurück und der Two-Pass-Pfad wäre praktisch tot.
+    """
+    from app.plan_analysis.pipeline import _bbox_cuts_room_stamps_reason
+    from app.plan_analysis.textlayer_backfill import ANON_STAMP_NAME
+
+    stamps = [
+        _stamp(200, 200, "BAD"), _stamp(300, 300, "WC"), _stamp(400, 400, "GANG"),
+        # Tabelle am linken Blattrand — weit außerhalb der Clip-Region.
+        *[_stamp(20, 100 + i * 14, ANON_STAMP_NAME) for i in range(12)],
+    ]
+    assert _bbox_cuts_room_stamps_reason(
+        _GATE_BBOX, stamps, **_GATE_GEOM,
+    ) is None
+
+
+def test_stamp_gate_ignores_nonroom_stamps_outside():
+    """Garten / Terrasse / Spielplatz liegen legitim außerhalb der
+    Außenwände — kein Grund, den Crop zu verwerfen."""
+    from app.plan_analysis.pipeline import _bbox_cuts_room_stamps_reason
+
+    stamps = [
+        _stamp(200, 200, "BAD"), _stamp(300, 300, "WC"), _stamp(400, 400, "GANG"),
+        _stamp(900, 900, "Garten TOP 1", 160.87, nonroom=True),
+        _stamp(800, 900, "Terrasse TOP 2", 18.27, nonroom=True),
+    ]
+    assert _bbox_cuts_room_stamps_reason(
+        _GATE_BBOX, stamps, **_GATE_GEOM,
+    ) is None
+
+
+def test_stamp_gate_fires_when_box_cuts_named_rooms():
+    """Der reale TOP-1-Fall: 5 benannte Raumstempel rechts außerhalb →
+    verwerfen."""
+    from app.plan_analysis.pipeline import _bbox_cuts_room_stamps_reason
+
+    stamps = [
+        _stamp(200, 200, "ZIMMER 1"), _stamp(300, 300, "ZIMMER 2"),
+        _stamp(400, 400, "WOHNEN"),
+        _stamp(700, 200, "EINGANG"), _stamp(720, 250, "SPEIS"),
+        _stamp(740, 340, "BAD"), _stamp(760, 350, "WC"), _stamp(780, 360, "AR"),
+    ]
+    assert _bbox_cuts_room_stamps_reason(
+        _GATE_BBOX, stamps, **_GATE_GEOM,
+    ) == "bbox_cuts_room_stamps"
+
+
+def test_stamp_gate_tolerates_single_outlier():
+    """Ein einzelner Ausreißer unter der 15 %-Toleranz kippt die
+    Entscheidung nicht — sonst würde ein einziger fehlgeernteter Name
+    den Two-Pass-Pfad abschalten."""
+    from app.plan_analysis.pipeline import _bbox_cuts_room_stamps_reason
+
+    inside = [_stamp(150 + i * 20, 200, f"RAUM {i}") for i in range(9)]
+    stamps = [*inside, _stamp(900, 900, "AUSREISSER")]
+    # 1 von 10 = 10 % ≤ 15 % → schweigen.
+    assert _bbox_cuts_room_stamps_reason(
+        _GATE_BBOX, stamps, **_GATE_GEOM,
+    ) is None
+
+
+def test_stamp_gate_silent_without_text_layer():
+    """Gescanntes PDF (keine Stempel) oder zu wenige benannte Stempel →
+    keine Aussage möglich, Two-Pass läuft normal weiter."""
+    from app.plan_analysis.pipeline import _bbox_cuts_room_stamps_reason
+
+    assert _bbox_cuts_room_stamps_reason(_GATE_BBOX, [], **_GATE_GEOM) is None
+    assert _bbox_cuts_room_stamps_reason(_GATE_BBOX, None, **_GATE_GEOM) is None
+    # 2 benannte Stempel < _STAMP_GATE_MIN_NAMED (3), beide außerhalb.
+    two_outside = [_stamp(900, 900, "BAD"), _stamp(950, 950, "WC")]
+    assert _bbox_cuts_room_stamps_reason(
+        _GATE_BBOX, two_outside, **_GATE_GEOM,
+    ) is None
+
+
+def test_stamp_gate_none_bbox_is_not_its_job():
+    """bbox=None hat ``_bbox_fail_safe_reason`` bereits abgefangen —
+    dieses Gate meldet dafür nichts eigenes."""
+    from app.plan_analysis.pipeline import _bbox_cuts_room_stamps_reason
+
+    stamps = [_stamp(900, 900, f"RAUM {i}") for i in range(5)]
+    assert _bbox_cuts_room_stamps_reason(None, stamps, **_GATE_GEOM) is None
+
+
+def test_stamp_gate_counts_against_padded_region():
+    """Gemessen wird gegen die GEPADDETE Clip-Region — nicht gegen die
+    rohe BBox. Ein Stempel knapp außerhalb der Box, aber innerhalb des
+    Padding-Rands, gilt als drinnen."""
+    from app.plan_analysis.pipeline import _bbox_cuts_room_stamps_reason
+
+    # BBox 100..500, 10 % Padding → Clip-Region 60..540.
+    just_outside = [_stamp(520, 520, f"RAUM {i}") for i in range(5)]
+    geom = dict(_GATE_GEOM, padding_frac=0.10)
+    assert _bbox_cuts_room_stamps_reason(
+        _GATE_BBOX, just_outside, **geom,
+    ) is None
+    # Ohne Padding lägen dieselben Stempel draußen.
+    assert _bbox_cuts_room_stamps_reason(
+        _GATE_BBOX, just_outside, **_GATE_GEOM,
+    ) == "bbox_cuts_room_stamps"
+
+
+def test_named_room_stamps_filter():
+    """``_named_room_stamps`` siebt nonroom + namenlos aus."""
+    from app.plan_analysis.pipeline import _named_room_stamps
+    from app.plan_analysis.textlayer_backfill import ANON_STAMP_NAME
+
+    stamps = [
+        _stamp(1, 1, "BAD"),
+        _stamp(2, 2, ANON_STAMP_NAME),
+        _stamp(3, 3, "Garten TOP 1", nonroom=True),
+        _stamp(4, 4, "WC"),
+    ]
+    assert [s["name"] for s in _named_room_stamps(stamps)] == ["BAD", "WC"]
+    assert _named_room_stamps(None) == []
+
+
+def test_bbox_padding_constant_is_ten_percent():
+    """Padding wurde in v24.8 von 5 % auf 10 % angehoben. Der Wert wirkt
+    an zwei Stellen (Crop-Render UND Stempel-Gate) — ein stiller Rückfall
+    auf 5 % würde beide gleichzeitig verschärfen."""
+    from app.plan_analysis.pipeline import _BBOX_PADDING_FRAC
+
+    assert _BBOX_PADDING_FRAC == pytest.approx(0.10)
 
 
 # ---------------------------------------------------------------------------

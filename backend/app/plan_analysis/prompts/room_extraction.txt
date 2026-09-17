@@ -52,7 +52,12 @@ sie dürfen dich nicht davon abhalten, Wände und Räume zu erkennen:
   - SCHRAFFUREN & FÜLLMUSTER: Wandschraffuren, Bodenmuster,
     Geländedarstellung.
   - PLAN-DEKO: Nordpfeil, Maßstabsbalken, Plankopf/Schriftfeld,
-    Legenden, Revisionswolken, Logos.
+    Symbol- und Bauteil-Legenden (Schraffur-Erklärungen, Fenster-/
+    Türlisten mit Typenschlüssel), Revisionswolken, Logos.
+
+    ACHTUNG — eine RAUM- bzw. FLÄCHENTABELLE ist KEINE Deko und
+    KEINE zu ignorierende Legende. Sie ist eine wertvolle Quelle
+    für ``area_m2``. Siehe eigene Sektion weiter unten.
 
 Keines dieser Elemente reduziert die Zahl der Räume. Wenn ein Plan
 "voll" wirkt, liegt es fast immer an Möblierung und Bemaßung — die
@@ -73,22 +78,95 @@ In jedem Raum steht meist ein 3- bis 4-zeiliger Beschriftungsblock:
   Zeile 3: Fläche  m²         z.B. "32,84 m²"   (mit ²)
   Zeile 4: WANDUMFANG  m      z.B. "24,32 m"    (ohne ²)
 
+SCHREIBWEISEN DER FLÄCHE — alle folgenden meinen dasselbe und sind
+gleichwertig zu übernehmen:
+
+  "32,84 m²"      bare Zahl mit Hochzeichen
+  "32,84 m2"      Hochzeichen als normale 2 — bei CAD-Export der
+                  HÄUFIGSTE Fall, nicht als Tippfehler abtun
+  "F: 12,09 m²"   Präfix "F:" für Fläche
+  "F= 12,09 m2"   dito mit Gleichheitszeichen
+  "F 12,09 m²"    dito ohne Trennzeichen
+  "Fl.: 12,09 m²" / "A: 12,09 m²"   seltenere Präfixe, gleiche Bedeutung
+
+Das Präfix gehört NICHT in den Raumnamen und nicht in den Wert —
+aus "F: 12,09 m²" wird ``area_m2 = 12.09``.
+
 Achte auf das Hochzeichen:
-  "32,84 m²"  (mit ²)  → Fläche       → area_m2
-  "24,32 m"   (ohne ²) → Wandumfang   → perimeter_m
+  "32,84 m²" oder "32,84 m2"  (m + 2 / ²) → Fläche     → area_m2
+  "24,32 m"  (blankes m, keine 2)         → Wandumfang → perimeter_m
+
+Entscheidend ist die 2 hinter dem m — egal ob hochgestellt oder
+normal. Steht gar keine 2, ist es ein Längenmaß, keine Fläche.
+Hilft die Schreibweise nicht weiter, gilt die Zeilenreihenfolge im
+Block: Fläche steht über dem Wandumfang.
 
 Diese Inline-Zahl ist die zuverlässigste Quelle für den Wandumfang.
 Übernimm sie 1:1, ohne eigene Berechnung. Sie kommt direkt aus dem
 CAD-Programm des Architekten und ist auf 2 Nachkommastellen genau.
 
 ================================================================
+RAUMTABELLE / FLÄCHENLISTE AUSWERTEN
+================================================================
+
+Viele Pläne — besonders Verkaufs- und Exposé-Grundrisse — tragen
+neben der Zeichnung eine Raumtabelle: eine Liste aus Raumname und
+Fläche, meist am linken oder rechten Blattrand, manchmal im
+Plankopf. Beispiel:
+
+  Eingang               6,01 m²
+  Gang                  9,92 m²
+  Abstellraum           3,30 m²
+  WC                    3,12 m²
+  Bad                   4,76 m²
+  Zimmer 1             15,76 m²
+
+WERTE DIESE TABELLE AUS. Sie ist oft besser lesbar als der winzige
+Stempel in der Zeichnung und stammt aus derselben CAD-Quelle.
+
+So gehst du vor:
+  1. Räume findest du weiterhin ÜBER DIE GEOMETRIE in der Zeichnung
+     (Wände zuerst — siehe erste Sektion). Die Tabelle erzeugt KEINE
+     Räume; sie liefert nur Werte für Räume, die du in der Zeichnung
+     gefunden hast.
+  2. Fehlt einem gefundenen Raum die Fläche, weil sein Stempel
+     unlesbar, verdeckt oder abgeschnitten ist: suche seinen Namen
+     in der Tabelle und übernimm den dortigen m²-Wert 1:1.
+  3. Steht in Stempel UND Tabelle ein Wert und sie widersprechen
+     sich, nimm den Stempel aus der Zeichnung (er gehört eindeutig
+     zu diesem Raum) und setze confidence niedriger.
+
+ORDNE NUR ÜBER DEN NAMEN ZU — nie über die Reihenfolge, nie über
+die Position in der Liste. Findest du den Raumnamen nicht in der
+Tabelle, bleibt ``area_m2 = null``. Eine Zeile "der Reihe nach"
+zuzuordnen produziert vertauschte Flächen, und die fallen später
+niemandem mehr auf.
+
+NIEMALS als Raumfläche übernehmen — das sind SUMMEN, keine Räume:
+  - "TOP 1   80,74 m²" / "Wohnung 3   72,10 m²"
+    → Gesamt-Wohnnutzfläche einer Einheit
+  - "Wohnnutzfläche gesamt" / "Summe" / "NFL" / "BGF" / "Nutzfläche"
+  - eine Zahl, die ungefähr der Summe der übrigen Zeilen entspricht
+  - Grundstücks-, Bebauungs- oder Freiflächen-Bilanzen
+
+Eine solche Summe einem einzelnen Raum zuzuschreiben ist einer der
+teuersten Fehler überhaupt: aus einem 4 m² großen Stiegenhaus wird
+dann eine 101 m² große Wandfläche im Leistungsverzeichnis.
+
+Zeilen wie "Terrasse 26,41 m²" oder "Garten 61,77 m²" sind
+zulässig — gib sie als eigenen Raum mit passendem ``room_type``
+("terrasse", "balkon") aus, wenn du sie in der Zeichnung auch
+tatsächlich als abgegrenzte Fläche siehst.
+
+================================================================
 SUCHHIERARCHIE FÜR perimeter_m (in dieser Reihenfolge)
 ================================================================
 
-Wichtig vorweg: Die FLÄCHE wird IMMER abgelesen, nie berechnet
-(siehe Feld ``area_m2`` unten). Nur der UMFANG darf — falls
-kein expliziter Aufdruck vorhanden ist — aus den am Plan
-stehenden Wandlängen ADDIERT werden.
+Wichtig vorweg: Die FLÄCHE wird IMMER abgelesen — aus dem
+Raumstempel oder aus der Raumtabelle —, nie berechnet (siehe Feld
+``area_m2`` unten). Nur der UMFANG darf — falls kein expliziter
+Aufdruck vorhanden ist — aus den am Plan stehenden Wandlängen
+ADDIERT werden.
 
 Priorität 1 — AUFGEDRUCKTER UMFANG
   Steht im Raumstempel ein expliziter Umfang-Wert ("U: 24,32 m",
@@ -194,8 +272,8 @@ der Wert würde sonst direkt in die Mengenermittlung und das LV
 fließen.
 
 Die FLÄCHE darfst du NIE über den Plausibilitätscheck korrigieren.
-Sie wird IMMER abgelesen — wenn keine Fläche aufgedruckt ist, setze
-area_m2 = null statt zu schätzen.
+Sie wird IMMER abgelesen — aus dem Raumstempel oder der Raumtabelle.
+Steht in beiden nichts, setze area_m2 = null statt zu schätzen.
 
 ================================================================
 FELDER PRO RAUM
@@ -210,7 +288,12 @@ FELDER PRO RAUM
 - room_type: Einer von: wohnzimmer, schlafzimmer, bad, wc, kueche,
   vorraum, gang, abstellraum, balkon, terrasse, keller, buero,
   stiegenhaus, sonstiges.
-- area_m2: Fläche in m² (Zahl mit "m²"-Einheit im Plan).
+- area_m2: Fläche in m². Quellen in dieser Reihenfolge:
+    1. Raumstempel in der Zeichnung ("32,84 m2", "F: 12,09 m²", …
+       siehe SCHREIBWEISEN oben)
+    2. Raumtabelle / Flächenliste am Blattrand, über den Raumnamen
+       zugeordnet (siehe eigene Sektion)
+    3. sonst null — nicht schätzen, nicht aus Maßen rechnen.
 - perimeter_m: Wandumfang in Laufmetern. Siehe Suchhierarchie und
   Negativbeispiele oben.
 - perimeter_source: WO hast du den Umfang gefunden?

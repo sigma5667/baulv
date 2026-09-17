@@ -15,7 +15,9 @@ Flow (v24.4.6, Two-Pass-Raumerkennung):
         │      │
         │      ├──► _render_page_long_edge_jpeg → 1536-px-Probe
         │      ├──► _find_building_bbox        ← Haiku-Call (Schritt 1)
+        │      ├──► _page_dims_and_room_stamps ← Textlayer-Ernte (v24.8)
         │      ├──► _bbox_fail_safe_reason     ← Fallback-Entscheidung
+        │      ├──► _bbox_cuts_room_stamps_reason ← dito, Textlayer (v24.8)
         │      │      └─► bei Fail-Safe: _extract_rooms_from_image
         │      │              auf fallback_bytes (= alter Single-Pass)
         │      ├──► _render_page_clip_jpeg     ← High-DPI-Crop (Schritt 2)
@@ -688,9 +690,36 @@ _BBOX_TOO_SMALL_FRAC = 0.15
 _TILE_THRESHOLD_LONG_EDGE_PT = 2300.0
 _TILE_OVERLAP_FRAC = 0.05
 
-# 5 % Rand um die BBox in Low-Res-Pixeln (vor der PDF-Punkt-Umrechnung),
-# damit die Außenwände nicht hart abgeschnitten sind.
-_BBOX_PADDING_FRAC = 0.05
+# Rand um die BBox in Low-Res-Pixeln (vor der PDF-Punkt-Umrechnung),
+# damit die Außenwände nicht hart abgeschnitten sind. v24.8: von 5 %
+# auf 10 % erhöht — bei knapp sitzenden Haiku-Boxen lag die Außenwand
+# (und damit der äußerste Raumstempel) genau auf der Kante. Das kostet
+# etwas Auflösung (größerer Crop → gleiches 1536-px-Ziel), deshalb
+# bewusst moderat und nicht mehr.
+_BBOX_PADDING_FRAC = 0.10
+
+# --- Textlayer-Plausibilitätsprüfung der BBox (v24.8) -------------------
+# Die reine Flächen-Schwelle oben ist ein schwacher Indikator: eine BBox
+# kann 16 % der Bildfläche einnehmen (also durchgehen) und trotzdem ein
+# Drittel des Gebäudes abschneiden. Hat das PDF einen Textlayer, wissen
+# wir aber EXAKT, wo die Raumstempel sitzen — und können prüfen, ob die
+# BBox welche ausschneidet.
+#
+# Gezählt werden nur BENANNTE Raumstempel (Name aus der Zeile über der
+# m²-Zahl rekonstruierbar, siehe ``harvest_stamps``). Namenlose Treffer
+# sind fast immer Zeilen einer Raum-/Flächentabelle am Blattrand — die
+# liegen naturgemäß außerhalb des Gebäudes und würden das Gate sonst auf
+# JEDEM Plan mit Tabelle auslösen (gemessen: 12 von 17 Ausreißern auf
+# einem Exposé-Plan waren Tabellenzeilen).
+#
+# Schwellen an drei echten Plänen kalibriert:
+#   50.02 ERDGESCHOSS  → 11/11 Stempel innerhalb  → Gate schweigt
+#   GWM EP-04 EG       → 26/26 Stempel innerhalb  → Gate schweigt
+#   TOP 1 (Exposé)     →  5 benannte außerhalb    → Gate feuert
+# ``MIN_NAMED`` verhindert, dass ein einzelner falsch geernteter Stempel
+# auf einem sonst textarmen Plan den Two-Pass-Pfad abschaltet.
+_STAMP_GATE_MIN_NAMED = 3
+_STAMP_GATE_MAX_OUTSIDE_FRAC = 0.15
 
 # Schritt-1-Modell — Haiku reicht für reine BBox-Lokalisation (keine
 # Lesen-Aufgabe). Das gute Modell bleibt für Schritt 3 (Räume).
@@ -1295,6 +1324,125 @@ def _bbox_fail_safe_reason(
     return None
 
 
+def _page_dims_and_room_stamps(doc, page_number: int) -> tuple[float, float, list[dict]]:
+    """Seitenmaße (PDF-Punkte) + geerntete m²-Stempel — für den fitz-Executor.
+
+    Beides in EINEM Executor-Hop, weil beides denselben ``page``-Zugriff
+    braucht und die BBox-Plausibilitätsprüfung sowieso beide Werte
+    zusammen benötigt (Stempel-Koordinaten sind PDF-Punkte, die Clip-
+    Umrechnung braucht die Seitenmaße).
+
+    Die Stempel-Ernte ist bewusst fehlertolerant: ein PDF ohne Textlayer,
+    mit kaputtem Textlayer oder mit einer PyMuPDF-Eigenheit darf die
+    Analyse NICHT scheitern lassen. Leere Liste heißt schlicht "keine
+    Aussage möglich" — die Prüfung schweigt dann.
+    """
+    from app.plan_analysis.textlayer_backfill import harvest_stamps
+
+    page = doc[page_number - 1]
+    width, height = float(page.rect.width), float(page.rect.height)
+    try:
+        stamps = harvest_stamps(page.get_text("dict"))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "two_pass.stamp_harvest_failed page=%d err=%s: %s — "
+            "BBox-Plausibilitätsprüfung wird übersprungen",
+            page_number, type(exc).__name__, str(exc)[:200],
+        )
+        stamps = []
+    return width, height, stamps
+
+
+def _named_room_stamps(stamps: list[dict] | None) -> list[dict]:
+    """Aus der Stempel-Ernte die für das BBox-Gate zählbaren heraussieben.
+
+    Zwei Filter:
+      * ``nonroom`` — Garten / Terrasse / Spielplatz / Nebenanlage. Die
+        liegen legitim außerhalb der Außenwände; sie als "abgeschnitten"
+        zu werten würde das Gate auf jedem Plan mit Außenanlagen auslösen.
+      * ``ANON_STAMP_NAME`` — m²-Zeilen ohne Namenszeile darüber. Das sind
+        praktisch immer Zeilen einer Raum-/Flächentabelle am Blattrand.
+
+    Übrig bleibt, was ein Raumstempel IN der Zeichnung ist — und genau
+    dessen Position ist die verlässliche Aussage darüber, wie weit das
+    Gebäude auf dem Blatt reicht.
+    """
+    from app.plan_analysis.textlayer_backfill import ANON_STAMP_NAME
+
+    return [
+        s for s in (stamps or [])
+        if not s.get("nonroom") and s.get("name") != ANON_STAMP_NAME
+    ]
+
+
+def _bbox_cuts_room_stamps_reason(
+    bbox_px: dict | None,
+    stamps: list[dict] | None,
+    *,
+    source_width_px: int,
+    source_height_px: int,
+    pdf_width_pts: float,
+    pdf_height_pts: float,
+    padding_frac: float = _BBOX_PADDING_FRAC,
+    min_named: int = _STAMP_GATE_MIN_NAMED,
+    max_outside_frac: float = _STAMP_GATE_MAX_OUTSIDE_FRAC,
+) -> str | None:
+    """Pure: schneidet die BBox Raumstempel des Textlayers ab?
+
+    Liefert ``"bbox_cuts_room_stamps"`` wenn ja, sonst ``None``.
+
+    Warum das die schärfere Notbremse ist als ``_bbox_fail_safe_reason``:
+    dort wird nur die BBox-FLÄCHE beurteilt (< 15 % → verwerfen). Eine
+    Box kann aber 16 % einnehmen, das Gate passieren und trotzdem ein
+    Drittel des Gebäudes wegschneiden — genau das ist an einem echten
+    Exposé-Plan passiert (5 Räume verloren, 2 weitere ohne Fläche, weil
+    ihr Stempel auf der Schnittkante lag). Der Textlayer weiß dagegen
+    punktgenau, wo Raumstempel stehen.
+
+    Bewusst KONSERVATIV — das Gate schweigt lieber, als den Two-Pass-Pfad
+    fälschlich abzuschalten (der existiert ja, weil er auf großen Blättern
+    die Lesbarkeit rettet):
+
+      * Kein Textlayer / weniger als ``min_named`` benannte Stempel →
+        ``None``. Gescannte Pläne und Zeichnungen ohne Stempel-Text
+        liefern keine belastbare Aussage; dort bleibt alles wie bisher.
+      * Erst wenn mehr als ``max_outside_frac`` der benannten Stempel
+        außerhalb der (gepaddeten!) Clip-Region liegen, wird verworfen.
+        Ein einzelner Ausreißer — etwa ein Stempel, dessen Namenszeile
+        die Ernte danebengegriffen hat — kippt die Entscheidung nicht.
+
+    Gerechnet wird gegen exakt dieselbe Clip-Region, die auch gerendert
+    würde (inklusive Padding) — nicht gegen die rohe BBox. Sonst würde
+    das Gate Stempel als "draußen" melden, die das Padding längst wieder
+    hereinholt.
+    """
+    if bbox_px is None:
+        return None
+    named = _named_room_stamps(stamps)
+    if len(named) < min_named:
+        return None
+    try:
+        x0, y0, x1, y1 = _compute_clip_rect_tuple(
+            bbox_px,
+            source_width_px=source_width_px,
+            source_height_px=source_height_px,
+            pdf_width_pts=pdf_width_pts,
+            pdf_height_pts=pdf_height_pts,
+            padding_frac=padding_frac,
+        )
+    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+        # Kaputte BBox ist nicht die Zuständigkeit dieser Funktion —
+        # ``_bbox_fail_safe_reason`` hat sie vorher schon abgefangen.
+        return None
+    outside = sum(
+        1 for s in named
+        if not (x0 <= float(s["x"]) <= x1 and y0 <= float(s["y"]) <= y1)
+    )
+    if outside / len(named) > max_outside_frac:
+        return "bbox_cuts_room_stamps"
+    return None
+
+
 def _compute_clip_rect_tuple(
     bbox_px: dict, *,
     source_width_px: int, source_height_px: int,
@@ -1743,22 +1891,44 @@ async def _extract_rooms_two_pass(
         page_number=page_number,
     )
 
+    # ---- Seitenmaße + Textlayer-Stempel (ein Executor-Hop) -----------
+    # Muss VOR den Fail-Safe-Check, weil die Plausibilitätsprüfung die
+    # Stempel-Koordinaten in PDF-Punkten mit der Clip-Region vergleicht.
+    pdf_w_pts, pdf_h_pts, room_stamps = await loop.run_in_executor(
+        fitz_executor, _page_dims_and_room_stamps, doc, page_number,
+    )
+    named_stamps = _named_room_stamps(room_stamps)
+
     # ---- Fail-Safe-Check ---------------------------------------------
+    # Zwei Stufen: erst die geometrische Grobprüfung (Form/Größe der
+    # BBox), dann — nur wenn die durchgeht — die Textlayer-Prüfung, ob
+    # die Box Raumstempel abschneidet. Reihenfolge ist wichtig: eine
+    # kaputte BBox soll die Meldung ``bbox_invalid_shape`` behalten und
+    # nicht als ``bbox_cuts_room_stamps`` verschleiert werden.
     reason = _bbox_fail_safe_reason(
         bbox, image_width=low_res_w, image_height=low_res_h,
     )
+    if reason is None:
+        reason = _bbox_cuts_room_stamps_reason(
+            bbox, room_stamps,
+            source_width_px=low_res_w, source_height_px=low_res_h,
+            pdf_width_pts=pdf_w_pts, pdf_height_pts=pdf_h_pts,
+        )
     _save_debug_json(
         {
             "bbox": bbox,
             "low_res_dims": [low_res_w, low_res_h],
             "fail_safe_reason": reason,
+            "text_stamps": len(room_stamps),
+            "named_room_stamps": len(named_stamps),
         },
         plan_id=plan_id, page_number=page_number, stage="bbox",
     )
     if reason is not None:
         logger.warning(
-            "two_pass.fallback page=%d reason=%s bbox=%r — using fallback image",
-            page_number, reason, bbox,
+            "two_pass.fallback page=%d reason=%s bbox=%r named_stamps=%d "
+            "— using fallback image",
+            page_number, reason, bbox, len(named_stamps),
         )
         return await _extract_rooms_from_image(
             fallback_image_bytes,
@@ -1767,12 +1937,7 @@ async def _extract_rooms_two_pass(
         )
 
     # ---- Schritt 2: High-Res-Clip rendern ----------------------------
-    # Hole Page-Dimensionen im fitz-Executor (Doc-Access).
-    def _page_dims() -> tuple[float, float]:
-        page = doc[page_number - 1]
-        return float(page.rect.width), float(page.rect.height)
-
-    pdf_w_pts, pdf_h_pts = await loop.run_in_executor(fitz_executor, _page_dims)
+    # ``pdf_w_pts`` / ``pdf_h_pts`` stammen aus dem Executor-Hop oben.
     clip_rect = _bbox_to_pdf_rect(
         bbox,
         source_width_px=low_res_w, source_height_px=low_res_h,

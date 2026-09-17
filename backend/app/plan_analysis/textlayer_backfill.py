@@ -1,9 +1,15 @@
 """v24.5 — Stufe 4a: TROCKENLAUF (measure-only) für den PDF-Textlayer-Backfill.
 
 Reines Mess-/Diagnose-Modul. Es schreibt NICHTS, ändert das Vision-Ergebnis
-NICHT und berührt weder DB noch Frontend. Es wird ausschliesslich aufgerufen,
-wenn ``settings.textlayer_backfill_mode != "off"`` (Default: ``off`` → dieses
-Modul wird dann nicht einmal importiert).
+NICHT und berührt weder DB noch Frontend. Die MESS-Funktionen (``classify`` /
+``measure_page`` / ``format_log``) laufen ausschliesslich, wenn
+``settings.textlayer_backfill_mode != "off"`` (Default: ``off``).
+
+AUSNAHME seit v24.8: ``harvest_stamps`` + ``ANON_STAMP_NAME`` werden
+zusätzlich UNABHÄNGIG vom Flag von ``pipeline.py`` importiert — die
+BBox-Plausibilitätsprüfung (schneidet der Haiku-Crop Raumstempel ab?)
+braucht dieselbe Stempel-Ernte. Beides ist rein und ohne fitz-/DB-Zugriff;
+am Trockenlauf-Charakter der übrigen Funktionen ändert das nichts.
 
 Zweck: an echten Analysen die ENTSCHEIDENDE Zahl loggen — von den Räumen, die
 die Vision-KI ohne Fläche zurückgibt (``area_m2 = null`` → später „unvollständig"),
@@ -40,6 +46,13 @@ _TECH_TOKEN_RE = re.compile(
 _KOTE_RE = re.compile(r"[+\-]\d+[.,]\d+")
 _NONROOM_KW = ("balkon", "terrasse", "garten", "loggia", "spielplatz", "nebenanlage",
                "stiegenhaus", "stgh", "stg ", "podest", "lift", "vorplatz")
+
+# Platzhalter-Name für einen m²-Stempel, über dem keine Namenszeile steht.
+# In der Zeichnung praktisch immer eine Zeile einer Raum-/Flächentabelle
+# (dort steht der Name LINKS neben der Zahl, nicht darüber). Öffentlich,
+# weil die BBox-Plausibilitätsprüfung in ``pipeline.py`` genau diese
+# Stempel ausklammern muss — sie liegen legitim außerhalb des Gebäudes.
+ANON_STAMP_NAME = "(ohne Namen)"
 
 
 def _to_float(s: str) -> float:
@@ -155,7 +168,7 @@ def harvest_stamps(page_text_dict: dict) -> list[dict]:
         parts = [o["t"] for _, o in above
                  if re.search(r"[A-Za-zÄÖÜäöüß]", o["t"])
                  and not _AREA_RE.match(o["t"]) and not _is_belag_line(o["t"])]
-        raw = " ".join(reversed(parts)) if parts else "(ohne Namen)"
+        raw = " ".join(reversed(parts)) if parts else ANON_STAMP_NAME
         out.append({"name": raw, "area": _to_float(m.group(1)),
                     "x": (ab[0]+ab[2])/2, "y": (ab[1]+ab[3])/2, "nonroom": _is_non_room(raw)})
     return out
