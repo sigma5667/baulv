@@ -434,8 +434,11 @@ async def analyze_plan(plan_id: UUID, db: AsyncSession) -> dict:
         # list of "what went wrong on which page", regardless of
         # whether the failure was at render-time or Vision-time.
         page_errors: list[str] = list(render_errors)
+        # v24.9 — Pin-Bezugsrahmen pro Seite (nur für textlayer_areas).
+        page_frames: dict[int, dict] = {}
         for page_number, fallback_bytes, fallback_mime in rendered_pages:
             try:
+                frame: dict = {}
                 result = await _extract_rooms_two_pass(
                     doc=doc,
                     page_number=page_number,
@@ -443,7 +446,9 @@ async def analyze_plan(plan_id: UUID, db: AsyncSession) -> dict:
                     fallback_image_bytes=fallback_bytes,
                     fallback_mime_type=fallback_mime,
                     plan_id=plan_id,
+                    frame_out=frame,
                 )
+                page_frames[page_number] = frame
                 if result is not None:
                     all_results.append((page_number, result))
                 else:
@@ -489,6 +494,26 @@ async def analyze_plan(plan_id: UUID, db: AsyncSession) -> dict:
                     str(e)[:1000],
                 )
                 page_errors.append(_format_page_error(page_number, e))
+
+        # v24.9 — Schritt C: Flächen aus dem PDF-Textlayer. MUSS vor dem
+        # Persistieren laufen — ``_resolve_perimeter`` schätzt fehlende
+        # Umfänge aus der Fläche. "off" (Default) überspringt den Block
+        # komplett, das Modul wird dann nicht importiert. Jeder Fehler wird
+        # geschluckt: C darf die Analyse nie kippen, schlimmstenfalls
+        # bleiben die Vision-Werte.
+        if settings.textlayer_areas_mode in ("shadow", "apply") and doc is not None:
+            from app.plan_analysis import textlayer_areas as _ta
+            for _pn, _res in all_results:
+                try:
+                    _report = await loop.run_in_executor(
+                        fitz_executor, _ta.process_page, doc, _pn, _res,
+                        page_frames.get(_pn) or None, settings.textlayer_areas_mode,
+                    )
+                    logger.info(_ta.format_log(_report, plan_id, settings.textlayer_areas_mode))
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "textlayer_areas.failed page=%d", _pn, exc_info=True
+                    )
 
         # Step 3: Persist
         total_rooms = 0
@@ -1824,6 +1849,7 @@ async def _extract_rooms_two_pass(
     fallback_image_bytes: bytes,
     fallback_mime_type: str,
     plan_id: UUID,
+    frame_out: dict | None = None,
 ) -> dict | None:
     """v24.4.6 — der neue Hauptpfad pro Seite.
 
@@ -1841,8 +1867,16 @@ async def _extract_rooms_two_pass(
     Liefert das geparste Vision-Resultat oder ``None`` bei
     unbehebbarem Fehler. Logging deckt jeden Branch ab; debug
     snapshots werden bei aktivem Flag immer mitgeschrieben.
+
+    ``frame_out`` (v24.9, optional): wird mit dem Bezugsrahmen der Pins
+    gefüllt — welcher PDF-Ausschnitt (Punkte) auf welche Bildmaße
+    abgebildet wurde, die Vision tatsächlich gesehen hat. Bleibt leer,
+    wenn es keinen eindeutigen Rahmen gibt (2×2-Kacheln: Pins sind
+    kachel-lokal). Nur ``textlayer_areas`` liest ihn.
     """
     loop = asyncio.get_event_loop()
+    if frame_out is not None:
+        frame_out.clear()
 
     # ---- Schritt 1: Low-Res-Render -----------------------------------
     try:
@@ -1930,6 +1964,9 @@ async def _extract_rooms_two_pass(
             "— using fallback image",
             page_number, reason, bbox, len(named_stamps),
         )
+        _fill_frame(frame_out, _full_page_image_frame(
+            fallback_image_bytes, pdf_w_pts, pdf_h_pts,
+        ))
         return await _extract_rooms_from_image(
             fallback_image_bytes,
             page_number=page_number,
@@ -1955,6 +1992,9 @@ async def _extract_rooms_two_pass(
             "two_pass.clip_render_failed page=%d err=%s: %s — falling back",
             page_number, type(exc).__name__, str(exc)[:300],
         )
+        _fill_frame(frame_out, _full_page_image_frame(
+            fallback_image_bytes, pdf_w_pts, pdf_h_pts,
+        ))
         return await _extract_rooms_from_image(
             fallback_image_bytes,
             page_number=page_number,
@@ -2028,9 +2068,42 @@ async def _extract_rooms_two_pass(
             "two_pass.crop_resized page=%d from=%dx%d to=%dx%d bytes=%d",
             page_number, crop_w, crop_h, resized_w, resized_h, len(resized_bytes),
         )
+    _fill_frame(frame_out, {
+        "x0": clip_rect.x0, "y0": clip_rect.y0,
+        "x1": clip_rect.x1, "y1": clip_rect.y1,
+        "image_w": resized_w, "image_h": resized_h,
+    })
     return await _extract_rooms_from_image(
         resized_bytes, page_number=page_number, mime_type="image/jpeg",
     )
+
+
+def _fill_frame(frame_out: dict | None, frame: dict | None) -> None:
+    if frame_out is not None and frame:
+        frame_out.update(frame)
+
+
+def _full_page_image_frame(
+    image_bytes: bytes, pdf_w_pts: float, pdf_h_pts: float,
+) -> dict | None:
+    """Pin-Bezugsrahmen des Single-Pass-Fallbacks: die ganze Seite, mit den
+    Bildmaßen, die ``_cap_image_for_vision`` tatsächlich an Vision schickt.
+    Liest nur den Bild-Header (Pillow öffnet lazy)."""
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            width, height = img.size
+    except Exception:  # noqa: BLE001
+        return None
+    long_edge = max(width, height)
+    if long_edge > _VISION_GUARD_TRIGGER_PX:
+        scale = _VISION_LONG_EDGE_PX / long_edge
+        width, height = max(1, round(width * scale)), max(1, round(height * scale))
+    return {
+        "x0": 0.0, "y0": 0.0, "x1": pdf_w_pts, "y1": pdf_h_pts,
+        "image_w": width, "image_h": height,
+    }
 
 
 def _tile_resize_for_vision(image_bytes: bytes) -> tuple[bytes, int, int]:

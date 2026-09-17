@@ -106,6 +106,14 @@ class Settings(BaseSettings):
     # Setzen per Env-Var TEXTLAYER_BACKFILL_MODE.
     textlayer_backfill_mode: str = "off"
 
+    # v24.9 — Schritt C: Raumflächen aus dem PDF-Textlayer statt aus der
+    # Vision-Lesung (siehe ``plan_analysis/textlayer_areas.py``).
+    #   "off"    (Default) Pipeline exakt wie bisher, Modul nicht importiert.
+    #   "shadow" Zuordnung rechnen + loggen, NICHTS ändern.
+    #   "apply"  zugeordnete Stempelwerte vor dem Speichern übernehmen.
+    # Setzen per Env-Var TEXTLAYER_AREAS_MODE.
+    textlayer_areas_mode: str = "off"
+
     # v24.4.2 — Coming-Soon-Gate vor der öffentlichen Marketing-
     # Oberfläche. Solange baulv.at in der geschlossenen Test-Phase
     # läuft, fragt das Frontend an dieser Stelle einen geteilten
