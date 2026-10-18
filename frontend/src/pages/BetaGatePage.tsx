@@ -18,6 +18,7 @@ import { Building2, Lock } from "lucide-react";
 
 import { useBetaUnlock } from "../hooks/useBetaUnlock";
 import { useToast } from "../components/Toast";
+import { normalizeError } from "../lib/errors";
 import { Footer } from "../components/layout/Footer";
 
 export function BetaGatePage() {
@@ -35,11 +36,12 @@ export function BetaGatePage() {
       await submit(trimmed);
       // Bei Erfolg unmounted die Gate-Seite von selbst, weil der
       // Wrapper ``isUnlocked`` neu auswertet.
-    } catch {
-      // Bewusst keine Fehlerdetails — sowohl 401 (falscher Code) als
-      // auch 429 (Rate-Limit) und 5xx werden gleich beantwortet.
-      // Genauere Diagnose bleibt in den Browser-DevTools sichtbar.
-      toast.error("Code ungültig");
+    } catch (err) {
+      // 401 (falscher Code) bleibt bewusst knapp. 429 (Rate-Limit) und
+      // 5xx bekommen eine eigene Meldung — sonst hält man während der
+      // Sperr-Minute auch den richtigen Code für falsch.
+      const { status, message } = normalizeError(err);
+      toast.error(status === 401 ? "Code ungültig" : message);
     } finally {
       setIsPending(false);
     }

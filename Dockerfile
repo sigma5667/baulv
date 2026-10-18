@@ -45,6 +45,6 @@ ENV PORT=8000
 EXPOSE ${PORT}
 
 # Production server: gunicorn with uvicorn workers
-RUN pip install --no-cache-dir gunicorn
+RUN pip install --no-cache-dir gunicorn==26.2.0
 
 CMD ["sh", "-c", "gunicorn app.main:app --bind 0.0.0.0:${PORT} --workers 2 --worker-class uvicorn.workers.UvicornWorker --timeout 120"]

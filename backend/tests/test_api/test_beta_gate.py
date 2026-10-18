@@ -201,3 +201,57 @@ def test_rate_limit_constants_are_pinned():
     wäre eine stille Aushebelung des Brute-Force-Schutzes."""
     assert beta_gate.RATE_LIMIT_MAX == 10
     assert beta_gate.RATE_LIMIT_WINDOW == 60
+
+
+# ---------------------------------------------------------------------------
+# 4. Endpoint /verify — Normalisierung + Client-IP hinter Cloudflare
+# ---------------------------------------------------------------------------
+
+
+def _client():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+    app.include_router(beta_gate.router, prefix="/api/beta")
+    return TestClient(app)
+
+
+@pytest.mark.parametrize(
+    "eingabe", ["TestCode-2026-XYZ", "testcode-2026-xyz", "  TESTCODE-2026-XYZ \n"]
+)
+def test_verify_accepts_code_ignoring_case_and_whitespace(with_code, eingabe):
+    r = _client().post("/api/beta/verify", json={"code": eingabe})
+    assert r.status_code == 200
+    assert beta_gate._verify_token(r.json()["token"]) is True
+
+
+def test_verify_accepts_input_when_env_value_has_stray_whitespace(monkeypatch):
+    monkeypatch.setattr(settings, "beta_access_code", " TestCode-2026-XYZ\n")
+    r = _client().post("/api/beta/verify", json={"code": "TestCode-2026-XYZ"})
+    assert r.status_code == 200
+
+
+def test_verify_still_rejects_wrong_code(with_code):
+    r = _client().post("/api/beta/verify", json={"code": "TestCode-2026-XY"})
+    assert r.status_code == 401
+
+
+def test_rate_limit_keys_on_cloudflare_client_ip(with_code):
+    """Alle Requests kommen über denselben Cloudflare-Knoten (gleiches
+    X-Forwarded-For), aber von verschiedenen Usern (CF-Connecting-IP).
+    Ein User, der sich vertippt, darf die anderen nicht aussperren."""
+    c = _client()
+    edge = {"X-Forwarded-For": "104.23.239.49"}
+    for _ in range(beta_gate.RATE_LIMIT_MAX):
+        c.post(
+            "/api/beta/verify",
+            json={"code": "falsch"},
+            headers={**edge, "CF-Connecting-IP": "203.0.113.1"},
+        )
+    r = c.post(
+        "/api/beta/verify",
+        json={"code": "TestCode-2026-XYZ"},
+        headers={**edge, "CF-Connecting-IP": "203.0.113.2"},
+    )
+    assert r.status_code == 200

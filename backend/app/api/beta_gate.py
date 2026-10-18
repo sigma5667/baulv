@@ -88,7 +88,16 @@ _ip_lock = Lock()
 
 
 def _client_ip(request: Request) -> str:
-    """Best-effort client IP. Railway sets ``X-Forwarded-For``."""
+    """Best-effort client IP.
+
+    baulv.at läuft hinter Cloudflare: dort ist der erste
+    ``X-Forwarded-For``-Eintrag die IP des Cloudflare-Knotens, nicht die
+    des Users — alle Besucher am selben Knoten teilten sich sonst einen
+    Rate-Limit-Topf. ``CF-Connecting-IP`` trägt die echte Client-IP.
+    """
+    cf_ip = request.headers.get("cf-connecting-ip")
+    if cf_ip:
+        return cf_ip.strip()
     fwd = request.headers.get("x-forwarded-for")
     if fwd:
         # First entry is the original client; rest are proxies.
@@ -171,6 +180,11 @@ def _verify_token(token: str) -> bool:
     return hmac.compare_digest(sig, expected)
 
 
+def _normalize_code(code: str) -> str:
+    """Eingabe und ENV-Wert vergleichbar machen (Rand-Leerzeichen, Case)."""
+    return code.strip().casefold()
+
+
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
@@ -229,7 +243,15 @@ async def verify_beta_code(
     # cases take the same time. Without this, an attacker who could
     # measure response time precisely could brute-force the code
     # byte-by-byte instead of all-at-once.
-    if not secrets.compare_digest(payload.code, settings.beta_access_code):
+    #
+    # Vergleich ohne Leerzeichen am Rand und ohne Groß-/Kleinschreibung:
+    # der Code wird von Hand abgetippt (gemischte Schreibweise), und das
+    # Frontend trimmt die Eingabe ohnehin. Das Gate ist eine weiche
+    # UI-Sperre, das Rate-Limit bleibt der Brute-Force-Schutz.
+    if not secrets.compare_digest(
+        _normalize_code(payload.code).encode("utf-8"),
+        _normalize_code(settings.beta_access_code).encode("utf-8"),
+    ):
         logger.info("beta_verify.bad_code ip=%s", ip)
         raise HTTPException(status_code=401, detail="Code ungültig")
 
