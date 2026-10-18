@@ -29,7 +29,7 @@ dependencies = [
     # Model Context Protocol SDK — backs the /mcp SSE endpoint that
     # external agents (Claude Desktop, n8n, ChatGPT custom connectors)
     # connect to. See app/mcp/.
-    "mcp>=1.0.0",
+    "mcp>=1.0.0,<2",
     # Redis client for the multi-worker rate-limit backend. Imported
     # lazily inside ``app.rate_limit`` only when ``REDIS_URL`` is set —
     # so single-worker / dev deployments without a Redis can run
