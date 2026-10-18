@@ -29,6 +29,10 @@ FEATURE_REQUIREMENTS: dict[str, str] = {
     "ai_position_generator": "pro",
     "ai_chat": "pro",
     "excel_export": "pro",
+    # MCP write tools (create_/update_*). Read tools stay free, as the
+    # API pricing page promises. Enforced in ``app.mcp.server.call_tool``;
+    # deliberately not beta-unlocked (API is not part of tester days).
+    "api_write_tools": "pro",
     "angebotsvergleich": "enterprise",
     "team_multiuser": "enterprise",
     "api_access": "enterprise",

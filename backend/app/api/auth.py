@@ -28,6 +28,7 @@ from app.auth import (
     issue_session,
     verify_password,
 )
+from app.db.models.api_key import ApiKey
 from app.db.models.audit import AuditLogEntry
 from app.db.models.password_reset_token import PasswordResetToken
 from app.db.models.project import Project
@@ -349,18 +350,39 @@ def _email_audit_hash(email: str) -> str:
     ).hexdigest()
 
 
-def _is_admin(user: User) -> bool:
-    """v23.8 — admin gate.
+async def _revoke_all_api_keys(
+    db: AsyncSession, user_id: UUID, now: datetime
+) -> None:
+    """Widerruft alle aktiven API-Keys (PATs) eines Users.
 
-    Either the persistent ``is_admin`` flag (preferred, set
-    explicitly per user) or the v23.3 email-allowlist fallback
-    grants access. The dual gate means existing admin tooling
-    that relied on ``ADMIN_EMAILS`` keeps working without a
-    forced backfill of the new column.
+    Security-Fix (Review 2026-10): Passwort-Reset und -Wechsel haben
+    bisher nur die Browser-Sessions beendet. Ein Angreifer, der das
+    Passwort einmal kannte und sich einen PAT angelegt hat, behielt
+    damit über ``/mcp`` dauerhaft Zugriff. Wer sein Passwort ändert,
+    reagiert typischerweise genau auf so einen Verdacht — also gehen
+    die Keys mit. Neue Keys lassen sich danach sofort wieder anlegen.
     """
-    if getattr(user, "is_admin", False):
-        return True
-    return user.email.lower() in settings.admin_email_list
+    await db.execute(
+        sql_update(ApiKey)
+        .where(
+            ApiKey.user_id == user_id,
+            ApiKey.revoked_at.is_(None),
+        )
+        .values(revoked_at=now)
+    )
+
+
+def _is_admin(user: User) -> bool:
+    """Admin gate — only the persistent ``users.is_admin`` flag counts.
+
+    Security-Fix (Review 2026-10): der frühere Fallback auf die
+    ``ADMIN_EMAILS``-Liste ist entfernt. Registrierung prüft nicht,
+    ob jemand die E-Mail-Adresse besitzt — wer eine gelistete, noch
+    unregistrierte Adresse zuerst registriert hätte, wäre Admin
+    gewesen. Bestehende Admins wurden per Migration 029 auf das Flag
+    übernommen.
+    """
+    return bool(getattr(user, "is_admin", False))
 
 
 # ---------------------------------------------------------------------------
@@ -1149,6 +1171,7 @@ async def confirm_password_reset(
         )
         .values(revoked_at=now)
     )
+    await _revoke_all_api_keys(db, user.id, now)
     await db.flush()
 
     await log_event(
@@ -1197,7 +1220,8 @@ async def change_password(
 
     # Revoke every other live session for this user. Current session
     # stays active so the user doesn't have to log in again on the
-    # device where they just changed their password.
+    # device where they just changed their password. API keys go too
+    # (see ``_revoke_all_api_keys``).
     now = datetime.now(timezone.utc)
     await db.execute(
         sql_update(UserSession)
@@ -1208,6 +1232,7 @@ async def change_password(
         )
         .values(revoked_at=now)
     )
+    await _revoke_all_api_keys(db, user.id, now)
     await db.flush()
 
     await log_event(
@@ -1659,8 +1684,8 @@ async def admin_analytics_dashboard(
 ):
     """Aggregated metrics for the operator-side analytics view.
 
-    Gated on ``_is_admin(user)`` (either persistent ``is_admin``
-    flag or the v23.3 email allow-list). Returns aggregated
+    Gated on ``_is_admin(user)`` (the persistent ``is_admin``
+    flag). Returns aggregated
     values only — no per-row data leaks to the response, so the
     DSGVO promise that the analytics pipeline never surfaces
     individual records holds end-to-end.

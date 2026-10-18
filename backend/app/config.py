@@ -147,21 +147,18 @@ class Settings(BaseSettings):
     # boot. See ``app.rate_limit`` for details.
     redis_url: str | None = None
 
-    # Comma-separated allow-list of email addresses that may invoke
-    # ``/api/admin/*`` endpoints (e.g. the v23.3 manual cleanup
-    # trigger). When empty (the default), every admin endpoint
-    # returns 403 — production stays locked unless an operator
-    # explicitly sets ``ADMIN_EMAILS=tobi@baulv.at`` (or several
-    # comma-separated). The check is plain string-equality against
-    # ``user.email`` after normal JWT auth, so the audit trail keeps
-    # the regular login event for accountability.
+    # DEPRECATED (Security-Fix Review 2026-10): wird zur Laufzeit NICHT
+    # mehr ausgewertet. Admin ist nur, wer ``users.is_admin=TRUE`` hat.
+    # Einziger Leser ist Migration 029, die die beim Deploy bereits
+    # existierenden Konten dieser Liste einmalig auf das Flag
+    # übernimmt. Bleibt als Feld bestehen, damit eine vorhandene
+    # ``ADMIN_EMAILS``-Zeile in ``.env`` den Settings-Load nicht bricht.
     admin_emails: str = ""
 
     @property
     def admin_email_list(self) -> set[str]:
         """Normalised allow-list — lower-cased, whitespace-trimmed,
-        empties dropped. Memoised by the implicit settings-singleton
-        lifecycle (Settings is built once at boot)."""
+        empties dropped. Only used by migration 029."""
         return {
             e.strip().lower()
             for e in self.admin_emails.split(",")

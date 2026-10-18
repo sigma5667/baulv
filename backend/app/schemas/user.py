@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 
 class UserRegister(BaseModel):
@@ -28,7 +28,9 @@ class UserRegister(BaseModel):
     # bereits gepinnt (email-validator>=2.0.0).
     email: EmailStr
     password: str
-    full_name: str
+    # Länge = DB-Spalte (String(255)); vorher kam Überlänge erst als
+    # 500 aus Postgres zurück.
+    full_name: str = Field(max_length=255)
     # v24.4.8 — ``company_name`` ist jetzt PFLICHT (war zuvor optional).
     # BauLV ist ein B2B-Angebot ausschließlich für Unternehmer iSd
     # § 1 UGB; ohne Firmenname fehlt der wichtigste objektive
@@ -36,7 +38,7 @@ class UserRegister(BaseModel):
     # die Unternehmer-Bestätigung weiter unten entwerten. Frontend
     # macht das Feld required + mit klarem Hinweis "Für B2B-Angebote
     # erforderlich".
-    company_name: str
+    company_name: str = Field(max_length=255)
     # Mandatory consent fields. The frontend supplies the version
     # strings it displayed; the backend rejects with 409 if they
     # don't match the canonical ``app/legal_versions.py`` values.
@@ -74,8 +76,8 @@ class UserLogin(BaseModel):
 
 
 class UserUpdate(BaseModel):
-    full_name: str | None = None
-    company_name: str | None = None
+    full_name: str | None = Field(default=None, max_length=255)
+    company_name: str | None = Field(default=None, max_length=255)
     # v24.3 — Profil-Branding fuer das Mengenermittlungs-PDF.
     # Optional; ``None`` heisst "Feld nicht geaendert", explizit
     # leerer String ``""`` heisst "Feld leeren" — die Route

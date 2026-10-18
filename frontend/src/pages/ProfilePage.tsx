@@ -405,7 +405,9 @@ function PasswordChangeCard() {
         )}
         {success && (
           <div className="rounded-md bg-green-50 px-4 py-2 text-sm text-green-700">
-            Passwort erfolgreich geändert.
+            Passwort erfolgreich geändert. Andere Geräte wurden abgemeldet
+            und alle API-Keys widerrufen — Integrationen brauchen einen
+            neuen Key.
           </div>
         )}
         <button

@@ -59,10 +59,29 @@ async def export_lv_xlsx(lv_id: UUID, db: AsyncSession) -> bytes:
     ws_calc = wb.create_sheet("Berechnungsnachweis")
     _create_calculation_sheet(ws_calc, lv)
 
+    _neutralize_formulas(wb)
+
     # Write to bytes
     buffer = io.BytesIO()
     wb.save(buffer)
     return buffer.getvalue()
+
+
+def _neutralize_formulas(wb: Workbook) -> None:
+    """Store every cell as a value, never as a formula.
+
+    openpyxl turns any string starting with ``=`` into a formula cell.
+    All texts here come from users or the vision model (Kurztext,
+    Raumnamen, Formelbeschreibungen) and the file is passed on to
+    third parties (Bieter) — a crafted ``=HYPERLINK(...)`` would run in
+    their Excel. The exporter writes no intentional formulas, so every
+    formula cell is turned back into plain text.
+    """
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                if cell.data_type == "f":
+                    cell.data_type = "s"
 
 
 def _create_summary_sheet(ws, lv: Leistungsverzeichnis):

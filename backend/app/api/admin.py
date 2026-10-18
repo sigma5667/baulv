@@ -1,11 +1,18 @@
 """Admin-only operations.
 
-Gated behind a settings allow-list (``ADMIN_EMAILS`` env var) — by
-default every endpoint here returns 403, so a fresh deploy ships
-locked-down. To enable, set ``ADMIN_EMAILS=tobi@baulv.at`` (or
-multiple comma-separated) on the Railway service.
+Gated behind the persistent ``users.is_admin`` flag — by default
+every endpoint here returns 403, so a fresh deploy ships
+locked-down. The flag can only be set server-side (SQL / migration);
+there is no API that writes it.
 
-Why an email allow-list rather than a separate admin-token flow:
+Security-Fix (Review 2026-10): bis dahin entschied eine
+E-Mail-Allowlist (``ADMIN_EMAILS``). Weil die Registrierung nicht
+prüft, ob jemand die Adresse besitzt, war das übernehmbar. Migration
+029 hat die zum Deploy-Zeitpunkt existierenden Konten der Liste
+einmalig auf ``is_admin=TRUE`` gesetzt; danach wird die Liste nicht
+mehr ausgewertet.
+
+Why a flag on the user rather than a separate admin-token flow:
 the existing JWT auth already gives us per-request user identity,
 audit-log entries, IP capture, and session revocation. Layering
 *another* secret on top of that buys nothing for a single-tenant
@@ -20,7 +27,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
-from app.config import settings
 from app.db.models.user import User
 from app.db.session import get_db
 from app.services.audit_cleanup import run_all_cleanups
@@ -33,21 +39,17 @@ router = APIRouter(prefix="/admin", tags=["Admin"])
 async def require_admin(user: User = Depends(get_current_user)) -> User:
     """Auth gate for everything in this module.
 
-    The user must be authenticated *and* their email must appear in
-    the ``ADMIN_EMAILS`` allow-list. We deliberately don't grant
-    admin access to anyone if the env var is empty — failing closed
-    is the only safe default for "drop tables"-class operations.
+    The user must be authenticated *and* carry the persistent
+    ``users.is_admin`` flag. Fails closed for everyone else.
+
+    Security-Fix (Review 2026-10): früher entschied allein die
+    E-Mail-Adresse (``ADMIN_EMAILS``). Da die Registrierung nicht
+    prüft, ob jemand die Adresse besitzt, hätte ein Fremder eine
+    gelistete, noch unregistrierte Admin-Adresse registrieren und
+    sofort Admin sein können. Das Flag lässt sich nur serverseitig
+    setzen (Migration 029 hat bestehende Admin-Konten übernommen).
     """
-    allow = settings.admin_email_list
-    if not allow:
-        # Setting unset entirely. Treat the whole admin surface as
-        # disabled; surface a 403 rather than 503 because we don't
-        # want to advertise the existence of admin endpoints to
-        # an unauthenticated probe.
-        raise HTTPException(
-            status_code=403, detail="Admin-Zugriff erforderlich."
-        )
-    if user.email.strip().lower() not in allow:
+    if not getattr(user, "is_admin", False):
         raise HTTPException(
             status_code=403, detail="Admin-Zugriff erforderlich."
         )

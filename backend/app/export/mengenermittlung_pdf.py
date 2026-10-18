@@ -1250,7 +1250,7 @@ def _build_formulas(room: Room, styles) -> list:
     deductions = _deductions(room)
     if deductions["entries"]:
         line = "Abzüge: " + "; ".join(
-            f"{e['label']} ({_fmt(e['width'], 2)} × {_fmt(e['height'], 2)} m"
+            f"{_safe(e['label'])} ({_fmt(e['width'], 2)} × {_fmt(e['height'], 2)} m"
             f"{' × ' + str(e['count']) if e['count'] != 1 else ''}) "
             f"= {_fmt(e['area'], 2)} m²"
             for e in deductions["entries"]
@@ -1420,7 +1420,7 @@ def _append_excluded_rooms_section(
         label = _safe(room.name or "—")
         context_parts: list[str] = []
         if floor is not None:
-            context_parts.append(_floor_label(floor))
+            context_parts.append(_safe(_floor_label(floor)))
         if unit is not None and getattr(unit, "name", None):
             context_parts.append(_safe(unit.name))
         context = (

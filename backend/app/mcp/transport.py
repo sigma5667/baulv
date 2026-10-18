@@ -16,7 +16,9 @@ of the SSE session — that's the variable tool handlers in
 ``app.mcp.server`` read back to know which tenant they're acting for.
 The POST handler doesn't need the contextvar (the tool actually runs
 in the GET task), but it still needs auth so anonymous traffic can't
-hijack a stream.
+hijack a stream — and both handlers put the principal on
+``scope["user"]`` so the SDK only routes a POST into a session opened
+by the *same* credential (see ``_bind_principal_to_scope``).
 
 Why a Starlette sub-app and not direct FastAPI routes
 =====================================================
@@ -33,6 +35,8 @@ from __future__ import annotations
 import logging
 from typing import Awaitable, Callable
 
+from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
+from mcp.server.auth.provider import AccessToken
 from mcp.server.sse import SseServerTransport
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -42,6 +46,7 @@ from starlette.types import Receive, Scope, Send
 
 from app.db.session import async_session_factory
 from app.mcp.principal import (
+    Principal,
     current_api_key_id_var,
     current_user_id_var,
     resolve_principal,
@@ -107,6 +112,38 @@ async def _authenticate_scope(scope: Scope):
         return principal
 
 
+def _bind_principal_to_scope(scope: Scope, principal: Principal) -> None:
+    """Expose the principal to the SDK as ``scope["user"]``.
+
+    Security-Fix (Review 2026-10): ``SseServerTransport`` records the
+    ``authorization_context`` of whoever opened a session and rejects
+    every POST whose credential differs (404, as if the session did
+    not exist). That check only runs when ``scope["user"]`` is an
+    ``AuthenticatedUser`` — without it, owner and caller are both
+    ``None`` and *any* valid BauLV credential could drive someone
+    else's open session (e.g. after the victim revoked a leaked PAT).
+
+    ``client_id`` names the concrete credential (one PAT, or the JWT
+    path), ``subject`` the user. A revoked/expired PAT already fails
+    ``_authenticate_scope`` with 401 before we get here, so an open
+    session dies with its key.
+    """
+    if principal.api_key is not None:
+        client_id = f"pat:{principal.api_key.id}"
+    else:
+        client_id = "jwt"
+    scope["user"] = AuthenticatedUser(
+        AccessToken(
+            # The raw bearer value is deliberately NOT kept here — the
+            # SDK only compares client_id / issuer / subject.
+            token="",
+            client_id=client_id,
+            scopes=[],
+            subject=str(principal.user.id),
+        )
+    )
+
+
 _UNAUTHORIZED_BODY = b'{"detail":"Nicht authentifiziert"}'
 _UNAUTHORIZED_HEADERS = [
     (b"content-type", b"application/json; charset=utf-8"),
@@ -154,6 +191,7 @@ def _make_sse_handler(
                 headers={"WWW-Authenticate": 'Bearer realm="baulv-mcp"'},
             )
 
+        _bind_principal_to_scope(request.scope, principal)
         user = principal.user
         api_key_id = principal.api_key.id if principal.api_key else None
 
@@ -246,6 +284,10 @@ def _wrap_messages_with_auth(
             await _send_401(send)
             return
 
+        # Session-ownership: the SDK compares this against the
+        # credential that opened the SSE stream (see
+        # ``_bind_principal_to_scope``).
+        _bind_principal_to_scope(scope, principal)
         await inner(scope, receive, send)
 
     return app

@@ -41,6 +41,7 @@ went out.
 
 from __future__ import annotations
 
+import html as html_mod
 import logging
 from typing import Any
 
@@ -222,7 +223,7 @@ https://baulv.at
   <h1 style="font-size: 20px; font-weight: 600; color: #111827; margin: 0 0 16px;">
     Passwort zurücksetzen
   </h1>
-  <p style="margin: 0 0 16px;">{salutation}</p>
+  <p style="margin: 0 0 16px;">{html_mod.escape(salutation)}</p>
   <p style="margin: 0 0 16px;">
     du hast eine Zurücksetzung deines BauLV-Passworts angefordert.
     Klicke auf den Button, um ein neues Passwort zu vergeben:
@@ -357,7 +358,7 @@ Ihr BauLV-Team
   <h1 style="font-size: 20px; font-weight: 600; color: #111827; margin: 0 0 16px;">
     Anmeldung bestätigen
   </h1>
-  <p style="margin: 0 0 16px;">{salutation}</p>
+  <p style="margin: 0 0 16px;">{html_mod.escape(salutation)}</p>
   <p style="margin: 0 0 16px;">
     Sie haben sich auf die Warteliste von BauLV eingetragen.
     Klicken Sie auf den Button, um Ihre Anmeldung zu bestätigen:
@@ -428,7 +429,6 @@ def render_waitlist_update_bodies(
     mit ``unsubscribe_link`` dran — das ist eine Marketing-Mail,
     der Abmelde-Link ist Pflicht (DSGVO Art. 7 Abs. 3).
     """
-    import html as html_mod
 
     from app.services.email_footer import footer_html, footer_text
 
@@ -458,7 +458,7 @@ Ihr BauLV-Team
 <title>BauLV-Update</title>
 </head>
 <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; line-height: 1.6; color: #1f2937; max-width: 560px; margin: 0 auto; padding: 24px;">
-  <p style="margin: 0 0 16px;">{salutation}</p>
+  <p style="margin: 0 0 16px;">{html_mod.escape(salutation)}</p>
   {body_html}
   <p style="margin: 24px 0 0;">Viele Grüße<br>Ihr BauLV-Team</p>
   {footer_html(unsubscribe_link)}

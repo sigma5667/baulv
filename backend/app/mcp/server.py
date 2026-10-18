@@ -115,7 +115,7 @@ from app.rate_limit import RateLimitExceeded, get_limiter
 from app.schemas.lv import LVCreate, LVUpdate, PositionUpdate
 from app.schemas.project import ProjectCreate, ProjectUpdate
 from app.schemas.template import LVFromTemplateRequest, TemplateCreateFromLV
-from app.subscriptions import check_project_limit
+from app.subscriptions import FEATURE_REQUIREMENTS, check_project_limit, has_feature
 
 
 logger = logging.getLogger(__name__)
@@ -664,6 +664,23 @@ _TOOLS: list[mcp_types.Tool] = [
         },
     ),
 ]
+
+
+# Tools that mutate data. Security-Fix (Review 2026-10): they need the
+# ``api_write_tools`` plan feature — the API pricing promises Free
+# accounts only the read tools. Checked per call (not at key creation)
+# so a downgraded account's existing keys lose write access too.
+_WRITE_TOOLS: frozenset[str] = frozenset(
+    {
+        "create_project",
+        "update_project",
+        "create_lv",
+        "create_lv_from_template",
+        "update_lv",
+        "update_position",
+        "create_template_from_lv",
+    }
+)
 
 
 @server.list_tools()
@@ -1653,6 +1670,17 @@ async def call_tool(
                 response = _err("Benutzer nicht mehr verfügbar.")
                 audit_result = RESULT_ERROR
                 audit_error = "user_not_found"
+            elif name in _WRITE_TOOLS and not has_feature(
+                user.subscription_plan, "api_write_tools"
+            ):
+                plan_needed = FEATURE_REQUIREMENTS["api_write_tools"]
+                response = _err(
+                    "Schreibende API-Tools erfordern den "
+                    f"{plan_needed.title()}-Plan. Mit dem aktuellen Plan "
+                    "stehen nur die Lese-Tools zur Verfügung."
+                )
+                audit_result = RESULT_ERROR
+                audit_error = "plan_gate:api_write_tools"
             else:
                 response = await _dispatch_tool(db, user, name, arguments)
 
