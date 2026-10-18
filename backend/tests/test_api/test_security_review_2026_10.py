@@ -365,3 +365,52 @@ def test_xlsx_cells_starting_with_equals_are_stored_as_text():
     )
     assert b"<f>" not in sheet_xml
     assert b"HYPERLINK" in sheet_xml
+
+
+# ---------------------------------------------------------------------------
+# 7. Migration 029 — upgrade promotes, downgrade reverts exactly that
+# ---------------------------------------------------------------------------
+
+
+def _load_migration_029():
+    import importlib.util
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "alembic" / "versions" / "029_admin_flag_from_allowlist.py"
+    )
+    spec = importlib.util.spec_from_file_location("migration_029", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_migration_029_upgrade_and_downgrade(monkeypatch):
+    import sqlalchemy as sa
+
+    m029 = _load_migration_029()
+    monkeypatch.setattr(settings, "admin_emails", " Tobi@BauLV.at , nie-registriert@x.at")
+    engine = sa.create_engine("sqlite://")
+    with engine.begin() as conn:
+        conn.execute(sa.text("CREATE TABLE users (id CHAR(36), email TEXT, is_admin BOOLEAN)"))
+        conn.execute(sa.text(
+            "INSERT INTO users VALUES "
+            "('u-listed', 'tobi@baulv.at', 0), "
+            "('u-already', 'alt-admin@x.at', 1), "
+            "('u-other', 'kunde@x.at', 0)"
+        ))
+        monkeypatch.setattr(m029.op, "get_bind", lambda: conn)
+
+        def flags():
+            return dict(conn.execute(sa.text("SELECT id, is_admin FROM users")).all())
+
+        m029.upgrade()
+        m029.upgrade()  # idempotent
+        assert flags() == {"u-listed": 1, "u-already": 1, "u-other": 0}
+
+        m029.downgrade()
+        # Only the account 029 promoted goes back; the pre-existing
+        # admin keeps the flag, nothing else changes.
+        assert flags() == {"u-listed": 0, "u-already": 1, "u-other": 0}
+        assert not sa.inspect(conn).has_table("migration_029_promoted")
