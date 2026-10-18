@@ -223,15 +223,15 @@ async def test_delete_plan_cascades_rooms_with_proofs(
     gruppe = Leistungsgruppe(
         id=uuid.uuid4(),
         lv_id=lv.id,
-        name="Wand",
-        gruppen_nummer="01",
+        nummer="01",
+        bezeichnung="Wand",
     )
     db_session.add(gruppe)
     await db_session.flush()
     position = Position(
         id=uuid.uuid4(),
         gruppe_id=gruppe.id,
-        position_nummer="01.01",
+        positions_nummer="01.01",
         kurztext="Wand streichen",
         einheit="m²",
         menge=Decimal("50.0"),

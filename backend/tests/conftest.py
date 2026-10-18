@@ -45,6 +45,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy import event
 from sqlalchemy.ext.compiler import compiles
 
 from app.calculation_engine.registry import TradeRegistry
@@ -109,6 +110,16 @@ async def db_session() -> AsyncIterator[AsyncSession]:
     rows from a prior test would otherwise be visible.
     """
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+
+    # SQLite ignoriert Fremdschlüssel (und damit ON DELETE CASCADE)
+    # standardmäßig — Postgres in Produktion nicht. Einschalten, damit
+    # Lösch-Kaskaden im Test so greifen wie live.
+    @event.listens_for(engine.sync_engine, "connect")
+    def _enable_sqlite_fks(dbapi_conn, _record):
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA foreign_keys=ON")
+        cur.close()
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
@@ -226,3 +237,15 @@ def stub_calculator(monkeypatch) -> Callable[[list[PositionQuantity]], None]:
         )
 
     return _install
+
+
+@pytest.fixture(autouse=True)
+def _uncompressed_reportlab_pdfs(monkeypatch):
+    """ReportLab 5 komprimiert Seiteninhalte standardmäßig
+    (``pageCompression=1``, vorher 0). Die PDF-Tests suchen Text per
+    ``b"..." in pdf_bytes`` im Rohstrom — das geht nur unkomprimiert.
+    Produktion bleibt komprimiert (kleinere Dateien, Inhalt identisch;
+    per PyMuPDF-Textextraktion gegengeprüft)."""
+    from reportlab import rl_config
+
+    monkeypatch.setattr(rl_config, "pageCompression", 0)

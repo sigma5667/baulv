@@ -96,6 +96,7 @@ async def test_cleanup_deletes_mcp_audit_entries_older_than_730_days(
         api_key_id=None,
         tool_name="list_projects",
         result=RESULT_OK,
+        latency_ms=0,
         created_at=datetime.now(timezone.utc) - timedelta(days=900),
     )
     db_session.add(old_mcp)

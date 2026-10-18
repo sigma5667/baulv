@@ -222,8 +222,10 @@ _BANNED_KEY_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"plz",
         r"phone",
         r"telefon",
-        r"\buser\b",
-        r"\buid\b",
+        # Unterstrich zählt als Wortgrenze (``\b`` tut das nicht —
+        # sonst rutscht ``user_id`` durch).
+        r"(?<![a-z0-9])user(?![a-z0-9])",
+        r"(?<![a-z0-9])uid(?![a-z0-9])",
         r"raw",
         r"file",
         r"path",

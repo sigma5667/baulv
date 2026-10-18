@@ -86,7 +86,10 @@ def _clip_value(value: Any) -> Any:
             return "<unserialisable>"
         if len(encoded) > _MAX_NESTED_BYTES:
             return "<too large>"
-        return value
+        # Die encodierte Fassung zurückgeben, nicht ``value``: nur so
+        # sind per ``default=str`` stringifizierte Exoten wirklich
+        # JSONB-tauglich (sonst scheitert später der Audit-Insert).
+        return json.loads(encoded)
     return value
 
 

@@ -809,11 +809,13 @@ async def test_pdf_contains_floor_covering_aggregation_section(
     # muss erscheinen (v24.4.1 — Wortlaut umbenannt).
     assert b"R\xe4ume ohne Belag-Angabe" in pdf_bytes or b"ume ohne Belag" in pdf_bytes
     # Plus die Raum-Anzahl in Klammern: "(1 Raum)" weil nur das WC
-    # ohne Belag ist.
-    assert b"(1 Raum)" in pdf_bytes
-    # Geschoss-Summen-Wortlaut (Stem für Umlaut-Stabilität).
-    assert b"Summe Erdgeschoss" in pdf_bytes
-    assert b"Summe 1.Obergeschoss" in pdf_bytes
+    # ohne Belag ist. Im PDF-String sind Klammern als ``\(``/``\)``
+    # maskiert.
+    assert b"\\(1 Raum\\)" in pdf_bytes
+    # Geschoss-Summen tragen das kompakte Geschoss-Label aus
+    # ``_floor_label`` (EG / 1.OG) — wie Übersicht und Detail-Köpfe.
+    assert b"Summe EG" in pdf_bytes
+    assert b"Summe 1.OG" in pdf_bytes
     # Gesamttotal.
     assert b"Gesamt-Bodenfl" in pdf_bytes
     # Gesamtfläche = 24.5 + 6 + 2.5 + 16 = 49 m² → German notation "49,00 m²".

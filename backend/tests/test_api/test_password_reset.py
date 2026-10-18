@@ -131,10 +131,14 @@ async def test_request_password_reset_with_known_email_writes_token_and_sends(
     assert len(rows) == 1
     assert rows[0].used_at is None
     # Expiry roughly 1 hour out — allow generous slack for slow CI.
+    # SQLite (Test-Harness) liefert ``DateTime(timezone=True)`` naiv
+    # zurück, Postgres aware — naiv als UTC lesen, wie
+    # ``password_reset.verify`` es auch tut.
     expected_exp = datetime.now(timezone.utc) + timedelta(hours=1)
-    assert (
-        abs((rows[0].expires_at - expected_exp).total_seconds()) < 60
-    )
+    actual_exp = rows[0].expires_at
+    if actual_exp.tzinfo is None:
+        actual_exp = actual_exp.replace(tzinfo=timezone.utc)
+    assert abs((actual_exp - expected_exp).total_seconds()) < 60
 
     # ``send_password_reset_email`` was invoked once with the plaintext.
     assert mock_send.call_count == 1

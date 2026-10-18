@@ -2190,6 +2190,11 @@ async def _store_extraction_result(
             height_m = room_data.get("height_m")
             if height_m in (None, 0, 0.0):
                 ceiling_source = "default"
+                # 0 ist "nicht lesbar", kein Messwert — wie None
+                # behandeln, sonst landet 0,00 m im Raum, während die
+                # Wandberechnung (und der Writeback unten, der nur
+                # None füllt) mit 2,50 m arbeitet.
+                height_m = None
                 # v24.6 — Geschoss-Höhe fan-out: hat das Stockwerk
                 # eine Raumhöhen-Vorgabe (``floor_height_m``), erbt
                 # der Raum sie statt des 2,50-Defaults. Source

@@ -143,9 +143,10 @@ async def test_update_room_clears_source_when_perimeter_set_to_null(
     db_session: AsyncSession,
 ):
     """Sending ``perimeter_m=null`` is the user clearing the value.
-    The source must also clear so the table can render the empty-
-    state badge — leaving ``perimeter_source='manual'`` next to a
-    null perimeter would be inconsistent state."""
+    Because the room still has an area, the recalc's auto-estimate
+    guarantee (v22.1, ``_recalculate_walls_and_persist``) refills it
+    with 4·√A·1.10 and tags it ``estimated`` — never a stale
+    ``vision``/``manual`` marker next to a value the user removed."""
     user, room = await _seed_room(
         db_session, perimeter_m=Decimal("18.0"), perimeter_source="vision"
     )
@@ -159,8 +160,9 @@ async def test_update_room_clears_source_when_perimeter_set_to_null(
 
     refreshed = await db_session.get(Room, room.id)
     assert refreshed is not None
-    assert refreshed.perimeter_m is None
-    assert refreshed.perimeter_source is None
+    # area 20 m² → 4 · √20 · 1.10 = 19,68 m
+    assert float(refreshed.perimeter_m) == pytest.approx(19.68, abs=0.01)
+    assert refreshed.perimeter_source == "estimated"
 
 
 @pytest.mark.asyncio
@@ -424,14 +426,12 @@ async def test_create_room_without_height_marks_default(
 
 
 @pytest.mark.asyncio
-async def test_create_room_with_explicit_2_50_height_marks_default(
+async def test_create_room_with_explicit_2_50_height_marks_manual(
     db_session: AsyncSession,
 ):
-    """Defensive belt: even if a frontend regression starts pre-
-    filling the height field with 2,50, the backend treats the
-    Austrian residential standard fallback as ``default``. The
-    user's intent is "use the standard"; tagging it ``manual``
-    would be wrong."""
+    """v24.3.1 hat die Sonderregel "2,50 → default" bewusst entfernt
+    (siehe ``create_room``): sie markierte echte 2,50-Messungen
+    fälschlich als Platzhalter. Was der User eintippt, ist ``manual``."""
     user, unit = await _seed_unit(db_session)
 
     response = await create_room(
@@ -441,7 +441,7 @@ async def test_create_room_with_explicit_2_50_height_marks_default(
         db=db_session,
     )
 
-    assert response.ceiling_height_source == "default"
+    assert response.ceiling_height_source == "manual"
 
 
 @pytest.mark.asyncio

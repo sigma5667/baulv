@@ -70,12 +70,15 @@ def test_format_page_error_includes_class_name_and_message():
     class BadRequestError(Exception):
         pass
 
-    exc = BadRequestError("max_tokens insufficient for expected output")
+    # Unbekannte Meldung wählen: bekannte Fehler (z.B. max_tokens)
+    # übersetzt ``_translate_anthropic_error`` inzwischen in
+    # deutschen Klartext — hier geht es um den Diagnose-Fallback.
+    exc = BadRequestError("unexpected upstream schema mismatch")
     out = _format_page_error(3, exc)
 
     assert "Seite 3" in out
     assert "BadRequestError" in out
-    assert "max_tokens insufficient for expected output" in out
+    assert "unexpected upstream schema mismatch" in out
 
 
 def test_format_page_error_truncates_long_messages():

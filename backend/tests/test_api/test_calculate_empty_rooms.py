@@ -28,6 +28,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.lv import run_calculation
+from app.calculation_engine.types import CalculationResult
 from app.db.models.lv import Leistungsgruppe, Leistungsverzeichnis, Position
 from app.db.models.project import Building, Floor, Project, Room, Unit
 from app.db.models.user import User
@@ -129,11 +130,11 @@ async def test_calculate_with_rooms_delegates_to_engine(
     fixtures (those are in ``test_calculation_engine``)."""
     user, lv = await _seed_lv_with_one_room(db_session)
 
-    # Stub the engine to return an empty result list — the endpoint
-    # only reads ``len()`` and a sum, so an empty list is the
-    # cheapest valid stub.
+    # Stub the engine to return an empty ``CalculationResult`` — the
+    # endpoint only reads counts, so no positions is the cheapest
+    # valid stub.
     with patch("app.api.lv.calculate_lv") as engine_spy:
-        engine_spy.return_value = []
+        engine_spy.return_value = CalculationResult(positions=[])
         result = await run_calculation(
             lv_id=lv.id, user=user, db=db_session
         )
