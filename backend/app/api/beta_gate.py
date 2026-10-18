@@ -65,6 +65,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.config import settings
+from app.client_ip import client_ip
 
 logger = logging.getLogger(__name__)
 
@@ -88,23 +89,8 @@ _ip_lock = Lock()
 
 
 def _client_ip(request: Request) -> str:
-    """Best-effort client IP.
-
-    baulv.at läuft hinter Cloudflare: dort ist der erste
-    ``X-Forwarded-For``-Eintrag die IP des Cloudflare-Knotens, nicht die
-    des Users — alle Besucher am selben Knoten teilten sich sonst einen
-    Rate-Limit-Topf. ``CF-Connecting-IP`` trägt die echte Client-IP.
-    """
-    cf_ip = request.headers.get("cf-connecting-ip")
-    if cf_ip:
-        return cf_ip.strip()
-    fwd = request.headers.get("x-forwarded-for")
-    if fwd:
-        # First entry is the original client; rest are proxies.
-        return fwd.split(",")[0].strip()
-    if request.client:
-        return request.client.host
-    return "unknown"
+    """Client-IP für Rate-Limits — siehe ``app.client_ip``."""
+    return client_ip(request)
 
 
 def _check_rate_limit(ip: str) -> tuple[bool, int]:

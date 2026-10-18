@@ -33,6 +33,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.config import settings
+from app.client_ip import client_ip
 
 logger = logging.getLogger(__name__)
 
@@ -72,14 +73,8 @@ _ip_lock = Lock()
 
 
 def _client_ip(request: Request) -> str:
-    """Best-effort client IP. Prefers X-Forwarded-For (Railway sets it)."""
-    fwd = request.headers.get("x-forwarded-for")
-    if fwd:
-        # First entry is the original client; rest are proxies.
-        return fwd.split(",")[0].strip()
-    if request.client:
-        return request.client.host
-    return "unknown"
+    """Client-IP für Rate-Limits — siehe ``app.client_ip``."""
+    return client_ip(request)
 
 
 def check_rate_limit(ip: str) -> tuple[bool, int]:

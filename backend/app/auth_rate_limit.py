@@ -30,6 +30,8 @@ from threading import Lock
 
 from fastapi import HTTPException, Request, status
 
+from app.client_ip import client_ip
+
 
 # (action, scope) -> (max_attempts, window_seconds)
 #
@@ -55,19 +57,8 @@ _lock = Lock()
 
 
 def _client_ip(request: Request) -> str:
-    """Best-effort Client-IP.
-
-    Hinweis: ``X-Forwarded-For`` ist client-setzbar und damit
-    spoofbar — deshalb gibt es zusätzlich den nicht-spoofbaren
-    Konto-Bucket. Hinter Railway steht hier die reale Client-IP im
-    XFF-Header.
-    """
-    fwd = request.headers.get("x-forwarded-for")
-    if fwd:
-        return fwd.split(",")[0].strip()
-    if request.client:
-        return request.client.host
-    return "unknown"
+    """Client-IP für Rate-Limits — siehe ``app.client_ip``."""
+    return client_ip(request)
 
 
 def _check(action: str, scope: str, identity: str) -> None:

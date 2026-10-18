@@ -255,3 +255,39 @@ def test_rate_limit_keys_on_cloudflare_client_ip(with_code):
         headers={**edge, "CF-Connecting-IP": "203.0.113.2"},
     )
     assert r.status_code == 200
+
+
+def test_forged_cf_header_cannot_bypass_rate_limit(with_code):
+    """Direkt über *.up.railway.app (Absender KEIN Cloudflare-Netz) darf
+    ein selbst gesetzter CF-Connecting-IP die Sperre nicht aushebeln."""
+    c = _client()
+    codes = [
+        c.post(
+            "/api/beta/verify",
+            json={"code": "falsch"},
+            headers={
+                "X-Forwarded-For": "195.192.49.211",
+                "CF-Connecting-IP": f"198.51.100.{i}",
+            },
+        ).status_code
+        for i in range(beta_gate.RATE_LIMIT_MAX + 2)
+    ]
+    assert codes[-1] == 429
+
+
+def test_client_ip_helper():
+    from types import SimpleNamespace
+
+    from app.client_ip import client_ip
+
+    def req(headers, host="10.0.0.1"):
+        return SimpleNamespace(headers=headers, client=SimpleNamespace(host=host))
+
+    # Über Cloudflare → echte Besucher-IP
+    assert client_ip(req({"x-forwarded-for": "172.71.141.60", "cf-connecting-ip": "203.0.113.9"})) == "203.0.113.9"
+    # Nicht über Cloudflare → Header ignoriert
+    assert client_ip(req({"x-forwarded-for": "195.192.49.211", "cf-connecting-ip": "203.0.113.9"})) == "195.192.49.211"
+    # Müll im Header → Knoten-IP
+    assert client_ip(req({"x-forwarded-for": "172.71.141.60", "cf-connecting-ip": "kein-ip"})) == "172.71.141.60"
+    # Ohne XFF → Socket-Peer
+    assert client_ip(req({})) == "10.0.0.1"
