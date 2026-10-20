@@ -114,6 +114,21 @@ class Settings(BaseSettings):
     # Setzen per Env-Var TEXTLAYER_AREAS_MODE.
     textlayer_areas_mode: str = "off"
 
+    # Modell für die Raum-Extraktion aus Grundrissen (Vision-Lesung).
+    # Umschaltbar per Env-Var PLAN_EXTRACTION_MODEL. Standard seit v25.2
+    # Sonnet 5.5 — Modellvergleich 2026-10-20 (9 Analysen je Modell,
+    # Wahrheit = PDF-Textlayer): Falschwerte 36 → 0, leere Flächen 32 → 1
+    # gegenüber Sonnet 4.6, Pins ohne Downscale-Faktor (1,00 statt 0,85),
+    # etwas billiger und schneller. Die BBox-Probe bleibt fest auf Haiku
+    # (``_BBOX_MODEL`` in ``plan_analysis/pipeline.py``).
+    plan_extraction_model: str = "claude-sonnet-5-5"
+
+    # Modell für die Höhen-Lesung aus Schnitten (``analyze_schnitt_plan``).
+    # Bewusst getrennt und auf Sonnet 4.6: Sonnet 5.5 lieferte auf beiden
+    # Test-Schnitten (GWM EP-08, 50.07) 0 Höhen, Sonnet 4.6 8 bzw. 11.
+    # Umschaltbar per Env-Var SCHNITT_EXTRACTION_MODEL.
+    schnitt_extraction_model: str = "claude-sonnet-4-6"
+
     # v24.4.2 — Coming-Soon-Gate vor der öffentlichen Marketing-
     # Oberfläche. Solange baulv.at in der geschlossenen Test-Phase
     # läuft, fragt das Frontend an dieser Stelle einen geteilten

@@ -4,7 +4,7 @@ Two pieces:
 
 1. ``_VISION_MAX_TOKENS`` is the new module constant for the
    per-page Anthropic ``messages.create`` call's output cap. Bumped
-   from 4096 to 8192 in v23.1.1 because larger plans (130+ rooms)
+   from 4096 to 8192 in v23.1.1 (and to 16384 in v25.2) because larger plans (130+ rooms)
    started hitting BadRequestError once the v23.1 pin-coordinate
    fields added ~30 tokens per room. Locked in a test so a future
    refactor doesn't silently revert it.
@@ -27,14 +27,36 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
-def test_vision_max_tokens_is_8192_after_hotfix():
+def test_vision_max_tokens_is_16384_for_sonnet_5_5():
     """v23.1.1 doubled the cap from 4096 → 8192 because larger
-    plans were tripping max_tokens-related 400 errors. The
-    explicit assertion locks the new value so it can't slide back
-    on a refactor."""
+    plans were tripping max_tokens-related 400 errors. v25.2 doubled
+    it again to 16384: Sonnet 5.5 thinks by default and the thinking
+    tokens count against the cap — at 8192, 2 of 5 GWM runs were cut
+    off. The explicit assertion locks the value so it can't slide
+    back on a refactor."""
     from app.plan_analysis.pipeline import _VISION_MAX_TOKENS
 
-    assert _VISION_MAX_TOKENS == 8192
+    assert _VISION_MAX_TOKENS == 16384
+
+
+def test_extraction_models_default_and_split():
+    """v25.2 — Grundriss liest mit Sonnet 5.5, Schnitt bleibt auf
+    Sonnet 4.6 (Sonnet 5.5 lieferte auf den Test-Schnitten 0 Höhen).
+    Beide Aufrufe müssen ihr eigenes Setting lesen, kein fester String."""
+    import inspect
+
+    from app.config import Settings
+    from app.plan_analysis import pipeline
+
+    fields = Settings.model_fields
+    assert fields["plan_extraction_model"].default == "claude-sonnet-5-5"
+    assert fields["schnitt_extraction_model"].default == "claude-sonnet-4-6"
+    assert "settings.plan_extraction_model" in inspect.getsource(
+        pipeline._extract_rooms_from_image
+    )
+    assert "settings.schnitt_extraction_model" in inspect.getsource(
+        pipeline._vision_call
+    )
 
 
 def test_vision_max_tokens_is_used_in_extract_call():

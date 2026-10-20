@@ -176,10 +176,14 @@ BUILDING_BBOX_PROMPT_TEMPLATE = (
 ).read_text(encoding="utf-8")
 
 
-# Per-page Claude Vision call timeout. A single page extraction
-# normally takes 15–40s; 120s leaves generous headroom before we
-# decide the API is hanging.
-_CLAUDE_CALL_TIMEOUT_S = 120
+# Per-call Claude Vision timeout (gilt je Aufruf — bei 2×2-Kacheln
+# also je Kachel, nicht für alle vier zusammen). Eine Seite dauert
+# normal 15–60 s. v25.2: 120 → 180 s, weil der Output-Cap auf 16384
+# Tokens stieg — Sonnet 5.5 schrieb im Messlauf im langsamsten Fall
+# ~130 Tokens/s, ein voll ausgeschöpfter Cap bräuchte damit ~125 s und
+# würde bei 120 s als Zeitüberschreitung enden. 180 s lässt ~45 %
+# Reserve und erkennt einen hängenden Aufruf trotzdem.
+_CLAUDE_CALL_TIMEOUT_S = 180
 
 
 # Output-token cap for one Vision response. Bumped from 4096 to
@@ -190,7 +194,12 @@ _CLAUDE_CALL_TIMEOUT_S = 120
 # 4096 that the request started getting rejected with a
 # "max_tokens insufficient for expected output" 400. 8192 leaves
 # generous headroom; we only pay for what's actually generated.
-_VISION_MAX_TOKENS = 8192
+# v25.2: 8192 → 16384 mit dem Wechsel auf Sonnet 5.5. Das Modell denkt
+# standardmäßig mit, die Denk-Tokens zählen in den Cap: auf GWM EP-04
+# (~31 Räume) kamen bis zu 8253 Output-Tokens, 2 von 5 Läufen brachen
+# bei 8192 mit stop_reason=max_tokens ab (ganze Seite verloren). Mit
+# 16384 im Nachlauf 0 Abbrüche.
+_VISION_MAX_TOKENS = 16384
 
 
 def _translate_anthropic_error(exc: Exception) -> str | None:
@@ -1104,15 +1113,13 @@ async def _extract_rooms_from_image(
     image_b64 = base64.b64encode(image_bytes).decode("utf-8")
 
     # Wrap in wait_for so a stalled API call can't hang indefinitely.
-    # Keep this model string in lock-step with ``lv_generator/generator.py``
-    # and ``chat/assistant.py``. The previous pin
-    # (``claude-sonnet-4-20250514``) is an older, date-suffixed ID that
-    # Anthropic rotated out; requests against it came back 404/503 and
-    # surfaced to the UI as a generic analysis failure. ``claude-sonnet-4-6``
-    # is the current Sonnet generation.
+    # Model comes from ``settings.plan_extraction_model`` (Env-Var
+    # PLAN_EXTRACTION_MODEL, Default ``claude-sonnet-5-5``). Never use a
+    # date-suffixed ID: the old ``claude-sonnet-4-20250514`` pin was
+    # rotated out and surfaced to the UI as a generic analysis failure.
     message = await asyncio.wait_for(
         client.messages.create(
-            model="claude-sonnet-4-6",
+            model=settings.plan_extraction_model,
             max_tokens=_VISION_MAX_TOKENS,
             messages=[
                 {
@@ -2578,7 +2585,7 @@ async def _vision_call(
     image_b64 = base64.b64encode(image_bytes).decode("utf-8")
     message = await asyncio.wait_for(
         client.messages.create(
-            model="claude-sonnet-4-6",
+            model=settings.schnitt_extraction_model,
             max_tokens=_VISION_MAX_TOKENS,
             messages=[
                 {
