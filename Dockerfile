@@ -47,4 +47,8 @@ EXPOSE ${PORT}
 # Production server: gunicorn with uvicorn workers
 RUN pip install --no-cache-dir gunicorn==26.2.0
 
-CMD ["sh", "-c", "gunicorn app.main:app --bind 0.0.0.0:${PORT} --workers 2 --worker-class uvicorn.workers.UvicornWorker --timeout 120"]
+# Audit 2026-11 — 1 Worker: die Rate-Limits (Support-Chat, Login,
+# Beta-Code, Registrierung) zählen im Prozess-Speicher; mit 2 Workern
+# galt jedes Limit doppelt. Erst mit REDIS_URL + geteilten Limitern
+# wieder hochsetzen (WEB_CONCURRENCY).
+CMD ["sh", "-c", "gunicorn app.main:app --bind 0.0.0.0:${PORT} --workers ${WEB_CONCURRENCY:-1} --worker-class uvicorn.workers.UvicornWorker --timeout 120"]

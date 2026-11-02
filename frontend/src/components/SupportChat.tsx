@@ -124,8 +124,8 @@ export function SupportChat() {
     try {
       // Drop the opening greeting — it is a client-side pleasantry,
       // not something the backend needs to see. Also cap the window
-      // to the last 30 turns to control prompt size.
-      const toSend = next.filter((m, i) => !(i === 0 && m === GREETING)).slice(-30);
+      // to the last 10 turns — the backend uses no more (Audit 2026-11).
+      const toSend = next.filter((m, i) => !(i === 0 && m === GREETING)).slice(-10);
       const reply = await sendSupportMessage(toSend);
       setMessages((m) => [...m, { role: "assistant", content: reply }]);
     } catch (err: unknown) {
@@ -230,7 +230,7 @@ export function SupportChat() {
                 onKeyDown={onKeyDown}
                 placeholder="Ihre Frage zu BauLV..."
                 rows={1}
-                maxLength={2000}
+                maxLength={1000}
                 className="max-h-28 flex-1 resize-none rounded-lg border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
                 disabled={sending}
               />

@@ -39,6 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models.audit import AuditLogEntry
 from app.db.models.mcp_audit import McpAuditLogEntry
 from app.db.models.waitlist_entry import WaitlistEntry
+from app.services import usage_counter
 from app.db.session import async_session_factory
 from app.dsgvo_retention import (
     AUDIT_LOG_RETENTION_DAYS,
@@ -148,6 +149,9 @@ async def run_all_cleanups(db: AsyncSession | None = None) -> CleanupResult:
             audit_deleted = await cleanup_audit_logs(session)
             mcp_deleted = await cleanup_mcp_audit_logs(session)
             waitlist_deleted = await cleanup_stale_waitlist_pending(session)
+            # Audit 2026-11 — alte Kostenbremsen-Zählerstände (keine
+            # personenbezogenen Nutzdaten, nur Zahlen pro Tag).
+            await usage_counter.purge_older_than(session)
             if own_session:
                 await session.commit()
         except Exception:

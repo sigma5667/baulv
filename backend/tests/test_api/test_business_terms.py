@@ -56,6 +56,15 @@ from app.schemas.user import UserRegister
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _registration_without_beta_gate(monkeypatch):
+    """Diese Tests prüfen Einwilligungs-Logik, nicht das Beta-Gate
+    (das deckt ``test_audit_2026_11.py`` ab) — Gate hier aus."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "registration_requires_beta", False)
+
+
 def _mock_request(*, ip: str | None = None, user_agent: str | None = None):
     """Stand-in for the FastAPI Request used by the consent helpers."""
     request = MagicMock()

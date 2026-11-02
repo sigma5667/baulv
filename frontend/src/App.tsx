@@ -26,6 +26,7 @@ import { DatenschutzPage } from "./pages/DatenschutzPage";
 import { AGBPage } from "./pages/AGBPage";
 import { WartelisteBestaetigenPage } from "./pages/WartelisteBestaetigenPage";
 import { WartelisteAbmeldenPage } from "./pages/WartelisteAbmeldenPage";
+import { EmailBestaetigenPage } from "./pages/EmailBestaetigenPage";
 import { ApiPricingPage } from "./pages/ApiPricingPage";
 import { DevelopersPage } from "./pages/DevelopersPage";
 import { PrivacySettingsPage } from "./pages/PrivacySettingsPage";
@@ -204,6 +205,9 @@ export default function App() {
         path="/warteliste/abmelden"
         element={<WartelisteAbmeldenPage />}
       />
+      {/* Audit 2026-11 — Konto-E-Mail bestätigen; Link aus der
+          Registrierungs-Mail, daher ebenfalls ohne Beta-Gate. */}
+      <Route path="/email-bestaetigen" element={<EmailBestaetigenPage />} />
 
       {/* v23.7 — public marketing + technical landing pages for the
           MCP API. Auch in der Beta-Phase hinter dem Gate, damit

@@ -73,5 +73,12 @@ class User(Base):
     is_admin: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
     )
+    # Audit 2026-11 — Zeitpunkt, an dem der User den Bestätigungs-Link
+    # aus der Registrierungs-Mail geöffnet hat. NULL = unbestätigt →
+    # KI-Funktionen gesperrt (siehe ``subscriptions.require_feature``).
+    # Bestandskonten hat Migration 030 auf ``now()`` gesetzt.
+    email_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)

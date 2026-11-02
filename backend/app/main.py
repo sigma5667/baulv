@@ -1,6 +1,7 @@
 import asyncio
 import os
 import subprocess
+import sys
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -110,19 +111,27 @@ async def _run_migrations_with_lock() -> None:
     dann "schon auf head" → no-op. Der Lock ist session-gebunden und wird
     bei Prozess-Tod automatisch freigegeben (kein Dauer-Hang möglich).
 
-    Fail-open: scheitert schon der Lock-Connect (DB down etc.), wird die
-    Migration trotzdem versucht — die jetzt idempotente 027 macht auch
-    einen ungesperrten Lauf sicher.
+    Fail-open nur beim Lock: scheitert schon der Lock-Connect, wird die
+    Migration trotzdem versucht — die idempotente 027 macht auch einen
+    ungesperrten Lauf sicher.
+
+    Audit 2026-11 — eine fehlgeschlagene Migration bricht den Start ab
+    (``RuntimeError``). Vorher wurde sie nur geloggt und die App lief
+    gegen ein halb migriertes Schema weiter; Railway hält bei einem
+    Boot-Fehler die alte Version am Netz.
     """
     def _run_alembic() -> None:
+        # ``python -m alembic`` statt des ``alembic``-Launchers: gleicher
+        # Interpreter wie die App, und unter Windows blockt die
+        # Anwendungssteuerung den .exe-Launcher.
         result = subprocess.run(
-            ["alembic", "upgrade", "head"],
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
             capture_output=True, text=True, timeout=120,
         )
-        if result.returncode == 0:
-            logger.info("Alembic migrations applied successfully")
-        else:
+        if result.returncode != 0:
             logger.error("Alembic migration failed: %s", result.stderr)
+            raise RuntimeError("Alembic migration failed — Start abgebrochen")
+        logger.info("Alembic migrations applied successfully")
 
     lock_conn = None
     try:
@@ -130,19 +139,6 @@ async def _run_migrations_with_lock() -> None:
         await lock_conn.execute(
             text("SELECT pg_advisory_lock(:k)"), {"k": _MIGRATION_LOCK_KEY}
         )
-        try:
-            _run_alembic()
-        finally:
-            try:
-                await lock_conn.execute(
-                    text("SELECT pg_advisory_unlock(:k)"),
-                    {"k": _MIGRATION_LOCK_KEY},
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "advisory unlock failed (wird beim Disconnect "
-                    "freigegeben): %s", e,
-                )
     except Exception as e:  # noqa: BLE001
         # Lock-Connect/Acquire scheiterte — Migration trotzdem versuchen
         # (idempotente 027 macht das sicher), damit ein Lock-Problem den
@@ -150,16 +146,31 @@ async def _run_migrations_with_lock() -> None:
         logger.warning(
             "Advisory-Lock nicht verfügbar (%s) — Migration ungesperrt.", e
         )
-        try:
-            _run_alembic()
-        except Exception as e2:  # noqa: BLE001
-            logger.error("Failed to run migrations: %s", e2)
-    finally:
         if lock_conn is not None:
             try:
                 await lock_conn.close()
             except Exception:  # noqa: BLE001
                 pass
+        _run_alembic()
+        return
+
+    try:
+        _run_alembic()
+    finally:
+        try:
+            await lock_conn.execute(
+                text("SELECT pg_advisory_unlock(:k)"),
+                {"k": _MIGRATION_LOCK_KEY},
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "advisory unlock failed (wird beim Disconnect "
+                "freigegeben): %s", e,
+            )
+        try:
+            await lock_conn.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 @asynccontextmanager
@@ -282,11 +293,19 @@ async def _audit_cleanup_loop() -> None:
 
 
 def create_app() -> FastAPI:
+    # Audit 2026-11 — API-Doku (/docs, /redoc, /openapi.json) nur
+    # außerhalb von Production. Live legte sie das komplette API-Schema
+    # inkl. Admin-Routen offen; abgeschaltet fallen die Pfade auf den
+    # SPA-Catch-all durch.
+    is_production = settings.environment.lower() == "production"
     app = FastAPI(
         title="BauLV",
         description="AI-gestuetzte Bau-Ausschreibungssoftware",
         version="0.1.0",
         lifespan=lifespan,
+        docs_url=None if is_production else "/docs",
+        redoc_url=None if is_production else "/redoc",
+        openapi_url=None if is_production else "/openapi.json",
     )
 
     # CORS — Environment-abhängig.

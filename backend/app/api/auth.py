@@ -11,6 +11,7 @@ from fastapi import (
     APIRouter,
     Depends,
     File,
+    Header,
     HTTPException,
     Request,
     Response,
@@ -18,6 +19,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -70,7 +72,12 @@ from app.services.audit import (
     EVENT_SESSIONS_REVOKED_ALL,
     log_event,
 )
-from app.services.email import send_password_reset_email
+from app.services.email import (
+    send_email_verification_email,
+    send_password_reset_email,
+)
+from app.services import email_verification
+from app.api.beta_gate import _verify_token as _verify_beta_token
 from app.services.password_reset import (
     mark_token_used,
     mint_reset_token,
@@ -296,6 +303,7 @@ def _user_response(user: User) -> UserResponse:
         analytics_consent=user.analytics_consent,
         industry_segment=user.industry_segment,
         is_admin=user.is_admin,
+        email_verified=user.email_verified_at is not None,
         created_at=user.created_at,
     )
 
@@ -395,6 +403,7 @@ async def register(
     data: UserRegister,
     request: Request,
     db: AsyncSession = Depends(get_db),
+    x_beta_token: str | None = Header(default=None),
 ):
     """Create a new user account with DSGVO Art. 7 consent capture.
 
@@ -414,6 +423,20 @@ async def register(
     # Security-Härtung (Audit 2026-06) — Brute-Force-/Abuse-Bremse pro
     # IP, bevor irgendeine DB-Arbeit passiert.
     auth_rate_limit.enforce("register", request)
+
+    # Audit 2026-11 — Beta-Gate serverseitig. Vorher prüfte nur die SPA
+    # den Beta-Code; ein direkter API-Aufruf legte ohne Code ein Konto
+    # an (und bekam mit BETA_UNLOCK_ALL_FEATURES alle KI-Funktionen).
+    if settings.registration_requires_beta and not _verify_beta_token(
+        x_beta_token or ""
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Registrierung nur mit gültigem Beta-Zugang möglich. "
+                "Bitte geben Sie den Beta-Code erneut ein."
+            ),
+        )
 
     # Version-mismatch guard. The frontend reads the canonical
     # versions from ``GET /api/legal/versions`` (or
@@ -531,7 +554,78 @@ async def register(
         user=user,
         event_data={"industry": industry or INDUSTRY_UNKNOWN},
     )
+    # Audit 2026-11 — Double-Opt-In. Fire-and-forget wie beim
+    # Passwort-Reset; ohne Bestätigung bleiben nur die KI-Funktionen zu.
+    send_email_verification_email(
+        to_email=user.email,
+        verify_token=email_verification.mint_verify_token(
+            user_id=user.id, email=user.email
+        ),
+        user_name=user.full_name or None,
+    )
     return TokenResponse(access_token=token, user=_user_response(user))
+
+
+# ---------------------------------------------------------------------------
+# E-Mail-Bestätigung (Audit 2026-11)
+# ---------------------------------------------------------------------------
+
+
+class VerifyEmailRequest(BaseModel):
+    token: str = Field(min_length=1, max_length=300)
+
+
+@router.post("/verify-email")
+async def verify_email(
+    data: VerifyEmailRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Bestätigungs-Link einlösen. Ohne Login, damit der Link auch in
+    einem anderen Browser funktioniert. Idempotent."""
+    auth_rate_limit.enforce("verify-email", request)
+    parsed = email_verification.parse_verify_token(data.token)
+    user = await db.get(User, parsed[0]) if parsed else None
+    if (
+        parsed is None
+        or user is None
+        or not email_verification.signature_matches(
+            user_id=user.id, email=user.email, expires_at=parsed[1], sig=parsed[2]
+        )
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Der Bestätigungs-Link ist ungültig oder abgelaufen. "
+                "Nach dem Login können Sie einen neuen anfordern."
+            ),
+        )
+    if user.email_verified_at is None:
+        user.email_verified_at = datetime.now(timezone.utc)
+        # Explizit committen: der Commit in ``get_db`` läuft erst nach
+        # der Antwort — die SPA lädt direkt danach ``/me`` neu und sähe
+        # sonst noch ``email_verified=false``.
+        await db.commit()
+    return {"status": "verified"}
+
+
+@router.post("/verify-email/resend", status_code=202)
+async def resend_verification_email(
+    request: Request,
+    user: User = Depends(get_current_user),
+):
+    """Bestätigungs-Mail erneut schicken (3 / h pro Konto)."""
+    if user.email_verified_at is not None:
+        return {"status": "already_verified"}
+    auth_rate_limit.enforce("verify-email-resend", request, account=str(user.id))
+    send_email_verification_email(
+        to_email=user.email,
+        verify_token=email_verification.mint_verify_token(
+            user_id=user.id, email=user.email
+        ),
+        user_name=user.full_name or None,
+    )
+    return {"status": "sent"}
 
 
 @router.post("/login", response_model=TokenResponse)

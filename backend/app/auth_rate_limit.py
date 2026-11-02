@@ -43,6 +43,9 @@ _LIMITS: dict[tuple[str, str], tuple[int, int]] = {
     ("login", "acct"): (8, 900),                   # 8 / 15 min pro E-Mail
     ("register", "ip"): (15, 3600),                # 15 / h pro IP
     ("password-reset-confirm", "ip"): (20, 900),   # 20 / 15 min pro IP
+    ("verify-email", "ip"): (30, 900),             # 30 / 15 min pro IP
+    ("verify-email-resend", "ip"): (20, 3600),     # 20 / h pro IP
+    ("verify-email-resend", "acct"): (3, 3600),    # 3 / h pro Konto
     # Warteliste (v25). Der acct-Bucket bremst Mail-Bombing: ohne ihn
     # könnte ein Angreifer mit rotierenden IPs eine fremde Adresse
     # beliebig oft mit Bestätigungs-Mails fluten.

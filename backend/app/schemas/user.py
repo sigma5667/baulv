@@ -128,6 +128,9 @@ class UserResponse(BaseModel):
     analytics_consent: bool = False
     industry_segment: str | None = None
     is_admin: bool = False
+    # Audit 2026-11 — Konto-E-Mail per Link bestätigt. False →
+    # KI-Endpunkte antworten 403 ``email_not_verified``.
+    email_verified: bool = False
     created_at: datetime
 
     model_config = {"from_attributes": True}

@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "../../hooks/useAuth";
 import { BetaUnlockBanner } from "../BetaUnlockBanner";
+import { EmailVerifyBanner } from "../EmailVerifyBanner";
 import { ConsentRefreshGate } from "../auth/ConsentRefreshModal";
 import { Footer } from "./Footer";
 
@@ -180,6 +181,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
       {/* Main content */}
       <main className="flex flex-1 flex-col overflow-auto">
+        <EmailVerifyBanner />
         <div className="flex-1">{children}</div>
         {/* Footer with legal links — visible inside the authenticated app too */}
         <Footer />

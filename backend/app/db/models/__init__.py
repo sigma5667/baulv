@@ -13,6 +13,7 @@ from app.db.models.consent import ConsentSnapshot
 from app.db.models.password_reset_token import PasswordResetToken
 from app.db.models.analytics import UsageAnalyticsEvent
 from app.db.models.waitlist_entry import WaitlistEntry
+from app.db.models.usage_counter import DailyUsageCounter
 
 __all__ = [
     "Project", "Building", "Floor", "Unit", "Room", "Opening",
@@ -30,4 +31,5 @@ __all__ = [
     "PasswordResetToken",
     "UsageAnalyticsEvent",
     "WaitlistEntry",
+    "DailyUsageCounter",
 ]

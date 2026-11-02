@@ -23,7 +23,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy import select
 
 from app.config import settings
-from app.db.models.lv import Leistungsverzeichnis, Position
+from app.db.models.lv import Leistungsgruppe, Leistungsverzeichnis, Position
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ async def generate_position_texts(lv_id: UUID, db: AsyncSession) -> int:
         select(Leistungsverzeichnis)
         .where(Leistungsverzeichnis.id == lv_id)
         .options(
-            selectinload(Leistungsverzeichnis.gruppen).selectinload("positionen"),
+            selectinload(Leistungsverzeichnis.gruppen).selectinload(Leistungsgruppe.positionen),
         )
     )
     result = await db.execute(stmt)

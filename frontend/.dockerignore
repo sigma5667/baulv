@@ -1,0 +1,6 @@
+# Audit 2026-11 — Build-Kontext von docker-compose (./frontend).
+.env
+.env.*
+!.env.example
+node_modules
+dist

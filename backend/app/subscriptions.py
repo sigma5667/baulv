@@ -17,10 +17,13 @@ them on for a tester would surface half-built behavior.
 """
 
 from fastapi import Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
 from app.config import settings
 from app.db.models.user import User
+from app.db.session import get_db
+from app.services import usage_counter
 
 PLAN_HIERARCHY = {"basis": 0, "pro": 1, "enterprise": 2}
 
@@ -96,13 +99,43 @@ def check_project_limit(plan: str, current_count: int) -> bool:
 
 def require_feature(feature: str):
     """FastAPI dependency that checks if the user's plan allows a feature."""
-    async def _check(user: User = Depends(get_current_user)):
+    async def _check(
+        user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
+        # Audit 2026-11 — KI-Funktionen erst nach bestätigter E-Mail.
+        # Greift vor dem Plan-Check, damit auch der Beta-Override
+        # (BETA_UNLOCK_ALL_FEATURES) unbestätigte Konten nicht durchlässt.
+        if (
+            feature.startswith("ai_")
+            and settings.email_verification_required
+            and getattr(user, "email_verified_at", None) is None
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Bitte bestätigen Sie zuerst Ihre E-Mail-Adresse "
+                    "(Link in der Bestätigungs-Mail)."
+                ),
+            )
         if not has_feature(user.subscription_plan, feature):
             plan_needed = FEATURE_REQUIREMENTS[feature]
             raise HTTPException(
                 status_code=403,
                 detail=f"Diese Funktion erfordert den {plan_needed.title()}-Plan. Bitte upgraden Sie Ihr Abonnement.",
             )
+        # Audit 2026-11 — KI-Tageslimit pro Konto. Wichtig, solange
+        # BETA_UNLOCK_ALL_FEATURES jedem Konto alle KI-Funktionen gibt.
+        if feature.startswith("ai_") and settings.ai_daily_limit_per_user > 0:
+            used = await usage_counter.increment(db, f"ai:{user.id}")
+            if used > settings.ai_daily_limit_per_user:
+                raise HTTPException(
+                    status_code=429,
+                    detail=(
+                        "Tageslimit für KI-Funktionen erreicht. "
+                        "Bitte morgen erneut versuchen."
+                    ),
+                )
         return user
     return _check
 

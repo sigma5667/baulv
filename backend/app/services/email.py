@@ -274,6 +274,107 @@ https://baulv.at
 
 
 # ---------------------------------------------------------------------------
+# Konto-E-Mail bestätigen (Audit 2026-11)
+# ---------------------------------------------------------------------------
+
+
+def send_email_verification_email(
+    *,
+    to_email: str,
+    verify_token: str,
+    user_name: str | None = None,
+) -> bool:
+    """Bestätigungs-Link für eine neue Registrierung verschicken.
+
+    Wie beim Passwort-Reset: das Token wird nie geloggt, der Aufrufer
+    zeigt das Ergebnis nicht an (Mail ist fire-and-forget).
+    """
+    logger.info("email.verify.attempt recipient=%s", to_email)
+
+    salutation = f"Hallo {user_name}," if user_name else "Hallo,"
+    verify_link = (
+        f"{settings.app_base_url.rstrip('/')}"
+        f"/email-bestaetigen?token={verify_token}"
+    )
+    subject = "E-Mail-Adresse bestätigen - BauLV"
+
+    text_body = f"""{salutation}
+
+bitte bestätigen Sie die E-Mail-Adresse Ihres neuen BauLV-Kontos:
+
+{verify_link}
+
+Der Link ist 3 Tage gültig. Bis zur Bestätigung sind die KI-Funktionen
+gesperrt; alles andere können Sie schon nutzen.
+
+Falls Sie kein BauLV-Konto angelegt haben, können Sie diese E-Mail
+ignorieren.
+
+Viele Grüße
+Ihr BauLV-Team
+
+--
+BauLV - KI-gestützte Bau-Ausschreibungssoftware
+https://baulv.at
+"""
+
+    html_body = f"""<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>E-Mail-Adresse bestätigen - BauLV</title>
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; line-height: 1.6; color: #1f2937; max-width: 560px; margin: 0 auto; padding: 24px;">
+  <h1 style="font-size: 20px; font-weight: 600; color: #111827; margin: 0 0 16px;">
+    E-Mail-Adresse bestätigen
+  </h1>
+  <p style="margin: 0 0 16px;">{html_mod.escape(salutation)}</p>
+  <p style="margin: 0 0 16px;">
+    bitte bestätigen Sie die E-Mail-Adresse Ihres neuen BauLV-Kontos:
+  </p>
+  <p style="margin: 24px 0;">
+    <a href="{verify_link}"
+       style="display: inline-block; padding: 12px 24px; background: #2563eb;
+              color: #ffffff; text-decoration: none; border-radius: 6px;
+              font-weight: 500;">
+      E-Mail-Adresse bestätigen
+    </a>
+  </p>
+  <p style="margin: 0 0 16px; font-size: 14px; color: #6b7280;">
+    Oder kopieren Sie diese Adresse in Ihren Browser:<br>
+    <span style="word-break: break-all;">{verify_link}</span>
+  </p>
+  <p style="margin: 0 0 16px; font-size: 14px; color: #6b7280;">
+    Der Link ist <strong>3 Tage</strong> gültig. Bis zur Bestätigung sind
+    die KI-Funktionen gesperrt.
+  </p>
+  <p style="margin: 24px 0 0; font-size: 14px; color: #6b7280;">
+    Falls Sie kein BauLV-Konto angelegt haben, können Sie diese E-Mail ignorieren.
+  </p>
+  <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 32px 0 16px;">
+  <p style="margin: 0; font-size: 12px; color: #9ca3af;">
+    BauLV - KI-gestützte Bau-Ausschreibungssoftware<br>
+    <a href="https://baulv.at" style="color: #6b7280; text-decoration: underline;">baulv.at</a>
+  </p>
+</body>
+</html>
+"""
+
+    sent = _send(
+        to_email=to_email,
+        subject=subject,
+        html_body=html_body,
+        text_body=text_body,
+    )
+    logger.info(
+        "email.verify.%s recipient=%s",
+        "sent" if sent else "failed",
+        to_email,
+    )
+    return sent
+
+
+# ---------------------------------------------------------------------------
 # Warteliste: Double-Opt-In-Bestätigung (v25)
 # ---------------------------------------------------------------------------
 

@@ -29,11 +29,14 @@ from pathlib import Path
 from threading import Lock
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.client_ip import client_ip
+from app.db.session import get_db
+from app.services import usage_counter
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +102,8 @@ def check_rate_limit(ip: str) -> tuple[bool, int]:
 
 class SupportMessage(BaseModel):
     role: Literal["user", "assistant"]
+    # Schema bleibt großzügig, damit ältere Widget-Stände nicht mit 422
+    # scheitern; gekürzt wird serverseitig (``_trim_history``).
     content: str = Field(min_length=1, max_length=4000)
 
 
@@ -107,6 +112,29 @@ class SupportChatRequest(BaseModel):
     # conversation context. Cap to avoid unbounded prompt growth —
     # 40 entries (~20 turns) is already more than a support chat needs.
     messages: list[SupportMessage] = Field(min_length=1, max_length=40)
+
+
+# Audit 2026-11 — Kostenbremse. Vorher gingen bis zu 40 × 4000 Zeichen
+# + 2000 Antwort-Tokens pro Anfrage an Anthropic.
+MAX_USER_MESSAGE_CHARS = 1000
+MAX_HISTORY_MESSAGES = 10
+MAX_HISTORY_MESSAGE_CHARS = 1000
+MAX_REPLY_TOKENS = 600
+
+
+def _trim_history(messages: list[SupportMessage]) -> list[dict[str, str]]:
+    """Nur die letzten ``MAX_HISTORY_MESSAGES`` Nachrichten, jede auf
+    ``MAX_HISTORY_MESSAGE_CHARS`` gekürzt, beginnend mit einer
+    User-Nachricht und streng abwechselnd (eingeschleuste Folgen
+    gleicher Rollen werden verworfen)."""
+    out: list[dict[str, str]] = []
+    for m in messages[-MAX_HISTORY_MESSAGES:]:
+        if not out and m.role != "user":
+            continue
+        if out and out[-1]["role"] == m.role:
+            continue
+        out.append({"role": m.role, "content": m.content[:MAX_HISTORY_MESSAGE_CHARS]})
+    return out
 
 
 class SupportChatResponse(BaseModel):
@@ -119,7 +147,11 @@ class SupportChatResponse(BaseModel):
 
 
 @router.post("/support-chat", response_model=SupportChatResponse)
-async def support_chat(payload: SupportChatRequest, request: Request) -> SupportChatResponse:
+async def support_chat(
+    payload: SupportChatRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> SupportChatResponse:
     """Public, rate-limited support chat.
 
     Never raises to the caller with internal detail — on every backend
@@ -127,6 +159,10 @@ async def support_chat(payload: SupportChatRequest, request: Request) -> Support
     widget always has something to show. The ROOT CAUSE is always in
     Railway logs, keyed by the ``support_chat.*`` log names.
     """
+    if not settings.support_chat_enabled:
+        logger.warning("support_chat.disabled — SUPPORT_CHAT_ENABLED=false")
+        raise HTTPException(status_code=503, detail=GENERIC_UNAVAILABLE)
+
     ip = _client_ip(request)
     allowed, retry_after = check_rate_limit(ip)
     if not allowed:
@@ -161,6 +197,29 @@ async def support_chat(payload: SupportChatRequest, request: Request) -> Support
         raise HTTPException(
             status_code=400, detail="Letzte Nachricht muss vom Benutzer stammen."
         )
+    if len(payload.messages[-1].content) > MAX_USER_MESSAGE_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Nachricht zu lang (höchstens {MAX_USER_MESSAGE_CHARS} Zeichen).",
+        )
+
+    # Globaler Tagesdeckel — zählt vor dem Anthropic-Aufruf und wird
+    # sofort committet, damit der Stand auch bei einem späteren Fehler bleibt.
+    used_today = await usage_counter.increment(db, "support_chat")
+    await db.commit()
+    if used_today > settings.support_chat_daily_limit:
+        logger.warning(
+            "support_chat.daily_limit used=%d limit=%d",
+            used_today,
+            settings.support_chat_daily_limit,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Der Support-Chat ist heute ausgelastet. Bitte schreiben "
+                "Sie an kontakt@baulv.at."
+            ),
+        )
 
     # Defensive: basic format check so the "wrong shape" case is visible
     # in logs rather than surfacing as a generic 503.
@@ -186,9 +245,7 @@ async def support_chat(payload: SupportChatRequest, request: Request) -> Support
                 "cache_control": {"type": "ephemeral"},
             }
         ]
-        claude_messages = [
-            {"role": m.role, "content": m.content} for m in payload.messages
-        ]
+        claude_messages = _trim_history(payload.messages)
 
         logger.info(
             "support_chat.calling_claude model=%s system_prompt_chars=%d first_user_msg_chars=%d",
@@ -200,7 +257,7 @@ async def support_chat(payload: SupportChatRequest, request: Request) -> Support
         started = time.time()
         response = await client.messages.create(
             model=SUPPORT_CHAT_MODEL,
-            max_tokens=2000,
+            max_tokens=MAX_REPLY_TOKENS,
             system=system_blocks,
             messages=claude_messages,
         )

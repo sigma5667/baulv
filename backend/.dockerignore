@@ -1,0 +1,10 @@
+# Audit 2026-11 — Build-Kontext von docker-compose (./backend).
+.env
+.env.*
+!.env.example
+__pycache__
+*.py[cod]
+.venv
+venv
+uploads
+.pytest_cache

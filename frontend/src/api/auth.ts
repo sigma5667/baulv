@@ -28,8 +28,26 @@ export async function registerUser(data: {
   analytics_consent?: boolean;
   industry_segment?: IndustrySegment | null;
 }): Promise<TokenResponse> {
-  const res = await api.post("/auth/register", data);
+  // Audit 2026-11 — das Backend verlangt das Beta-Token jetzt auch
+  // serverseitig (vorher reine UI-Sperre). Gleicher Wert und Header
+  // wie bei ``GET /api/beta/status``.
+  const betaToken = localStorage.getItem("baulv_beta_session");
+  const res = await api.post("/auth/register", data, {
+    headers: betaToken ? { "X-Beta-Token": betaToken } : undefined,
+  });
   return res.data;
+}
+
+/** Audit 2026-11 — Bestätigungs-Link aus der Registrierungs-Mail
+ * einlösen. Ohne Login, der Link kann in einem anderen Browser
+ * geöffnet werden. */
+export async function verifyEmail(token: string): Promise<void> {
+  await api.post("/auth/verify-email", { token });
+}
+
+/** Bestätigungs-Mail erneut anfordern (eingeloggt, 3 / h). */
+export async function resendVerificationEmail(): Promise<void> {
+  await api.post("/auth/verify-email/resend");
 }
 
 /** Public legal-version pins. Used by the registration form to

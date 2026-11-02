@@ -1,0 +1,20 @@
+# Audit 2026-11 — nichts Geheimes oder Lokales ins Image.
+# Ohne diese Datei landete z. B. backend/.env (ANTHROPIC_API_KEY) bei
+# einem lokalen ``docker build`` im Image.
+**/.env
+**/.env.*
+!**/.env.example
+.git
+.claude
+**/__pycache__
+**/*.py[cod]
+**/.venv
+**/venv
+**/node_modules
+frontend/dist
+backend/uploads
+test-plaene
+docker-data
+demo
+*.docx
+*.pdf

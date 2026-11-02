@@ -141,6 +141,35 @@ class Settings(BaseSettings):
     # (HMAC-Signatur enthält den Code, siehe ``app/api/beta_gate.py``).
     beta_access_code: str = ""
 
+    # Audit 2026-11 — Registrierung serverseitig an das Beta-Gate
+    # binden. Solange ``True``, verlangt ``POST /api/auth/register``
+    # einen gültigen ``X-Beta-Token``-Header (gleiches Token wie
+    # ``/api/beta/status``); ohne ihn 403 ``beta_required``. Vorher war
+    # das Gate eine reine UI-Sperre und die API direkt offen. Zum
+    # öffentlichen Launch auf ``false`` stellen.
+    registration_requires_beta: bool = True
+
+    # Audit 2026-11 — Double-Opt-In der Konto-E-Mail. Neue Konten
+    # bekommen einen Bestätigungs-Link; bis zur Bestätigung liefern
+    # alle KI-Endpunkte (``require_feature("ai_*")``) 403
+    # ``email_not_verified``. Bestandskonten wurden per Migration 030
+    # als bestätigt übernommen. Setzt ``RESEND_API_KEY`` voraus — ohne
+    # Mailversand kommen neue Konten nie an die KI-Funktionen.
+    email_verification_required: bool = True
+
+    # Audit 2026-11 — Kostenbremsen für Anthropic-Aufrufe.
+    # Not-Aus für den öffentlichen Support-Chat (ohne Login): ``false``
+    # → 503, kein Anthropic-Aufruf.
+    support_chat_enabled: bool = True
+    # Globaler Tagesdeckel (alle Besucher zusammen, UTC-Tag), gezählt in
+    # ``daily_usage_counters``. Bei 600 max_tokens / 10 Nachrichten
+    # Verlauf kostet eine Anfrage mit Haiku unter 1 Cent → 300/Tag
+    # deckelt bei rund 3 $ pro Tag.
+    support_chat_daily_limit: int = 300
+    # KI-Aufrufe (Plananalyse, KI-Berater, LV-Texte) pro Konto und Tag.
+    # Greift auch bei BETA_UNLOCK_ALL_FEATURES. 0 = kein Limit.
+    ai_daily_limit_per_user: int = 100
+
     # v25 — Master-Schalter für die öffentliche Warteliste. Default
     # AUS (*fail-safe* wie ``beta_access_code``): ohne explizit
     # gesetztes ``WAITLIST_ENABLED=true`` antworten die drei

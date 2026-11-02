@@ -48,6 +48,11 @@ export interface User {
    * visibility. Falls back to the email allow-list on the server,
    * but the frontend reads only this flag. */
   is_admin: boolean;
+  /** Audit 2026-11 — Konto-E-Mail über den Link aus der
+   * Bestätigungs-Mail bestätigt. Ohne Bestätigung sperrt das Backend
+   * die KI-Funktionen. Optional, damit ein älteres Backend (Feld
+   * fehlt) keinen Banner auslöst. */
+  email_verified?: boolean;
   created_at: string;
 }
 
