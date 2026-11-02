@@ -28,7 +28,8 @@ activated (``mcp`` and ``anthropic`` are already in
 
     export BAULV_PAT=pat_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
     export ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxxxxxxxxxxxxxx
-    # optional: export BAULV_BASE_URL=https://baulv-production.up.railway.app
+    # Default ist lokal (http://localhost:8000). Gegen Produktion:
+    # export BAULV_BASE_URL=https://baulv.at  (+ --allow-production bei --write)
 
     python scripts/demo_mcp_agent.py              # read-only
     python scripts/demo_mcp_agent.py --write      # writing demo
@@ -53,6 +54,7 @@ import os
 import sys
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 import anthropic
 from mcp.client.session import ClientSession
@@ -380,8 +382,11 @@ def main() -> int:
     )
     parser.add_argument(
         "--base-url",
-        default=os.environ.get("BAULV_BASE_URL", "https://baulv.at"),
-        help="BauLV-Basis-URL (default: $BAULV_BASE_URL oder https://baulv.at)",
+        default=os.environ.get("BAULV_BASE_URL", "http://localhost:8000"),
+        help=(
+            "BauLV-Basis-URL (default: $BAULV_BASE_URL oder lokal "
+            "http://localhost:8000). Produktion nur explizit angeben."
+        ),
     )
     parser.add_argument(
         "--write",
@@ -393,6 +398,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--allow-production",
+        action="store_true",
+        help=(
+            "Schreib-Demo gegen eine Nicht-localhost-URL ausdrücklich "
+            "erlauben (Audit 2026-11: ein Testlauf gegen baulv.at hatte "
+            "ein Konto in Produktion angelegt)."
+        ),
+    )
+    parser.add_argument(
         "--prompt",
         help=(
             "Eigener deutscher Prompt; "
@@ -400,6 +414,15 @@ def main() -> int:
         ),
     )
     args = parser.parse_args()
+
+    host = urlsplit(args.base_url).hostname or ""
+    is_local = host in {"localhost", "127.0.0.1", "::1"}
+    if (args.write or args.prompt) and not is_local and not args.allow_production:
+        _err(
+            f"{args.base_url} ist keine lokale Adresse. Schreibende Läufe "
+            "gegen Produktion nur mit --allow-production."
+        )
+        return 2
 
     pat = os.environ.get("BAULV_PAT")
     if not pat:

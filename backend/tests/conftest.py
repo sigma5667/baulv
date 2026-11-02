@@ -32,6 +32,52 @@ machinery, not the Malerarbeiten math.
 
 from __future__ import annotations
 
+# ---------------------------------------------------------------------------
+# Produktionsschutz (Audit 2026-11) — läuft VOR jedem ``app``-Import.
+# ---------------------------------------------------------------------------
+#
+# 1. Echte Schlüssel/URLs aus ``backend/.env`` werden überschrieben
+#    (Umgebung schlägt .env in pydantic-settings): kein Test kann echte
+#    Anthropic-/Stripe-/Resend-Aufrufe auslösen oder eine echte DB
+#    ansprechen. Die Tests selbst laufen auf SQLite im Speicher.
+# 2. Netzwerk-Sperre: jede Namensauflösung außer localhost/testserver
+#    und jede Verbindung zu einer Nicht-Loopback-IP schlägt fehl —
+#    ein vergessener Mock trifft nie baulv.at oder eine Fremd-API.
+
+import ipaddress as _ipaddress
+import os as _os
+import socket as _socket
+
+_TEST_ENV = {
+    "ENVIRONMENT": "test",
+    "DATABASE_URL": "postgresql+asyncpg://test:test@127.0.0.1:1/test",
+    "ANTHROPIC_API_KEY": "sk-ant-test-dummy-never-valid",
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:1",
+    "STRIPE_SECRET_KEY": "",
+    "STRIPE_WEBHOOK_SECRET": "",
+    "RESEND_API_KEY": "",
+    "REDIS_URL": "",
+    "APP_BASE_URL": "http://localhost:5173",
+}
+_os.environ.update(_TEST_ENV)
+
+_ALLOWED_HOSTS = {"localhost", "testserver", "test", None, ""}
+_real_getaddrinfo = _socket.getaddrinfo
+
+
+def _guarded_getaddrinfo(host, *args, **kwargs):
+    name = host.decode() if isinstance(host, bytes) else host
+    try:
+        local = _ipaddress.ip_address(name).is_loopback
+    except (ValueError, TypeError):
+        local = name in _ALLOWED_HOSTS
+    if not local:
+        raise OSError(f"Tests dürfen nicht ins Netz: Verbindung zu {name!r} blockiert")
+    return _real_getaddrinfo(host, *args, **kwargs)
+
+
+_socket.getaddrinfo = _guarded_getaddrinfo
+
 import uuid
 from collections.abc import AsyncIterator, Callable
 from decimal import Decimal
