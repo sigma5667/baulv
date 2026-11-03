@@ -105,8 +105,8 @@ const TIERS: ApiTier[] = [
       "5.000 API-Calls/Monat",
       "Inkl. 200 Plan-Analysen mit KI",
       "Priority-Support",
-      "Webhook-Integration",
-      "API-Logs Export",
+      "Webhook-Integration (auf Anfrage)",
+      "API-Log-Export (auf Anfrage)",
     ],
     ctaLabel: "Kontakt aufnehmen",
     ctaKind: "contact",
@@ -122,7 +122,7 @@ const TIERS: ApiTier[] = [
       "SLA optional (auf Anfrage)",
       "Dedicated Support",
       "Custom-Integrationen",
-      "Whitelabel-Option",
+      "Whitelabel (auf Anfrage)",
     ],
     ctaLabel: "Kontakt aufnehmen",
     ctaKind: "contact",
@@ -154,7 +154,7 @@ const FAQS = [
   },
   {
     q: "Welche Bezahlmethoden unterstützt ihr?",
-    a: "Kreditkarte über Stripe (Visa, Mastercard, AmEx). SEPA-Lastschrift für Enterprise-Kunden auf Anfrage. Rechnung mit 14 Tagen Zahlungsziel ab Pro-Plan.",
+    a: "Kreditkarte über Stripe (Visa, Mastercard, AmEx). SEPA-Lastschrift für Enterprise-Kunden auf Anfrage. Kauf auf Rechnung auf Anfrage.",
   },
   {
     q: "Kann ich jederzeit kündigen?",
@@ -223,6 +223,15 @@ export function ApiPricingPage() {
               Kostenlos starten
             </Link>
           </div>
+          {/* Mobile: ohne Menü wäre auf dem Handy nur das Logo da. */}
+          <div className="flex items-center gap-4 md:hidden">
+            <Link to="/" className="text-sm text-muted-foreground hover:text-foreground">
+              Plattform
+            </Link>
+            <Link to="/login" className="text-sm font-medium text-primary">
+              Login
+            </Link>
+          </div>
         </div>
       </nav>
 
@@ -232,12 +241,12 @@ export function ApiPricingPage() {
           <div className="text-center">
             <div className="mb-4 inline-flex items-center gap-2 rounded-full border bg-white px-4 py-1.5 text-sm text-muted-foreground shadow-sm">
               <Code2 className="h-4 w-4 text-primary" />
-              MCP-Server · 15 Tools · EU-Hosting
+              MCP-Server · REST-API · 15 Tools
             </div>
             <h1 className="text-4xl font-extrabold tracking-tight md:text-5xl">
               BauLV API für{" "}
               <span className="bg-gradient-to-r from-blue-600 to-blue-400 bg-clip-text text-transparent">
-                KI-Agenten
+                <span className="whitespace-nowrap">KI-Agenten</span>
               </span>{" "}
               und Entwickler
             </h1>
@@ -321,7 +330,7 @@ export function ApiPricingPage() {
           <div>
             <h2 className="text-3xl font-bold">Über die API</h2>
             <p className="mt-3 text-muted-foreground">
-              Standardisiert, dokumentiert, EU-gehostet — ein
+              Standardisiert, dokumentiert, mit klaren Limits — ein
               Production-Stack ohne Überraschungen.
             </p>
             <Link
@@ -361,8 +370,8 @@ export function ApiPricingPage() {
             />
             <ApiFact
               icon={Shield}
-              label="Region"
-              value="EU (Cloudflare + Railway)"
+              label="Hosting"
+              value="Server EU-West (Railway) · KI: Anthropic (USA)"
             />
           </div>
         </div>
@@ -427,7 +436,7 @@ function TierCard({
     <div className={cardClass}>
       {tier.highlighted && (
         <span className="absolute -top-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-primary px-3 py-1 text-xs font-medium text-primary-foreground">
-          Most Popular
+          Empfohlen
         </span>
       )}
       <h3 className="text-xl font-bold">{tier.name}</h3>

@@ -129,27 +129,6 @@ export function ImpressumPage() {
           </div>
 
           <div>
-            <h2 className="mb-2 text-lg font-semibold">
-              Online-Streitbeilegung
-            </h2>
-            <p>
-              Die Europäische Kommission stellt eine Plattform zur
-              Online-Streitbeilegung (OS) bereit:{" "}
-              <a
-                href="https://ec.europa.eu/consumers/odr"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-primary hover:underline"
-              >
-                https://ec.europa.eu/consumers/odr
-              </a>
-              . Wir sind nicht bereit oder verpflichtet, an
-              Streitbeilegungsverfahren vor einer
-              Verbraucherschlichtungsstelle teilzunehmen.
-            </p>
-          </div>
-
-          <div>
             <h2 className="mb-2 text-lg font-semibold">Haftungsausschluss</h2>
             <p>
               Die Inhalte dieser Website wurden mit größtmöglicher Sorgfalt

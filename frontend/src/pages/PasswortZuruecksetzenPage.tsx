@@ -93,7 +93,7 @@ export function PasswortZuruecksetzenPage() {
 
   if (missingToken) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-blue-50 to-slate-100 px-4 py-8">
+      <div className="flex min-h-screen items-center justify-center bg-slate-50 font-plex antialiased px-4 py-8">
         <div className="w-full max-w-md rounded-xl border bg-white p-6 shadow-lg sm:p-8">
           <div className="mb-6 flex flex-col items-center">
             <Link to="/" className="flex items-center gap-2 text-primary mb-2">
@@ -117,7 +117,7 @@ export function PasswortZuruecksetzenPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-blue-50 to-slate-100 px-4 py-8">
+    <div className="flex min-h-screen items-center justify-center bg-slate-50 font-plex antialiased px-4 py-8">
       <div className="w-full max-w-md rounded-xl border bg-white p-6 shadow-lg sm:p-8">
         <div className="mb-6 flex flex-col items-center">
           <Link to="/" className="flex items-center gap-2 text-primary mb-2">

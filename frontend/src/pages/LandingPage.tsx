@@ -95,7 +95,9 @@ function Tick({ x, y }: { x: number; y: number }) {
  */
 function HeroTransformation() {
   return (
-    <div className="border border-slate-200 bg-white">
+    // min-w-0: als Grid-Kind darf die Figur schmäler werden als ihr
+    // Tabellen-Inhalt — sonst ragt sie mobil über den rechten Rand.
+    <div className="min-w-0 border border-slate-200 bg-white">
       {/* Plankopf */}
       <div className="flex items-center justify-between border-b border-slate-200 px-4 py-2 font-plexmono text-[11px] uppercase tracking-wider text-slate-500">
         <span>Grundriss · Top 3 · M 1:100</span>
@@ -315,7 +317,7 @@ function HeroTransformation() {
                 <th scope="col" className="whitespace-nowrap py-2 pr-2 text-left font-normal">
                   Raum
                 </th>
-                <th scope="col" className="whitespace-nowrap px-2 py-2 text-right font-normal">
+                <th scope="col" className="hidden whitespace-nowrap px-2 py-2 text-right font-normal sm:table-cell">
                   Maße (m)
                 </th>
                 <th scope="col" className="whitespace-nowrap px-2 py-2 text-right font-normal">
@@ -336,7 +338,7 @@ function HeroTransformation() {
                   <th scope="row" className="py-2 pr-2 text-left font-normal text-slate-700">
                     {r.name}
                   </th>
-                  <td className="whitespace-nowrap px-2 py-2 text-right font-plexmono text-slate-500">
+                  <td className="hidden whitespace-nowrap px-2 py-2 text-right font-plexmono text-slate-500 sm:table-cell">
                     {r.dims}
                   </td>
                   <td className="px-2 py-2 text-right font-plexmono text-slate-900">{r.floor}</td>
@@ -347,7 +349,7 @@ function HeroTransformation() {
                 <th scope="row" className="py-2.5 pr-2 text-left font-medium text-slate-900">
                   Summe
                 </th>
-                <td className="px-2 py-2.5" />
+                <td className="hidden px-2 py-2.5 sm:table-cell" />
                 <td className="border-t-2 border-slate-300 px-2 py-2.5 text-right font-plexmono text-slate-900">
                   {TOTALS.floor}
                 </td>

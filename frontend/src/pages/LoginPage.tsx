@@ -34,7 +34,7 @@ export function LoginPage() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-blue-50 to-slate-100">
+    <div className="flex min-h-screen items-center justify-center bg-slate-50 font-plex antialiased">
       <div className="w-full max-w-md rounded-xl border bg-white p-8 shadow-lg">
         <div className="mb-6 flex flex-col items-center">
           <Link to="/" className="flex items-center gap-2 text-primary mb-2">
@@ -90,21 +90,12 @@ export function LoginPage() {
             </div>
           </div>
 
-          {/* v24.4.1+ — Self-Service Passwort-Reset ist derzeit
-              nicht aktiv. Bis dahin: User wenden sich per Email an
-              den Support. Backend-Endpoint bleibt funktional und kann
-              jederzeit wieder freigeschaltet werden indem hier auf
-              ``/passwort-vergessen`` zurückgewechselt wird. */}
-          <div className="flex items-center justify-between text-sm text-muted-foreground">
-            <span>
-              Passwort vergessen? Funktion nicht aktiv —{" "}
-              <a
-                href="mailto:kontakt@baulv.at"
-                className="text-primary hover:underline"
-              >
-                kontakt@baulv.at
-              </a>
-            </span>
+          {/* Self-Service-Passwort-Reset (DS-3) wieder aktiv, seit der
+              Mailversand (Resend) für die E-Mail-Bestätigung live läuft. */}
+          <div className="flex justify-end text-sm">
+            <Link to="/passwort-vergessen" className="text-primary hover:underline">
+              Passwort vergessen?
+            </Link>
           </div>
 
           <button

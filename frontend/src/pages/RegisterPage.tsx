@@ -152,7 +152,7 @@ export function RegisterPage() {
     : "";
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-blue-50 to-slate-100 py-8">
+    <div className="flex min-h-screen items-center justify-center bg-slate-50 font-plex antialiased py-8">
       <div className="w-full max-w-md rounded-xl border bg-white p-8 shadow-lg">
         <div className="mb-6 flex flex-col items-center">
           <Link to="/" className="flex items-center gap-2 text-primary mb-2">

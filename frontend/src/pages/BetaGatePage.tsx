@@ -48,7 +48,7 @@ export function BetaGatePage() {
   }
 
   return (
-    <div className="flex min-h-screen flex-col bg-white">
+    <div className="flex min-h-screen flex-col bg-white font-plex antialiased">
       <main className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center px-6 py-12">
         {/* Logo + Brand */}
         <div className="mb-8 flex items-center justify-center gap-2 font-bold text-primary">

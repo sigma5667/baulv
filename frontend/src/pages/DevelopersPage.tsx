@@ -209,7 +209,7 @@ export function DevelopersPage() {
             </span>
           </h1>
           <p className="mt-5 max-w-2xl text-lg text-slate-300">
-            MCP-Standard, 15 Tools, Personal Access Tokens. EU-gehostet.
+            MCP-Standard, 15 Tools, Personal Access Tokens.
             Jederzeit kündbar.
           </p>
           <div className="mt-8 flex flex-wrap gap-3">
@@ -455,6 +455,15 @@ function PublicNavbar() {
             className="text-sm font-medium text-primary hover:text-primary/80"
           >
             Anmelden
+          </Link>
+        </div>
+        {/* Mobile: ohne Menü wäre auf dem Handy nur das Logo da. */}
+        <div className="flex items-center gap-4 md:hidden">
+          <Link to="/" className="text-sm text-muted-foreground hover:text-foreground">
+            Plattform
+          </Link>
+          <Link to="/login" className="text-sm font-medium text-primary">
+            Login
           </Link>
         </div>
       </div>

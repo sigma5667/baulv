@@ -65,9 +65,9 @@ const PLANS = [
     interval: "",
     features: [
       "Alles aus Pro, plus:",
-      "Angebotsvergleich / Preisspiegel",
-      "Team- und Multi-User-Konten",
-      "Individuelle Konfiguration der Berechnungsregeln",
+      "Angebotsvergleich / Preisspiegel (in Entwicklung)",
+      "Team- und Multi-User-Konten (in Entwicklung)",
+      "Individuelle Berechnungsregeln (auf Anfrage)",
       "API-Zugang",
       "Dedizierter Support",
     ],
