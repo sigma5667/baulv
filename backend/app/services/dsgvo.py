@@ -60,8 +60,14 @@ from app.db.models.project import (
     Room,
     Unit,
 )
+from app.db.models.analytics import UsageAnalyticsEvent
+from app.db.models.api_key import ApiKey
+from app.db.models.consent import ConsentSnapshot
+from app.db.models.lv_template import LVTemplate
+from app.db.models.mcp_audit import McpAuditLogEntry
 from app.db.models.session import UserSession
 from app.db.models.user import User
+from app.db.models.waitlist_entry import WaitlistEntry
 
 logger = logging.getLogger(__name__)
 
@@ -224,8 +230,140 @@ def _plan_dict(p: Plan) -> dict[str, Any]:
             "plan_type": p.plan_type,
             "analysis_status": p.analysis_status,
             "created_at": p.created_at,
+            # Pfad der Datei im Export-ZIP, oder None wenn die Datei auf
+            # dem Server nicht (mehr) vorhanden ist.
+            "file_in_export": _plan_export_name(p) if _readable_upload(p.file_path) else None,
         }
     )
+
+
+# --- Export-Ergänzungen (Audit L10: consent_snapshots, Warteliste,
+# API-Schlüssel, LV-Vorlagen, MCP-Protokoll, Nutzungsstatistik,
+# Dateien). Keine Geheimnisse: Schlüssel-/Token-Hashes bleiben drin.
+
+
+def _consent_dict(c: ConsentSnapshot) -> dict[str, Any]:
+    return _iso(
+        {
+            "id": c.id,
+            "event_type": c.event_type,
+            "privacy_version": c.privacy_version,
+            "terms_version": c.terms_version,
+            "business_terms_version": c.business_terms_version,
+            "marketing_optin": c.marketing_optin,
+            "analytics_consent": c.analytics_consent,
+            "ip_address": str(c.ip_address) if c.ip_address is not None else None,
+            "user_agent": c.user_agent,
+            "created_at": c.created_at,
+        }
+    )
+
+
+def _waitlist_dict(w: WaitlistEntry) -> dict[str, Any]:
+    # confirm_token_hash bewusst NICHT — ist ein Geheimnis, kein Inhalt.
+    return _iso(
+        {
+            "id": w.id,
+            "email": w.email,
+            "name": w.name,
+            "company_name": w.company_name,
+            "status": w.status,
+            "source": w.source,
+            "consent_text_version": w.consent_text_version,
+            "signup_at": w.signup_at,
+            "signup_ip": w.signup_ip,
+            "confirmed_at": w.confirmed_at,
+            "confirmed_ip": w.confirmed_ip,
+            "unsubscribed_at": w.unsubscribed_at,
+        }
+    )
+
+
+def _api_key_dict(k: ApiKey) -> dict[str, Any]:
+    # Nur Metadaten — key_hash bleibt auf dem Server.
+    return _iso(
+        {
+            "id": k.id,
+            "name": k.name,
+            "key_prefix": k.key_prefix,
+            "created_at": k.created_at,
+            "last_used_at": k.last_used_at,
+            "expires_at": k.expires_at,
+            "revoked_at": k.revoked_at,
+        }
+    )
+
+
+def _template_dict(t: LVTemplate) -> dict[str, Any]:
+    return _iso(
+        {
+            "id": t.id,
+            "name": t.name,
+            "description": t.description,
+            "category": t.category,
+            "gewerk": t.gewerk,
+            "template_data": t.template_data,
+            "created_at": t.created_at,
+            "updated_at": t.updated_at,
+        }
+    )
+
+
+def _mcp_audit_dict(e: McpAuditLogEntry) -> dict[str, Any]:
+    return _iso(
+        {
+            "id": e.id,
+            "api_key_id": e.api_key_id,
+            "tool_name": e.tool_name,
+            "arguments": e.arguments,
+            "result": e.result,
+            "error_message": e.error_message,
+            "latency_ms": e.latency_ms,
+            "created_at": e.created_at,
+        }
+    )
+
+
+def _analytics_dict(a: UsageAnalyticsEvent) -> dict[str, Any]:
+    return _iso(
+        {
+            "event_type": a.event_type,
+            "event_data": a.event_data,
+            "region_code": a.region_code,
+            "industry_segment": a.industry_segment,
+            "created_at": a.created_at,
+        }
+    )
+
+
+def _readable_upload(path_str: str | None) -> bool:
+    """Datei existiert UND liegt im Upload-Verzeichnis (kein Pfad aus der
+    DB darf den Export dazu bringen, fremde Server-Dateien einzupacken)."""
+    from pathlib import Path
+
+    if not path_str:
+        return False
+    try:
+        path = Path(path_str).resolve()
+        root = settings.upload_path.resolve()
+    except OSError:
+        return False
+    return path.is_file() and (path == root or root in path.parents)
+
+
+def _safe_name(name: str) -> str:
+    keep = "".join(ch if ch.isalnum() or ch in "._- " else "_" for ch in name)
+    return keep.strip() or "datei"
+
+
+def _plan_export_name(p: Plan) -> str:
+    return f"dateien/plaene/{p.id}_{_safe_name(p.filename or 'plan.pdf')}"
+
+
+def _logo_export_name(path_str: str) -> str:
+    from pathlib import Path
+
+    return f"dateien/logo{Path(path_str).suffix.lower()}"
 
 
 def _berechnung_dict(b: Berechnungsnachweis) -> dict[str, Any]:
@@ -390,22 +528,123 @@ async def export_user_data(user: User, db: AsyncSession) -> dict[str, Any]:
     )
     sessions = session_result.scalars().all()
 
+    # Audit L10 — bisher fehlende Tabellen.
+    from app.services.analytics import hash_user_id
+
+    consents = (
+        await db.execute(
+            select(ConsentSnapshot)
+            .where(ConsentSnapshot.user_id == user.id)
+            .order_by(ConsentSnapshot.created_at.asc())
+        )
+    ).scalars().all()
+    waitlist = (
+        await db.execute(
+            select(WaitlistEntry).where(
+                WaitlistEntry.email == (user.email or "").strip().lower()
+            )
+        )
+    ).scalars().all()
+    api_keys = (
+        await db.execute(
+            select(ApiKey)
+            .where(ApiKey.user_id == user.id)
+            .order_by(ApiKey.created_at.asc())
+        )
+    ).scalars().all()
+    templates = (
+        await db.execute(
+            select(LVTemplate)
+            .where(
+                LVTemplate.created_by_user_id == user.id,
+                LVTemplate.is_system.is_(False),
+            )
+            .order_by(LVTemplate.created_at.asc())
+        )
+    ).scalars().all()
+    mcp_entries = (
+        await db.execute(
+            select(McpAuditLogEntry)
+            .where(McpAuditLogEntry.user_id == user.id)
+            .order_by(McpAuditLogEntry.created_at.asc())
+        )
+    ).scalars().all()
+    analytics = (
+        await db.execute(
+            select(UsageAnalyticsEvent)
+            .where(UsageAnalyticsEvent.anonymous_user_id == hash_user_id(user.id))
+            .order_by(UsageAnalyticsEvent.created_at.asc())
+        )
+    ).scalars().all()
+
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "disclaimer": (
-            "This export contains all personal data BauLV holds about this "
-            "user account, provided under Art. 20 GDPR (DSGVO). Built-in "
-            "reference data such as the shared calculation-rule library is "
-            "not included because it is not personal data. Uploaded plan "
-            "PDFs are listed by metadata only; contact support if you also "
-            "need the binary files."
+            "Dieser Export enthält alle personenbezogenen Daten, die BauLV "
+            "zu diesem Konto speichert (Art. 15 und 20 DSGVO): Konto, "
+            "Projekte mit Plänen, Räumen, Leistungsverzeichnissen und "
+            "Chats, Sicherheitsprotokoll, Sitzungen, "
+            "Einwilligungsnachweise, Warteliste-Eintrag, API-Schlüssel "
+            "(nur Metadaten), eigene LV-Vorlagen, MCP-Aufrufprotokoll und "
+            "pseudonymisierte Nutzungsstatistik. Hochgeladene Plan-Dateien "
+            "und das Firmenlogo liegen im Ordner 'dateien/' dieses "
+            "ZIP-Archivs, soweit sie auf dem Server noch vorhanden sind "
+            "(siehe 'file_in_export' je Plan). Nicht enthalten: "
+            "Geheimnisse wie Passwort-, Schlüssel- und Token-Hashes sowie "
+            "allgemeine Referenzdaten ohne Personenbezug."
         ),
         "user": _user_dict(user),
         "projects": [_project_dict(p) for p in projects],
         "audit_log": [_audit_dict(e) for e in audit_entries],
         "sessions": [_session_dict(s) for s in sessions],
+        "consent_snapshots": [_consent_dict(c) for c in consents],
+        "waitlist_entries": [_waitlist_dict(w) for w in waitlist],
+        "api_keys": [_api_key_dict(k) for k in api_keys],
+        "lv_templates": [_template_dict(t) for t in templates],
+        "mcp_audit_log": [_mcp_audit_dict(e) for e in mcp_entries],
+        "usage_analytics": [_analytics_dict(a) for a in analytics],
+        "logo_in_export": (
+            _logo_export_name(user.logo_path)
+            if _readable_upload(user.logo_path)
+            else None
+        ),
     }
+
+
+async def build_export_zip(user: User, db: AsyncSession) -> tuple[bytes, int]:
+    """Export als ZIP: ``daten.json`` + Plan-Dateien + Logo.
+
+    Gibt ``(zip_bytes, anzahl_dateien)`` zurück. Dateien, die auf dem
+    Server fehlen, stehen im JSON mit ``file_in_export: null``.
+    """
+    import io
+    import json
+    import zipfile
+
+    payload = await export_user_data(user, db)
+    plans = (
+        await db.execute(
+            select(Plan)
+            .join(Project, Plan.project_id == Project.id)
+            .where(Project.user_id == user.id)
+        )
+    ).scalars().all()
+
+    buf = io.BytesIO()
+    files = 0
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(
+            "daten.json", json.dumps(payload, ensure_ascii=False, indent=2)
+        )
+        for p in plans:
+            if _readable_upload(p.file_path):
+                zf.write(p.file_path, _plan_export_name(p))
+                files += 1
+        if payload.get("logo_in_export"):
+            zf.write(user.logo_path, payload["logo_in_export"])
+            files += 1
+    return buf.getvalue(), files
 
 
 # ---------------------------------------------------------------------------

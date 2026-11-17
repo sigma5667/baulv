@@ -253,8 +253,8 @@ export async function changePassword(data: {
 }
 
 /**
- * Art. 20 DSGVO — download a JSON dump of all personal data BauLV holds
- * about the current user. Triggers a native browser download.
+ * Art. 15/20 DSGVO — ZIP mit allen personenbezogenen Daten (daten.json)
+ * plus Plan-Dateien und Logo. Triggers a native browser download.
  */
 export async function downloadMyDataExport(): Promise<void> {
   const res = await api.get("/auth/me/export", { responseType: "blob" });
@@ -263,13 +263,15 @@ export async function downloadMyDataExport(): Promise<void> {
   // fall back to a sensible default if the header is unavailable (e.g.
   // when running against a mock).
   const disposition = res.headers["content-disposition"] as string | undefined;
-  let filename = `baulv-export-${new Date().toISOString().slice(0, 10)}.json`;
+  let filename = `baulv-export-${new Date().toISOString().slice(0, 10)}.zip`;
   if (disposition) {
     const match = /filename="?([^"]+)"?/i.exec(disposition);
     if (match) filename = match[1];
   }
 
-  const blob = new Blob([res.data], { type: "application/json" });
+  const contentType =
+    (res.headers["content-type"] as string | undefined) ?? "application/zip";
+  const blob = new Blob([res.data], { type: contentType });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;

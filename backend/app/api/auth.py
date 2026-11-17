@@ -1,5 +1,4 @@
 import io
-import json
 import logging
 import shutil
 from datetime import datetime, timedelta, timezone
@@ -88,7 +87,7 @@ from app.services.consent import (
     record_marketing_optin_change,
     record_registration_consent,
 )
-from app.services.dsgvo import delete_user_account, export_user_data
+from app.services.dsgvo import build_export_zip, delete_user_account
 from app.services import analytics as analytics_service
 from app.db.models.analytics import (
     ALLOWED_INDUSTRY_SEGMENTS,
@@ -1343,28 +1342,27 @@ async def export_my_data(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Art. 20 DSGVO — Right to data portability.
+    """Art. 15/20 DSGVO — Auskunft und Datenübertragbarkeit.
 
-    Streams a JSON file containing every personal-data row we hold for
-    the caller. Format is versioned via ``schema_version`` inside the
-    payload so that future exports remain backward compatible.
+    Liefert ein ZIP-Archiv: ``daten.json`` (alle personenbezogenen
+    Datensätze, versioniert über ``schema_version``) plus die
+    hochgeladenen Plan-Dateien und das Firmenlogo unter ``dateien/``.
     """
-    payload = await export_user_data(user, db)
-    body = json.dumps(payload, ensure_ascii=False, indent=2)
+    body, file_count = await build_export_zip(user, db)
     timestamp = datetime.utcnow().strftime("%Y-%m-%d")
-    filename = f"baulv-export-{timestamp}.json"
+    filename = f"baulv-export-{timestamp}.zip"
 
     await log_event(
         db,
         event_type=EVENT_DATA_EXPORTED,
         user_id=user.id,
         request=request,
-        meta={"size_bytes": len(body)},
+        meta={"size_bytes": len(body), "files": file_count},
     )
 
     return Response(
         content=body,
-        media_type="application/json",
+        media_type="application/zip",
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
             # Explicitly disable caching — this is personal data.

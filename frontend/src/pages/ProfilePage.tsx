@@ -442,10 +442,13 @@ function DataExportCard() {
         <h2 className="text-lg font-semibold">Meine Daten herunterladen</h2>
       </div>
       <p className="mb-4 text-sm text-muted-foreground">
-        Laden Sie eine vollständige Kopie Ihrer gespeicherten Daten im
-        JSON-Format herunter — Profildaten, Projekte, Pläne (Metadaten),
-        Leistungsverzeichnisse, Berechnungen und Chat-Verläufe. Dies ist
-        Ihr Recht auf Datenübertragbarkeit nach Art. 20 DSGVO.
+        Laden Sie eine vollständige Kopie Ihrer gespeicherten Daten als
+        ZIP-Archiv herunter: alle Daten im JSON-Format (Profil, Projekte,
+        Räume, Leistungsverzeichnisse, Chats, Protokolle,
+        Einwilligungen, API-Schlüssel, eigene Vorlagen) sowie Ihre
+        hochgeladenen Pläne und Ihr Logo als Dateien. Dies ist Ihr
+        Recht auf Auskunft und Datenübertragbarkeit (Art. 15 und 20
+        DSGVO).
       </p>
       {error && (
         <div className="mb-3 rounded-md bg-destructive/10 px-4 py-2 text-sm text-destructive">
