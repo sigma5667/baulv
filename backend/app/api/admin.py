@@ -73,8 +73,8 @@ async def trigger_audit_cleanup(
     so the run is reflected in the canonical operations log.
     """
     logger.info(
-        "admin.audit_cleanup_triggered_by user=%s email=%s",
-        admin.id, admin.email,
+        "admin.audit_cleanup_triggered_by user=%s",
+        admin.id,
     )
     result = await run_all_cleanups(db)
     return {

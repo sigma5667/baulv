@@ -46,6 +46,7 @@ import logging
 from typing import Any
 
 from app.config import settings
+from app.privacy import email_log_hash
 
 logger = logging.getLogger(__name__)
 
@@ -98,9 +99,9 @@ def _send(
         # notices in the bootstrap output, but don't crash.
         logger.warning(
             "email.no_api_key: RESEND_API_KEY unset; would have sent "
-            "subject=%r to=%r",
+            "subject=%r to=%s",
             subject,
-            to_email,
+            email_log_hash(to_email),
         )
         return False
 
@@ -128,13 +129,13 @@ def _send(
         # tracing is via Resend dashboard + our recipient log line.
         resend.Emails.send(params)
         logger.info(
-            "email.sent recipient=%s subject=%r", to_email, subject
+            "email.sent recipient=%s subject=%r", email_log_hash(to_email), subject
         )
         return True
     except Exception as exc:  # noqa: BLE001 — Resend SDK raises various
         logger.warning(
             "email.send_failed recipient=%s subject=%r error=%s",
-            to_email,
+            email_log_hash(to_email),
             subject,
             exc,
         )
@@ -176,7 +177,7 @@ def send_password_reset_email(
     """
     # Never include the token in a log statement. Even at DEBUG.
     # Log the recipient + the fact we're attempting a send only.
-    logger.info("email.password_reset.attempt recipient=%s", to_email)
+    logger.info("email.password_reset.attempt recipient=%s", email_log_hash(to_email))
 
     salutation = f"Hallo {user_name}," if user_name else "Hallo,"
     reset_link = (
@@ -268,7 +269,7 @@ https://baulv.at
     logger.info(
         "email.password_reset.%s recipient=%s",
         "sent" if sent else "failed",
-        to_email,
+        email_log_hash(to_email),
     )
     return sent
 
@@ -289,7 +290,7 @@ def send_email_verification_email(
     Wie beim Passwort-Reset: das Token wird nie geloggt, der Aufrufer
     zeigt das Ergebnis nicht an (Mail ist fire-and-forget).
     """
-    logger.info("email.verify.attempt recipient=%s", to_email)
+    logger.info("email.verify.attempt recipient=%s", email_log_hash(to_email))
 
     salutation = f"Hallo {user_name}," if user_name else "Hallo,"
     verify_link = (
@@ -369,7 +370,7 @@ https://baulv.at
     logger.info(
         "email.verify.%s recipient=%s",
         "sent" if sent else "failed",
-        to_email,
+        email_log_hash(to_email),
     )
     return sent
 
@@ -409,7 +410,7 @@ def send_waitlist_confirm_email(
     """
     # Token-Disziplin wie beim Passwort-Reset: nie loggen, auch nicht
     # bei DEBUG. Nur Empfänger + Versuchsstatus.
-    logger.info("email.waitlist_confirm.attempt recipient=%s", to_email)
+    logger.info("email.waitlist_confirm.attempt recipient=%s", email_log_hash(to_email))
 
     from app.services.email_footer import footer_html, footer_text
 
@@ -505,7 +506,7 @@ Ihr BauLV-Team
     logger.info(
         "email.waitlist_confirm.%s recipient=%s",
         "sent" if sent else "failed",
-        to_email,
+        email_log_hash(to_email),
     )
     return sent
 
@@ -585,7 +586,7 @@ def send_waitlist_update_email(
     Empfänger sieht die Adressen der anderen). Batching/Pacing gegen
     das Resend-Rate-Limit macht der Endpoint, nicht diese Funktion.
     """
-    logger.info("email.waitlist_update.attempt recipient=%s", to_email)
+    logger.info("email.waitlist_update.attempt recipient=%s", email_log_hash(to_email))
 
     base = settings.app_base_url.rstrip("/")
     unsubscribe_link = (
@@ -606,6 +607,6 @@ def send_waitlist_update_email(
     logger.info(
         "email.waitlist_update.%s recipient=%s",
         "sent" if sent else "failed",
-        to_email,
+        email_log_hash(to_email),
     )
     return sent

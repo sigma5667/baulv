@@ -41,6 +41,7 @@ from app import auth_rate_limit
 from app.api.admin import require_admin
 from app.auth_rate_limit import _client_ip
 from app.config import settings
+from app.privacy import email_log_hash
 from app.db.models.user import User
 from app.db.models.waitlist_entry import WaitlistEntry
 from app.db.session import get_db
@@ -173,7 +174,7 @@ async def join_waitlist(
     if row is not None and row.status == "confirmed":
         # Bereits bestätigt: keine Mail, keine Änderung. Die Antwort
         # bleibt identisch — Enumeration-Schutz.
-        logger.info("waitlist.signup.already_confirmed email=%s", email)
+        logger.info("waitlist.signup.already_confirmed email=%s", email_log_hash(email))
         return {"message": _SIGNUP_GENERIC_MSG}
 
     plaintext, token_hash, expires_at = mint_confirm_token()
@@ -215,7 +216,7 @@ async def join_waitlist(
 
     await db.flush()
     logger.info(
-        "waitlist.signup.%s email=%s source=%s", outcome, email, source
+        "waitlist.signup.%s email=%s source=%s", outcome, email_log_hash(email), source
     )
 
     # Fire-and-forget wie beim Passwort-Reset: ein Resend-Ausfall
@@ -263,7 +264,7 @@ async def confirm_waitlist(
     row.status = "confirmed"
     row.confirmed_at = now
     row.confirmed_ip = _client_ip(request)
-    logger.info("waitlist.confirmed email=%s", row.email)
+    logger.info("waitlist.confirmed email=%s", email_log_hash(row.email))
     return {
         "message": (
             "Vielen Dank! Ihre Anmeldung ist bestätigt - wir melden "
@@ -313,7 +314,7 @@ async def unsubscribe_waitlist(
     if row is not None and row.status != "unsubscribed":
         row.status = "unsubscribed"
         row.unsubscribed_at = datetime.now(timezone.utc)
-        logger.info("waitlist.unsubscribed email=%s", row.email)
+        logger.info("waitlist.unsubscribed email=%s", email_log_hash(row.email))
 
     return {
         "message": (
@@ -492,7 +493,7 @@ async def send_waitlist_update(
         )
         logger.info(
             "waitlist.update_send.dry_run admin=%s recipients=%d",
-            admin.email, len(recipients),
+            admin.id, len(recipients),
         )
         return {
             "dry_run": True,
@@ -532,7 +533,7 @@ async def send_waitlist_update(
 
     logger.info(
         "waitlist.update_send.done admin=%s recipients=%d sent=%d failed=%d",
-        admin.email, len(recipients), sent, failed,
+        admin.id, len(recipients), sent, failed,
     )
     return {
         "dry_run": False,

@@ -1,4 +1,3 @@
-import hashlib
 import io
 import json
 import logging
@@ -353,9 +352,9 @@ def _email_audit_hash(email: str) -> str:
     nur über den Bump hinweg (dokumentiert in
     ``app/config.py:analytics_salt``).
     """
-    return hashlib.sha256(
-        f"{settings.analytics_salt}:{email}".encode("utf-8")
-    ).hexdigest()
+    from app.privacy import email_hash
+
+    return email_hash(email)
 
 
 async def _revoke_all_api_keys(
