@@ -1,7 +1,7 @@
 # BauLV — KI-gestützte Bau-Ausschreibungssoftware
 
 > BauLV automatisiert die Erstellung von Leistungsverzeichnissen für
-> Maler-, Bodenleger- und Trockenbau-Betriebe in Österreich. KI-Agenten
+> Malerbetriebe in Österreich (Gewerk Malerarbeiten). KI-Agenten
 > können das System direkt über das Model Context Protocol (MCP)
 > ansteuern — Projekte anlegen, LVs aus Vorlagen kopieren, Positionen
 > pflegen — ohne den Umweg über die Click-UI.
@@ -10,9 +10,9 @@
 
 - **Bauplan-Analyse**: PDF/Bild-Upload → KI extrahiert Räume,
   Wandflächen, Decken, Öffnungen.
-- **Mengenermittlung nach österreichischen Baustandards**: korrekter
-  Wand-/Deckenfaktor, automatische Öffnungsabzüge, transparente
-  Berechnungsnachweise mit branchenüblichen Berechnungsregeln.
+- **Mengenermittlung für Malerarbeiten**: Wand- und Deckenflächen mit
+  Zuschlägen und Öffnungsabzügen, transparente Berechnungsnachweise
+  je Position.
 - **LV-Vorlagen-Bibliothek**: System-Vorlagen für Standard-Gewerke
   plus persönliche Vorlagen — ein Klick und das Gerüst steht.
 - **Export**: Excel und PDF für den Auftraggeber.

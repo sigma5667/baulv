@@ -71,9 +71,7 @@ const TIERS: ApiTier[] = [
     interval: "/Monat",
     blurb: "Für Experimente und Prototypen.",
     features: [
-      "50 API-Calls/Monat",
       "Nur Read-Tools (8 von 15)",
-      "Keine Plan-Analyse",
       "Community-Support",
     ],
     ctaLabel: "Kostenlos starten",
@@ -86,8 +84,6 @@ const TIERS: ApiTier[] = [
     interval: "",
     blurb: "Für KI-Berater und Workflow-Builder.",
     features: [
-      "1.000 API-Calls/Monat",
-      "Inkl. 50 Plan-Analysen mit KI",
       "Alle 15 Tools (Read + Write)",
       "Email-Support",
     ],
@@ -102,11 +98,8 @@ const TIERS: ApiTier[] = [
     interval: "",
     blurb: "Für produktive Integrationen.",
     features: [
-      "5.000 API-Calls/Monat",
-      "Inkl. 200 Plan-Analysen mit KI",
+      "Alle 15 Tools (Read + Write)",
       "Priority-Support",
-      "Webhook-Integration (auf Anfrage)",
-      "API-Log-Export (auf Anfrage)",
     ],
     ctaLabel: "Kontakt aufnehmen",
     ctaKind: "contact",
@@ -116,13 +109,11 @@ const TIERS: ApiTier[] = [
     name: "Enterprise",
     priceLabel: "Auf Anfrage",
     interval: "",
-    blurb: "Für Plattform-Integrationen mit SLA.",
+    blurb: "Für Plattform-Integrationen.",
     features: [
-      "Unbegrenzte API-Calls",
-      "SLA optional (auf Anfrage)",
+      "Alle 15 Tools (Read + Write)",
       "Dedicated Support",
-      "Custom-Integrationen",
-      "Whitelabel (auf Anfrage)",
+      "Individuelle Konditionen auf Anfrage",
     ],
     ctaLabel: "Kontakt aufnehmen",
     ctaKind: "contact",
@@ -138,7 +129,7 @@ const USE_CASES = [
   {
     icon: Workflow,
     title: "Workflow-Automation",
-    desc: "n8n, Zapier, Make: Plan kommt rein → Mengen werden ermittelt → LV als Excel landet im Sharepoint des Kunden. Vollautomatisch über MCP.",
+    desc: "n8n, Zapier, Make & Co.: Projekte, Räume und LV-Positionen über MCP-Tools lesen und anlegen — als Baustein in deinen eigenen Abläufen.",
   },
   {
     icon: Sparkles,
@@ -149,8 +140,8 @@ const USE_CASES = [
 
 const FAQS = [
   {
-    q: "Was sind Plan-Analysen?",
-    a: "Eine Plan-Analyse ist ein Vision-API-Call auf eine PDF-Bauplan-Datei: die KI erkennt automatisch Räume, Wandflächen, Decken und Öffnungen. Pro Analyse zählt ein PDF mit beliebig vielen Seiten innerhalb der Plattform-Limits. Der Developer-Plan enthält 50 solche Analysen pro Monat, der Pro-Plan 200.",
+    q: "Kann ich Pläne über die API analysieren lassen?",
+    a: "Nein, derzeit nicht. Die KI-Plananalyse läuft in der BauLV-Web-App. Über die API (MCP) arbeitest du mit den Ergebnissen weiter: Projekte, Räume und Leistungsverzeichnisse lesen und bearbeiten.",
   },
   {
     q: "Welche Bezahlmethoden unterstützt ihr?",
@@ -161,12 +152,12 @@ const FAQS = [
     a: "Ja. Alle Tarife sind monatlich kündbar. Du behältst Zugriff bis zum Ende des bezahlten Monats und kannst bis dahin deine Daten exportieren (Art. 20 DSGVO).",
   },
   {
-    q: "Was zählt als API-Call?",
-    a: "Jeder erfolgreiche Tool-Aufruf über den MCP-Endpoint bzw. die REST-API zählt als ein Call. Discovery-Endpoints (/.well-known/mcp.json), das Token-Listing und Read-Calls auf das eigene Profil sind kostenfrei und zählen nicht. Plan-Analysen werden separat gezählt — sie sind teurer in der Verarbeitung und haben deshalb ein eigenes Kontingent pro Tarif.",
+    q: "Welche Limits gelten?",
+    a: "Pro API-Schlüssel höchstens 60 Tool-Aufrufe pro Minute und 1.000 pro Tag — derzeit für alle Tarife gleich.",
   },
   {
     q: "Was passiert bei Limit-Überschreitung?",
-    a: "Der nächste Call bekommt eine 429-Antwort mit einer deutschen Fehlermeldung und einem Retry-After-Header. Der Service ist nicht 'kaputt' — er pausiert nur für dich, bis das Monats-Kontingent wieder freigeschaltet wird oder du in einen größeren Tarif wechselst. Pro- und Enterprise-Kunden können Pakete für überschüssige Calls dazubuchen.",
+    a: "Der Tool-Aufruf liefert eine deutsche Fehlermeldung mit der Wartezeit in Sekunden. Danach kannst du wieder aufrufen — der Dienst ist nicht gestört, er pausiert nur für deinen Schlüssel.",
   },
 ];
 
@@ -241,7 +232,7 @@ export function ApiPricingPage() {
           <div className="text-center">
             <div className="mb-4 inline-flex items-center gap-2 rounded-full border bg-white px-4 py-1.5 text-sm text-muted-foreground shadow-sm">
               <Code2 className="h-4 w-4 text-primary" />
-              MCP-Server · REST-API · 15 Tools
+              MCP-Server · 15 Tools
             </div>
             <h1 className="text-4xl font-extrabold tracking-tight md:text-5xl">
               BauLV API für{" "}
@@ -252,8 +243,8 @@ export function ApiPricingPage() {
             </h1>
             <p className="mx-auto mt-6 max-w-2xl text-lg text-muted-foreground md:text-xl">
               Integriere Bau-Ausschreibungen in deine Workflows.
-              MCP-Server, REST-API, 15 Tools — von der Plan-Analyse
-              bis zum fertigen Leistungsverzeichnis.
+              MCP-Server mit 15 Tools — von Projekten und Räumen bis
+              zum fertigen Leistungsverzeichnis.
             </p>
             <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
               <Link
@@ -371,7 +362,7 @@ export function ApiPricingPage() {
             <ApiFact
               icon={Shield}
               label="Hosting"
-              value="Server EU-West (Railway) · KI: Anthropic (USA)"
+              value="Railway (Datenbank USA) · KI: Anthropic (USA)"
             />
           </div>
         </div>

@@ -641,11 +641,11 @@ const PLANS = [
     price: "Auf Anfrage",
     interval: "",
     // Nur Angebotsvergleich/Team sind noch nicht gebaut — ehrlich
-    // als "in Entwicklung" gekennzeichnet. API-Zugang (MCP + REST)
-    // und dedizierter Support existieren.
+    // als "in Entwicklung" gekennzeichnet. API-Zugang (MCP) und
+    // dedizierter Support existieren; PATs gelten nur für /mcp.
     features: [
       "Alles aus Pro",
-      "API-Zugang (MCP & REST)",
+      "API-Zugang (MCP)",
       "Dedizierter Support",
       "Angebotsvergleich / Preisspiegel (in Entwicklung)",
       "Team- und Multi-User-Konten (in Entwicklung)",

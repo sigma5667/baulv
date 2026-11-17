@@ -2,7 +2,7 @@
   "schemaVersion": "0.1.0",
   "name": "baulv-mcp",
   "title": "BauLV — KI-gestützte Bau-Ausschreibungssoftware",
-  "description": "MCP-Server für headless Agenten (Claude Desktop, n8n, ChatGPT-Connectors). BauLV automatisiert die Erstellung von Leistungsverzeichnissen für Maler-, Bodenleger- und Trockenbau-Betriebe in Österreich. Tools für Projekt-Anlage, LV-Vorlagen-Kopie, Mengen-/Preispflege.",
+  "description": "MCP-Server für headless Agenten (Claude Desktop, n8n, ChatGPT-Connectors). BauLV automatisiert die Erstellung von Leistungsverzeichnissen für Malerbetriebe in Österreich (Gewerk Malerarbeiten). Tools für Projekt-Anlage, LV-Vorlagen-Kopie, Mengen-/Preispflege.",
   "version": "1.0.0",
   "protocolVersion": "2025-11-25",
   "language": "de",
