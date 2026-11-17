@@ -718,6 +718,21 @@ export function PlanAnalysisPage() {
                   : "Nur aktive zeigen"}
               </button>
             </div>
+            {/* KI-Verordnung Art. 50 / Transparenz — immer sichtbar,
+                sobald KI-ermittelte Werte angezeigt werden. */}
+            {rooms.some((r) => r.source === "ai") && (
+            <p
+              role="note"
+              className="mb-3 flex items-start gap-2 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900"
+            >
+              <Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>
+                Diese Werte wurden von einem KI-System aus dem Plan
+                ermittelt und können Fehler enthalten. Bitte Flächen,
+                Höhen und Öffnungen vor der Verwendung im LV prüfen.
+              </span>
+            </p>
+            )}
             <RoomTable
               rooms={rooms}
               projectId={projectId!}

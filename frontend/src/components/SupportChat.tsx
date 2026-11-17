@@ -30,7 +30,7 @@ const LEGACY_STORAGE_KEYS = ["baulv_support_chat_v1"];
 const GREETING: SupportMessage = {
   role: "assistant",
   content:
-    "Hallo! Ich bin der BauLV-Assistent. Wie kann ich Ihnen bei Fragen zum Produkt helfen?",
+    "Hallo! Ich bin der KI-Assistent von BauLV — Sie schreiben mit einem KI-System, nicht mit einem Menschen. Wie kann ich Ihnen bei Fragen zum Produkt helfen?",
 };
 const FALLBACK_REPLY =
   "Der Chat ist momentan nicht verfügbar. Bitte versuchen Sie es später erneut.";
@@ -182,7 +182,7 @@ export function SupportChat() {
               <Bot className="h-5 w-5" />
               <div className="leading-tight">
                 <div className="text-sm font-semibold">BauLV-Assistent</div>
-                <div className="text-[11px] opacity-80">Wir antworten meist sofort</div>
+                <div className="text-[11px] opacity-80">KI-Assistent · automatische Antworten</div>
               </div>
             </div>
             <div className="flex items-center gap-1">
@@ -244,7 +244,8 @@ export function SupportChat() {
               </button>
             </div>
             <p className="mt-1 px-1 text-[10px] text-muted-foreground">
-              Dieser Chat basiert auf Claude AI von Anthropic.
+              KI-Chat (Claude von Anthropic). Antworten können Fehler
+              enthalten — bitte wichtige Angaben prüfen.
             </p>
           </form>
         </div>
