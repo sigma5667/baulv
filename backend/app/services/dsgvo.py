@@ -697,6 +697,27 @@ def _cancel_stripe_subscription(user: User) -> None:
         logger.warning("Stripe teardown failed for user %s: %s", user.id, e)
 
 
+def remove_project_upload_dir(project_id: UUID) -> bool:
+    """Plan-Dateien eines Projekts entfernen (``upload_path/<project_id>/``).
+
+    Gemeinsam genutzt von Konto-Löschung und Projekt-Löschung.
+    Best-effort: eine festsitzende Datei blockiert die Löschung nicht,
+    wir loggen und machen weiter. Gibt zurück, ob danach nichts mehr
+    auf der Platte liegt.
+    """
+    pdir = settings.upload_path / str(project_id)
+    if not pdir.exists():
+        return True
+    try:
+        shutil.rmtree(pdir)
+        return True
+    except OSError as e:
+        # A stuck file shouldn't block deletion. Log and continue;
+        # operations can clean up orphans manually.
+        logger.warning("Failed to remove plan directory %s: %s", pdir, e)
+        return False
+
+
 async def _delete_user_plan_files(user: User, db: AsyncSession) -> None:
     """Remove uploaded plan PDFs AND the user's logo dir from local storage.
 
@@ -716,16 +737,7 @@ async def _delete_user_plan_files(user: User, db: AsyncSession) -> None:
 
     upload_root = settings.upload_path
     for pid in project_ids:
-        pdir = upload_root / str(pid)
-        if pdir.exists():
-            try:
-                shutil.rmtree(pdir)
-            except OSError as e:
-                # A stuck file shouldn't block account deletion. Log and
-                # continue; operations can clean up orphans manually.
-                logger.warning(
-                    "Failed to remove plan directory %s: %s", pdir, e
-                )
+        remove_project_upload_dir(pid)
 
     # v24.4.9 — Logo-Verzeichnis mitlöschen. Pfad-Layout siehe
     # ``auth.py:_logo_dir_for``: ``upload_path/logos/<user_id>/``.

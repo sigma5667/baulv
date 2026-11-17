@@ -16,6 +16,7 @@ from app.subscriptions import check_project_limit
 from app.services import analytics as analytics_service
 from app.db.models.analytics import EVENT_PROJECT_CREATED
 from app.export.mengenermittlung_pdf import export_mengenermittlung_pdf
+from app.services.dsgvo import remove_project_upload_dir
 
 logger = logging.getLogger(__name__)
 
@@ -221,3 +222,9 @@ async def delete_project(
         raise HTTPException(403, "Zugriff verweigert")
     await db.delete(project)
     await db.flush()
+    # Plan-Dateien liegen unter ``upload_path/<project_id>/`` und hängen
+    # nicht am DB-Cascade — ohne diesen Schritt blieben die PDFs nach
+    # der Projekt-Löschung auf der Platte (DSGVO Art. 17). Erst nach dem
+    # erfolgreichen flush, damit ein DB-Fehler keine Dateien kostet.
+    if not remove_project_upload_dir(project_id):
+        logger.warning("project.delete.files_left project=%s", project_id)
