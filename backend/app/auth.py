@@ -20,7 +20,7 @@ from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from jose import JWTError, jwt
+import jwt
 import bcrypt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -76,7 +76,7 @@ def decode_token(token: str) -> dict | None:
     """Decode and validate the JWT. Returns the payload dict or None."""
     try:
         return jwt.decode(token, settings.jwt_secret, algorithms=["HS256"])
-    except JWTError:
+    except jwt.PyJWTError:
         return None
 
 

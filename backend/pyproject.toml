@@ -23,11 +23,10 @@ dependencies = [
     "reportlab==5.0.1",
     "pgvector==0.5.1",
     "httpx==0.28.1",
-    "python-jose[cryptography]==3.5.0",
-    # Audit 2026-11 — Unterabhängigkeit von python-jose, explizit gepinnt:
-    # 0.6.4 hat 4 DoS-Lücken beim BER/DER-Decoding (CVE-2026-119194..97).
-    "pyasn1==0.6.5",
-    "passlib[bcrypt]==1.7.4",
+    # Login-Tokens (HS256) — ersetzt python-jose (ungepflegt, zog ecdsa,
+    # rsa und pyasn1 mit Sicherheitslücken nach). PyJWT kommt ohnehin
+    # schon über das mcp-Paket mit.
+    "PyJWT==2.15.1",
     "sse-starlette==3.5.0",
     "Pillow==13.0.0",
     "stripe==16.0.0",
