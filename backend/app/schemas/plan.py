@@ -13,6 +13,9 @@ class PlanResponse(BaseModel):
     plan_type: str | None
     analysis_status: str
     created_at: datetime
+    # False = Datei auf dem Server nicht mehr vorhanden (siehe
+    # ``Plan.file_available``) — Analyse dann nicht möglich.
+    file_available: bool = True
 
     model_config = {"from_attributes": True}
 

@@ -1061,6 +1061,7 @@ function PlanRow({
   const isGrundriss = planType === "grundriss";
   const isSchnitt = planType === "schnitt";
   const isLageplan = planType === "lageplan";
+  const fileMissing = plan.file_available === false;
 
   // Before analysis, the status label should reflect the user's real
   // capability. Basis users can't trigger analysis — the action button
@@ -1110,6 +1111,14 @@ function PlanRow({
           <div>
             <div className="flex items-center gap-2">
               <p className="text-sm font-medium">{plan.filename}</p>
+              {fileMissing && (
+                <span
+                  className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800"
+                  title="Die Datei ist auf dem Server nicht mehr vorhanden. Bereits erkannte Räume bleiben erhalten; für eine neue Analyse den Plan bitte erneut hochladen."
+                >
+                  Datei nicht mehr vorhanden
+                </span>
+              )}
               {/* v24.1 — Plan-Typ-Badge. Color-coded so der User
                   beim Scannen der Liste sofort sieht welcher Plan
                   Räume liefert (Grundriss) und welcher nur als
@@ -1185,7 +1194,7 @@ function PlanRow({
             (canAnalyze ? (
               <button
                 onClick={onAnalyze}
-                disabled={isAnalyzing}
+                disabled={isAnalyzing || fileMissing}
                 className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                 title={PLAN_TYPE_DESCRIPTIONS.schnitt}
               >
@@ -1233,7 +1242,7 @@ function PlanRow({
             (canAnalyze ? (
               <button
                 onClick={onAnalyze}
-                disabled={isAnalyzing}
+                disabled={isAnalyzing || fileMissing}
                 className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
                 {isAnalyzing ? (

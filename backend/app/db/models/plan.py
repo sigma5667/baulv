@@ -1,4 +1,5 @@
 import uuid
+from pathlib import Path
 from datetime import datetime
 
 from sqlalchemy import String, Integer, BigInteger, ForeignKey, DateTime
@@ -21,6 +22,22 @@ class Plan(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     project: Mapped["Project"] = relationship(back_populates="plans")
+
+    @property
+    def file_available(self) -> bool:
+        """Liegt die hochgeladene Datei noch auf dem Server?
+
+        Pläne aus der Zeit ohne dauerhaften Speicher (Railway-Container
+        ohne Volume, bis 2026-11) haben ihre Datei bei einem Redeploy
+        verloren. Die DB-Zeile und die extrahierten Räume bleiben —
+        die App kennzeichnet solche Pläne statt sie zu löschen.
+        """
+        if not self.file_path:
+            return False
+        try:
+            return Path(self.file_path).is_file()
+        except OSError:
+            return False
 
 
 from app.db.models.project import Project  # noqa: E402

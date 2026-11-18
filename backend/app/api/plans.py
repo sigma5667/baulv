@@ -332,6 +332,17 @@ async def trigger_analysis(
             ),
         )
 
+    # Datei weg (Altbestand ohne dauerhaften Speicher): klare Meldung
+    # statt eines Fehlers tief in der Pipeline.
+    if not plan.file_available:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Die Datei zu diesem Plan ist nicht mehr vorhanden. "
+                "Bitte laden Sie den Plan erneut hoch."
+            ),
+        )
+
     is_schnitt = plan.plan_type == PLAN_TYPE_SCHNITT
     # Pin the analytics ``plan_type`` field so legacy NULL rows still
     # land on a known value the schema-whitelist accepts.

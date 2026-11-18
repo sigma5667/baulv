@@ -85,6 +85,12 @@ def _make_upload_file(filename: str, data: bytes) -> UploadFile:
     )
 
 
+# Echte Datei: ``trigger_analysis`` prüft seit 2026-11, ob die Plan-
+# Datei noch existiert (``Plan.file_available``).
+import tempfile as _tempfile
+_REAL_PDF = _tempfile.NamedTemporaryFile(suffix=".pdf", delete=False).name
+
+
 async def _seed_plan_with_type(
     db: AsyncSession,
     *,
@@ -96,7 +102,7 @@ async def _seed_plan_with_type(
         id=uuid.uuid4(),
         project_id=project.id,
         filename="x.pdf",
-        file_path="/tmp/x.pdf",
+        file_path=_REAL_PDF,
         plan_type=plan_type,
     )
     db.add(plan)

@@ -49,4 +49,6 @@ export interface Plan {
   plan_type: string | null;
   analysis_status: string;
   created_at: string;
+  /** false = Datei auf dem Server nicht mehr vorhanden (Altbestand). */
+  file_available?: boolean;
 }
