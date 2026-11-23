@@ -26,9 +26,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
-COPY backend/pyproject.toml .
-RUN pip install --no-cache-dir .
+# Install Python dependencies — ausschließlich aus der Lock-Datei
+# (alle Pakete inkl. Unterabhängigkeiten exakt + Prüfsummen). Ein
+# Neubau zieht dadurch nie stillschweigend neue Versionen.
+COPY backend/requirements.lock .
+RUN pip install --no-cache-dir --require-hashes --no-deps -r requirements.lock
 
 # Copy backend code
 COPY backend/ .
@@ -44,9 +46,7 @@ ENV PORT=8000
 
 EXPOSE ${PORT}
 
-# Production server: gunicorn with uvicorn workers
-RUN pip install --no-cache-dir gunicorn==26.2.0
-
+# Production server: gunicorn with uvicorn workers (aus requirements.lock)
 # Audit 2026-11 — 1 Worker: die Rate-Limits (Support-Chat, Login,
 # Beta-Code, Registrierung) zählen im Prozess-Speicher; mit 2 Workern
 # galt jedes Limit doppelt. Erst mit REDIS_URL + geteilten Limitern

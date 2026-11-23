@@ -50,6 +50,10 @@ dependencies = [
     # don't crash on import, they just log a warning when sending
     # is attempted.
     "resend==2.50.0",
+    # Produktions-Server (Dockerfile-CMD). Steht hier statt als
+    # separates ``pip install`` im Dockerfile, damit er mit in
+    # ``requirements.lock`` landet.
+    "gunicorn==26.2.0",
 ]
 
 [project.optional-dependencies]
