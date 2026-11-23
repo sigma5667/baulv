@@ -40,9 +40,9 @@ def test_vision_max_tokens_is_16384_for_sonnet_5_5():
 
 
 def test_extraction_models_default_and_split():
-    """v25.2 — Grundriss liest mit Sonnet 5.5, Schnitt bleibt auf
-    Sonnet 4.6 (Sonnet 5.5 lieferte auf den Test-Schnitten 0 Höhen).
-    Beide Aufrufe müssen ihr eigenes Setting lesen, kein fester String."""
+    """Grundriss und Schnitt lesen mit Sonnet 5.5 (Schnitt seit 2026-11,
+    zusammen mit 2576-px-Bildern). Beide Aufrufe müssen ihr eigenes
+    Setting lesen, kein fester String."""
     import inspect
 
     from app.config import Settings
@@ -50,7 +50,7 @@ def test_extraction_models_default_and_split():
 
     fields = Settings.model_fields
     assert fields["plan_extraction_model"].default == "claude-sonnet-5-5"
-    assert fields["schnitt_extraction_model"].default == "claude-sonnet-4-6"
+    assert fields["schnitt_extraction_model"].default == "claude-sonnet-5-5"
     assert "settings.plan_extraction_model" in inspect.getsource(
         pipeline._extract_rooms_from_image
     )

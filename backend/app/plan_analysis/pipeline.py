@@ -52,6 +52,7 @@ import concurrent.futures
 import io
 import json
 import logging
+import re
 from pathlib import Path
 from uuid import UUID
 
@@ -680,6 +681,29 @@ _VISION_API_MAX_EDGE_PX = 8000
 # der Two-Pass-Grundriss-Pfad seit v24.4.6 überall benutzt.
 _VISION_GUARD_TRIGGER_PX = 1568
 
+# 2026-11 — Die 1568-px-Grenze oben gilt nur für die ältere Modell-
+# Generation (Sonnet/Haiku 4.x, Opus ≤4.6). Ab Opus 4.7 / Sonnet 5
+# verarbeitet die API bis 2576 px Long-Edge. Gemessen am Schnitt-Pfad
+# (GWM EP-08, 50.07): Sonnet 5.5 konnte auf 1536 px die Höhenkoten
+# nicht lesen und lieferte deshalb ehrlich ``{"rooms": []}``; bei
+# 2576 px las es alle Geschoss-Höhen richtig (0 Falschwerte in 6
+# Läufen), Sonnet 4.6 auf 1536 px dagegen fast nur gerundete
+# Schätzwerte (2,5 statt 2,52). Messvorrichtung:
+# C:\Users\User\baulv-modellvergleich\schnitt_exp.py / schnitt_score.py.
+_VISION_HIGH_RES_LONG_EDGE_PX = 2576
+_LOW_RES_VISION_MODEL_RE = re.compile(
+    r"^claude-(?:3|(?:sonnet|haiku)-4|opus-4(?!-[7-9]))"
+)
+
+
+def _vision_long_edge_for_model(model: str) -> int:
+    """Größte sinnvolle Long-Edge für ``model``: 1536 für die ältere
+    Generation (die API skaliert dort intern auf ≤1568 herunter),
+    2576 für High-Res-Modelle (Opus ≥4.7, Sonnet ≥5, Haiku ≥5)."""
+    if _LOW_RES_VISION_MODEL_RE.match(model or ""):
+        return _VISION_LONG_EDGE_PX
+    return _VISION_HIGH_RES_LONG_EDGE_PX
+
 
 # ---------------------------------------------------------------------------
 # v24.4.6 — Two-Pass-Konstanten (Building-BBox-Probe + High-Res-Crop)
@@ -1028,6 +1052,7 @@ def _pdf_to_images(
 
 def _cap_image_for_vision(
     image_bytes: bytes, mime_type: str,
+    long_edge_px: int = _VISION_LONG_EDGE_PX,
 ) -> tuple[bytes, str, int | None, int | None]:
     """v24.7 — universeller Dimensions-Guard vor JEDEM API-Bild-Versand.
 
@@ -1060,10 +1085,13 @@ def _cap_image_for_vision(
 
         with Image.open(io.BytesIO(image_bytes)) as img:
             width, height = img.size
-        if max(width, height) <= _VISION_GUARD_TRIGGER_PX:
+        # ``long_edge_px`` > Standard (High-Res-Modelle): Trigger =
+        # Ziel, alles bis dahin geht unverändert durch.
+        trigger = max(_VISION_GUARD_TRIGGER_PX, long_edge_px)
+        if max(width, height) <= trigger:
             return image_bytes, mime_type, width, height
         resized, new_w, new_h = _resize_long_edge_pillow(
-            image_bytes, target_long_edge=_VISION_LONG_EDGE_PX,
+            image_bytes, target_long_edge=long_edge_px,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
@@ -2579,8 +2607,11 @@ async def _vision_call(
     # v24.7 — Dimensions-Guard. Der Schnitt-Pfad schickt die rohen
     # DPI-Leiter-Bytes (kein Two-Pass-Resize davor) — genau hier kam
     # der 8000-px-400er aus dem Messlauf her.
+    # 2026-11 — Long-Edge passend zum Modell (Sonnet 5.5: 2576 px).
+    # Auf 1536 px sind die Höhenkoten eines Schnitts unlesbar.
+    long_edge = _vision_long_edge_for_model(settings.schnitt_extraction_model)
     image_bytes, mime_type, _, _ = await asyncio.get_event_loop().run_in_executor(
-        None, _cap_image_for_vision, image_bytes, mime_type
+        None, _cap_image_for_vision, image_bytes, mime_type, long_edge
     )
     image_b64 = base64.b64encode(image_bytes).decode("utf-8")
     message = await asyncio.wait_for(

@@ -618,3 +618,53 @@ def test_format_page_error_falls_back_to_diagnostic_for_unknown():
     out = _format_page_error(2, ValueError("something we never saw"))
     assert "Seite 2: ValueError" in out
     assert "something we never saw" in out
+
+
+# ---------------------------------------------------------------------------
+# 2026-11 — modellabhängige Long-Edge (Schnitt-Pfad auf Sonnet 5.5)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "model,edge",
+    [
+        ("claude-sonnet-4-6", 1536),
+        ("claude-haiku-4-5", 1536),
+        ("claude-opus-4-6", 1536),
+        ("claude-opus-4-1", 1536),
+        ("claude-3-7-sonnet-latest", 1536),
+        ("claude-opus-4-7", 2576),
+        ("claude-opus-4-8", 2576),
+        ("claude-sonnet-5", 2576),
+        ("claude-sonnet-5-5", 2576),
+        ("claude-opus-5-5", 2576),
+        ("claude-haiku-5-5", 2576),
+    ],
+)
+def test_vision_long_edge_for_model(model, edge):
+    from app.plan_analysis.pipeline import _vision_long_edge_for_model
+
+    assert _vision_long_edge_for_model(model) == edge
+
+
+def test_cap_image_high_res_target_keeps_2576_and_resizes_above():
+    """High-Res-Modelle: bis 2576 px unverändert, darüber auf 2576."""
+    small = _make_png(2576, 1200)
+    out, mime, w, h = _cap_image_for_vision(small, "image/png", 2576)
+    assert out is small and (w, h) == (2576, 1200)
+
+    big = _make_png(8100, 2000)
+    out, mime, w, h = _cap_image_for_vision(big, "image/png", 2576)
+    assert mime == "image/jpeg"
+    assert max(w, h) == 2576 == max(_open_size(out))
+
+
+def test_schnitt_vision_call_uses_model_dependent_edge():
+    """Verdrahtungs-Pin: der Schnitt-Call holt die Long-Edge über das
+    Schnitt-Modell, nicht über die feste 1536er-Konstante."""
+    import inspect
+
+    from app.plan_analysis import pipeline
+
+    src = inspect.getsource(pipeline._vision_call)
+    assert "_vision_long_edge_for_model(settings.schnitt_extraction_model)" in src

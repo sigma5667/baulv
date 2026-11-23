@@ -124,10 +124,14 @@ class Settings(BaseSettings):
     plan_extraction_model: str = "claude-sonnet-5-5"
 
     # Modell für die Höhen-Lesung aus Schnitten (``analyze_schnitt_plan``).
-    # Bewusst getrennt und auf Sonnet 4.6: Sonnet 5.5 lieferte auf beiden
-    # Test-Schnitten (GWM EP-08, 50.07) 0 Höhen, Sonnet 4.6 8 bzw. 11.
-    # Umschaltbar per Env-Var SCHNITT_EXTRACTION_MODEL.
-    schnitt_extraction_model: str = "claude-sonnet-4-6"
+    # 2026-11: Sonnet 5.5. Die früheren "0 Höhen" kamen vom 1536-px-
+    # Downscale (Koten unlesbar → Modell meldet ehrlich nichts). Mit
+    # 2576 px (``_vision_long_edge_for_model``) auf GWM EP-08 + 50.07
+    # je 3 Läufe: Sonnet 5.5 alle Geschoss-Höhen richtig, 0 falsch;
+    # Sonnet 4.6 (1536 px) 1 richtig, 54 falsch (gerundete Schätzwerte).
+    # Rückweg per Env-Var SCHNITT_EXTRACTION_MODEL=claude-sonnet-4-6
+    # (Bildgröße fällt dann automatisch auf 1536 px zurück).
+    schnitt_extraction_model: str = "claude-sonnet-5-5"
 
     # v24.4.2 — Coming-Soon-Gate vor der öffentlichen Marketing-
     # Oberfläche. Solange baulv.at in der geschlossenen Test-Phase
