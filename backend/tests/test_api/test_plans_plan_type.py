@@ -23,10 +23,10 @@ from __future__ import annotations
 import io
 import uuid
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
-from fastapi import HTTPException, UploadFile
+from fastapi import HTTPException, Response, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.plans import (
@@ -191,31 +191,27 @@ async def test_analyse_accepts_grundriss_and_legacy_null(
     db_session: AsyncSession, plan_type
 ):
     """Grundriss plans + pre-v24.1 plans with NULL plan_type both
-    fall through the v24.1 type-gate without triggering the
-    Lageplan/Schnitt rejection branches."""
+    fall through the v24.1 type-gate and start a Grundriss job
+    (2026-11: Hintergrund-Job, Route antwortet 202)."""
     user, project = await _seed_user_and_project(db_session)
     plan = await _seed_plan_with_type(
         db_session, user=user, project=project, plan_type=plan_type
     )
 
-    # We mock the heavy ``analyze_plan`` pipeline call; the test
-    # only cares that the v24.1 type-gate let the request through.
-    with patch("app.api.plans.analyze_plan") as mock_analyze, patch(
-        "app.api.plans.verify_plan_owner",
-        return_value=plan,
-    ):
-        mock_analyze.return_value = {
-            "plan_id": str(plan.id),
-            "pages_analyzed": 0,
-            "rooms_extracted": 0,
-            "page_errors": [],
-        }
+    fake_job = _fake_job(plan)
+    response = Response()
+    with patch(
+        "app.api.plans.plan_jobs.start_job", new=AsyncMock(return_value=fake_job)
+    ) as start, patch("app.api.plans.verify_plan_owner", return_value=plan):
         result = await trigger_analysis(
-            plan_id=plan.id, user=user, db=db_session
+            plan_id=plan.id, response=response, user=user, db=db_session
         )
 
-    mock_analyze.assert_called_once()
+    start.assert_awaited_once()
+    assert start.await_args.kwargs["is_schnitt"] is False
+    assert response.status_code == 202
     assert result["plan_id"] == str(plan.id)
+    assert result["status"] == "running"
 
 
 # ---------------------------------------------------------------------------
@@ -230,16 +226,15 @@ async def test_analyse_refuses_lageplan(db_session: AsyncSession):
         db_session, user=user, project=project, plan_type=PLAN_TYPE_LAGEPLAN
     )
 
-    # Engine must NOT be invoked when the type-gate trips.
-    with patch("app.api.plans.analyze_plan") as engine_spy, patch(
-        "app.api.plans.verify_plan_owner",
-        return_value=plan,
-    ):
+    # Kein Job darf starten, wenn das Typ-Gate greift.
+    with patch(
+        "app.api.plans.plan_jobs.start_job", new=AsyncMock()
+    ) as start, patch("app.api.plans.verify_plan_owner", return_value=plan):
         with pytest.raises(HTTPException) as exc_info:
             await trigger_analysis(
-                plan_id=plan.id, user=user, db=db_session
+                plan_id=plan.id, response=Response(), user=user, db=db_session
             )
-        engine_spy.assert_not_called()
+        start.assert_not_awaited()
 
     assert exc_info.value.status_code == 400
     assert "Lagepläne" in exc_info.value.detail
@@ -254,42 +249,46 @@ async def test_analyse_refuses_lageplan(db_session: AsyncSession):
 async def test_analyse_routes_schnitt_to_schnitt_pipeline(
     db_session: AsyncSession,
 ):
-    """v24.2 — the placeholder 400 from v24.1 is gone. Schnitt
-    plans now dispatch to ``analyze_schnitt_plan`` which extracts
-    heights and writes them onto matching project rooms. The
-    Grundriss path's ``analyze_plan`` must NOT be invoked for a
-    Schnitt — a regression here would mean we burn the Vision
-    budget extracting room geometry from a cross-section PDF
-    (wrong prompt, wrong output, wasted call)."""
+    """v24.2 — Schnitt plans dispatch to ``analyze_schnitt_plan``;
+    the Grundriss ``analyze_plan`` must NOT run for a Schnitt (wrong
+    prompt, wasted Vision budget). 2026-11: Route startet den Job mit
+    ``is_schnitt=True``; der Job-Dispatcher wählt die Pipeline."""
     user, project = await _seed_user_and_project(db_session)
     plan = await _seed_plan_with_type(
         db_session, user=user, project=project, plan_type=PLAN_TYPE_SCHNITT
     )
 
-    with patch("app.api.plans.analyze_plan") as grundriss_spy, patch(
-        "app.api.plans.analyze_schnitt_plan"
-    ) as schnitt_spy, patch(
-        "app.api.plans.verify_plan_owner",
-        return_value=plan,
-    ):
-        schnitt_spy.return_value = {
-            "plan_id": str(plan.id),
-            "pages_analyzed": 1,
-            "rooms_extracted": 3,
-            "heights_extracted": 3,
-            "heights_matched": 2,
-            "rooms_in_project": 5,
-            "page_errors": [],
-        }
-        result = await trigger_analysis(
-            plan_id=plan.id, user=user, db=db_session
+    with patch(
+        "app.api.plans.plan_jobs.start_job", new=AsyncMock(return_value=_fake_job(plan))
+    ) as start, patch("app.api.plans.verify_plan_owner", return_value=plan):
+        await trigger_analysis(
+            plan_id=plan.id, response=Response(), user=user, db=db_session
         )
+    assert start.await_args.kwargs["is_schnitt"] is True
 
-    grundriss_spy.assert_not_called()
-    schnitt_spy.assert_called_once()
-    assert result["plan_id"] == str(plan.id)
+    from app.plan_analysis import jobs
+
+    with patch.object(jobs, "analyze_plan", new=AsyncMock()) as grundriss_spy, patch.object(
+        jobs, "analyze_schnitt_plan",
+        new=AsyncMock(return_value={"plan_id": str(plan.id), "heights_matched": 2}),
+    ) as schnitt_spy:
+        result = await jobs.run_pipeline(db_session, plan.id, is_schnitt=True)
+
+    grundriss_spy.assert_not_awaited()
+    schnitt_spy.assert_awaited_once()
     assert result["heights_matched"] == 2
-    assert result["rooms_in_project"] == 5
+
+
+def _fake_job(plan):
+    from datetime import datetime, timezone
+
+    from app.db.models.plan_analysis_job import PlanAnalysisJob
+
+    now = datetime.now(timezone.utc)
+    return PlanAnalysisJob(
+        id=uuid.uuid4(), plan_id=plan.id, status="running", pages_done=0,
+        started_at=now, heartbeat_at=now,
+    )
 
 
 # ---------------------------------------------------------------------------

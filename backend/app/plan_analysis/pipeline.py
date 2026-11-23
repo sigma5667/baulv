@@ -288,8 +288,21 @@ class PlanAnalysisError(Exception):
         self.detail = detail
 
 
-async def analyze_plan(plan_id: UUID, db: AsyncSession) -> dict:
+async def _report_progress(progress, done: int, total: int) -> None:
+    """2026-11 — optionaler Fortschritts-Callback des Hintergrund-Jobs
+    (``app.plan_analysis.jobs``). Darf die Analyse nie kippen."""
+    if progress is None:
+        return
+    try:
+        await progress(done, total)
+    except Exception:  # noqa: BLE001
+        logger.warning("plan_analysis.progress_callback_failed", exc_info=True)
+
+
+async def analyze_plan(plan_id: UUID, db: AsyncSession, progress=None) -> dict:
     """Full pipeline: PDF → Claude Vision → rooms in database.
+
+    ``progress``: optional ``async (done, total)``-Callback je Seite.
 
     Raises ``PlanAnalysisError`` with a German message on any known
     failure mode. Unknown failures are caught, the plan row is marked
@@ -446,7 +459,10 @@ async def analyze_plan(plan_id: UUID, db: AsyncSession) -> dict:
         page_errors: list[str] = list(render_errors)
         # v24.9 — Pin-Bezugsrahmen pro Seite (nur für textlayer_areas).
         page_frames: dict[int, dict] = {}
-        for page_number, fallback_bytes, fallback_mime in rendered_pages:
+        await _report_progress(progress, 0, len(rendered_pages))
+        for _idx, (page_number, fallback_bytes, fallback_mime) in enumerate(rendered_pages):
+            if _idx:
+                await _report_progress(progress, _idx, len(rendered_pages))
             try:
                 frame: dict = {}
                 result = await _extract_rooms_two_pass(
@@ -2394,7 +2410,9 @@ _SCHNITT_MIN_HEIGHT_M = 1.5
 _SCHNITT_MAX_HEIGHT_M = 5.0
 
 
-async def analyze_schnitt_plan(plan_id: UUID, db: AsyncSession) -> dict:
+async def analyze_schnitt_plan(
+    plan_id: UUID, db: AsyncSession, progress=None
+) -> dict:
     """v24.2 — extract ``height_m`` from a Schnitt-Plan and write it
     onto matching grundriss-rooms.
 
@@ -2491,7 +2509,10 @@ async def analyze_schnitt_plan(plan_id: UUID, db: AsyncSession) -> dict:
         # greifen.
         all_extracted: list[dict] = []
         page_errors: list[str] = list(render_errors)
-        for page_number, image_bytes, mime_type in rendered_pages:
+        await _report_progress(progress, 0, len(rendered_pages))
+        for _idx, (page_number, image_bytes, mime_type) in enumerate(rendered_pages):
+            if _idx:
+                await _report_progress(progress, _idx, len(rendered_pages))
             try:
                 result = await _vision_call(
                     image_bytes,

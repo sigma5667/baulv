@@ -12,7 +12,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.plans import trigger_analysis
@@ -78,7 +78,7 @@ async def test_analysis_of_missing_file_is_clear_409(
     monkeypatch.setattr(settings, "beta_unlock_all_features", True)
 
     with pytest.raises(HTTPException) as exc:
-        await trigger_analysis(plan.id, user=user, db=db_session)
+        await trigger_analysis(plan.id, response=Response(), user=user, db=db_session)
     assert exc.value.status_code == 409
     assert "nicht mehr vorhanden" in exc.value.detail
     # Status unverändert, nichts gelöscht.

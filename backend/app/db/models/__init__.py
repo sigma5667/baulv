@@ -1,5 +1,6 @@
 from app.db.models.project import Project, Building, Floor, Unit, Room, Opening
 from app.db.models.plan import Plan
+from app.db.models.plan_analysis_job import PlanAnalysisJob
 from app.db.models.lv import Leistungsverzeichnis, Leistungsgruppe, Position
 from app.db.models.lv_template import LVTemplate
 from app.db.models.calculation import Berechnungsnachweis
@@ -18,6 +19,7 @@ from app.db.models.usage_counter import DailyUsageCounter
 __all__ = [
     "Project", "Building", "Floor", "Unit", "Room", "Opening",
     "Plan",
+    "PlanAnalysisJob",
     "Leistungsverzeichnis", "Leistungsgruppe", "Position",
     "LVTemplate",
     "Berechnungsnachweis",

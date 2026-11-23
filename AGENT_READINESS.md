@@ -104,7 +104,8 @@ sind die einzigen Endpoints ohne `get_current_user`-Dependency
 |---|---|---|
 | POST | `/projects/{id}/plans` | PDF-Upload (multipart, Magic-Byte-Check) |
 | GET | `/projects/{id}/plans` | Pläne eines Projekts |
-| POST | `/plans/{id}/analyze` | **Pro-gated** — Claude Vision extrahiert Räume, Öffnungen, Höhen |
+| POST | `/plans/{id}/analyze` | **Pro-gated** — startet Claude Vision als Hintergrund-Job (202; 409 wenn schon einer läuft) |
+| GET | `/plans/{id}/analysis` | Job-Status: `running`/`completed`/`failed`, Seite x/y, Ergebnis oder Fehlermeldung (seit 2026-11) |
 | GET | `/plans/{id}` | Plan-Metadaten + Analyse-Status |
 
 ### 2.4 Gebäudestruktur (`/api/*` — kein einheitliches Prefix, Pfad bildet Hierarchie ab)

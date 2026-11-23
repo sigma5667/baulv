@@ -23,6 +23,7 @@ from fastapi import (
     HTTPException,
     Query,
     Request,
+    Response,
     UploadFile,
 )
 from sqlalchemy import delete, func, select
@@ -36,19 +37,14 @@ from app.db.models.plan import Plan
 from app.db.models.project import Opening, Room
 from app.db.models.user import User
 from app.db.session import get_db
-from app.plan_analysis.pipeline import (
-    PlanAnalysisError,
-    analyze_plan,
-    analyze_schnitt_plan,
-)
+from app.db.models.plan_analysis_job import PlanAnalysisJob
+from app.plan_analysis import jobs as plan_jobs
 from app.schemas.plan import (
     PlanDeletionPreview,
     PlanDeletionResult,
     PlanResponse,
 )
-from app.services import analytics as analytics_service
 from app.services import audit
-from app.db.models.analytics import EVENT_PLAN_ANALYZED as _ANALYTICS_PLAN_ANALYZED
 from app.subscriptions import require_feature
 
 logger = logging.getLogger(__name__)
@@ -288,16 +284,17 @@ async def list_plans(
 @router.post("/{plan_id}/analyze", tags=["Plans"])
 async def trigger_analysis(
     plan_id: UUID,
+    response: Response,
     user: User = Depends(require_feature("ai_plan_analysis")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Trigger Claude Vision analysis of a plan.
+    """Start Claude Vision analysis of a plan as a background job.
 
-    Requires the Pro plan (enforced by ``require_feature``). The
-    ``PlanAnalysisError`` machinery in the pipeline guarantees every
-    failure mode comes back with a German, user-safe message; we
-    surface it here as a 422 (unprocessable) so the frontend can
-    distinguish it from auth failures, quota errors, and unknown 500s.
+    Requires the Pro plan (enforced by ``require_feature``). Returns
+    202 with the job (``status: running``) right away; 409 if a job
+    for this plan is still running. Pipeline failures
+    (``PlanAnalysisError`` — German, user-safe) end up in the job's
+    ``error_detail``, readable via ``GET /plans/{id}/analysis``.
     """
     plan = await verify_plan_owner(plan_id, user, db)
     # Rich logging — when a user reports "the button does nothing",
@@ -344,64 +341,68 @@ async def trigger_analysis(
         )
 
     is_schnitt = plan.plan_type == PLAN_TYPE_SCHNITT
-    # Pin the analytics ``plan_type`` field so legacy NULL rows still
-    # land on a known value the schema-whitelist accepts.
-    analytics_plan_type = (
-        PLAN_TYPE_SCHNITT if is_schnitt else PLAN_TYPE_GRUNDRISS
-    )
 
+    # 2026-11 — Hintergrund-Job statt Analyse in der Anfrage
+    # (Cloudflare bricht nach ~100 s mit 524 ab). Die Route antwortet
+    # sofort mit 202; das Frontend fragt GET /plans/{id}/analysis ab.
+    # Fehler der Pipeline (früher 422/500 hier) stehen jetzt im Job.
     try:
-        if is_schnitt:
-            result = await analyze_schnitt_plan(plan_id, db)
-        else:
-            result = await analyze_plan(plan_id, db)
-        # v23.8 / v24.2 — analytics signal for plan_analyzed. Best
-        # effort: the analyse call itself succeeded, the recorder is
-        # gated on consent and fail-soft, so we never raise here.
-        # ``plan_type`` differentiates Grundriss vs Schnitt so we can
-        # see how often the Vision-API is invoked for each mode (cost
-        # control + UX signal); ``heights_matched`` is Schnitt-only
-        # and 0 for Grundriss.
-        try:
-            pages_analyzed = int(result.get("pages_analyzed", 0)) if isinstance(result, dict) else 0
-            rooms_extracted = int(result.get("rooms_extracted", 0)) if isinstance(result, dict) else 0
-            heights_matched = int(result.get("heights_matched", 0)) if isinstance(result, dict) else 0
-            await analytics_service.record_event(
-                db,
-                event_type=_ANALYTICS_PLAN_ANALYZED,
-                user=user,
-                event_data={
-                    "pages": pages_analyzed,
-                    "rooms_extracted": rooms_extracted,
-                    "plan_type": analytics_plan_type,
-                    "heights_matched": heights_matched,
-                },
-            )
-        except Exception:  # noqa: BLE001
-            # Belt-and-braces. The recorder swallows internally;
-            # this catch handles anything escaping (e.g. a future
-            # refactor that changes the result-shape contract).
-            logger.exception(
-                "analytics.plan_analyzed failed plan_id=%s — continuing",
-                plan_id,
-            )
-        return result
-    except PlanAnalysisError as e:
-        # Already German and user-safe. 422 ("unprocessable entity")
-        # is the closest semantic match: the request was valid but we
-        # couldn't produce the requested result.
-        raise HTTPException(status_code=422, detail=e.detail)
-    except Exception as e:  # noqa: BLE001
-        # Shouldn't happen — pipeline.analyze_plan wraps unknown errors
-        # in PlanAnalysisError — but belt-and-braces.
-        logger.exception("Unexpected analyze error for plan %s: %s", plan_id, e)
+        job = await plan_jobs.start_job(db, plan, user.id, is_schnitt=is_schnitt)
+    except plan_jobs.JobAlreadyRunning as running:
         raise HTTPException(
-            status_code=500,
-            detail=(
-                "Bei der KI-Analyse ist ein unerwarteter Fehler aufgetreten. "
-                "Bitte versuchen Sie es erneut oder kontaktieren Sie den Support."
-            ),
+            status_code=409,
+            detail="Für diesen Plan läuft bereits eine Analyse.",
+            headers={"X-Analysis-Job": str(running.job.id)},
         )
+    response.status_code = 202
+    return _job_payload(job)
+
+
+def _job_payload(job: PlanAnalysisJob) -> dict:
+    return {
+        "job_id": str(job.id),
+        "plan_id": str(job.plan_id),
+        "status": job.status,
+        "pages_done": job.pages_done or 0,
+        "pages_total": job.pages_total,
+        "result": job.result,
+        "error_detail": job.error_detail,
+        "error_status": job.error_status,
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+    }
+
+
+@router.get("/{plan_id}/analysis", tags=["Plans"])
+async def get_analysis_status(
+    plan_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Status der letzten Analyse dieses Plans (Polling-Ziel).
+
+    ``status``: ``running`` | ``completed`` | ``failed``. Bei
+    ``completed`` steht das frühere Antwort-Dict in ``result``, bei
+    ``failed`` die deutsche Meldung in ``error_detail``. Ein Job ohne
+    Heartbeat seit ``STALE_AFTER_S`` (Server hart gestorben) wird hier
+    auf ``failed`` gesetzt — nie ewig "läuft".
+    """
+    plan = await verify_plan_owner(plan_id, user, db)
+    await plan_jobs.fail_stale_jobs(db, plan.id)
+    job = await plan_jobs.latest_job(db, plan.id)
+    if job is None:
+        if plan.analysis_status == "processing":
+            # Altbestand: synchrone Analyse vor der Job-Umstellung,
+            # deren Anfrage nie zu Ende kam.
+            plan.analysis_status = "failed"
+            return {
+                "job_id": None, "plan_id": str(plan.id), "status": "failed",
+                "pages_done": 0, "pages_total": None, "result": None,
+                "error_detail": plan_jobs.MSG_STALE, "error_status": 500,
+                "started_at": None, "finished_at": None,
+            }
+        raise HTTPException(status_code=404, detail="Für diesen Plan gibt es keine Analyse.")
+    return _job_payload(job)
 
 
 @router.get("/{plan_id}", response_model=PlanResponse, tags=["Plans"])

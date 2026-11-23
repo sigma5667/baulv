@@ -232,9 +232,17 @@ async def lifespan(app: FastAPI):
     # next day rather than crashing the loop. See
     # ``app/services/audit_cleanup.py``.
     cleanup_task = asyncio.create_task(_audit_cleanup_loop())
+
+    # 2026-11 — Plananalyse-Jobs: beim Start Jobs beenden, deren Prozess
+    # hart gestorben ist; beim Shutdown laufende Jobs abbrechen und als
+    # "fehlgeschlagen" markieren (nie ewig "läuft").
+    from app.plan_analysis import jobs as plan_jobs
+
+    await plan_jobs.startup_sweep()
     try:
         yield
     finally:
+        await plan_jobs.shutdown()
         cleanup_task.cancel()
         try:
             await cleanup_task

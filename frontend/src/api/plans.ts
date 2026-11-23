@@ -50,9 +50,96 @@ export interface AnalyzePlanResult {
   rooms_in_project?: number;
 }
 
-export const analyzePlan = async (planId: string): Promise<AnalyzePlanResult> => {
-  const { data } = await api.post(`/plans/${planId}/analyze`);
+/** 2026-11 — Status eines Analyse-Hintergrund-Jobs
+ * (``GET /plans/{id}/analysis``). */
+export interface AnalysisJob {
+  job_id: string | null;
+  plan_id: string;
+  status: "running" | "completed" | "failed";
+  pages_done: number;
+  pages_total: number | null;
+  result: AnalyzePlanResult | null;
+  error_detail: string | null;
+  error_status: number | null;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface AnalysisProgressInfo {
+  pagesDone: number;
+  pagesTotal: number | null;
+}
+
+/** Fehler eines fertig gelaufenen, aber fehlgeschlagenen Jobs.
+ * ``normalizeError`` nimmt ``message`` direkt (deutsche Server-Meldung). */
+export class AnalysisFailedError extends Error {
+  status: number | null;
+  constructor(message: string, status: number | null) {
+    super(message);
+    this.name = "AnalysisFailedError";
+    this.status = status;
+  }
+}
+
+export const fetchAnalysisStatus = async (planId: string): Promise<AnalysisJob> => {
+  const { data } = await api.get(`/plans/${planId}/analysis`);
   return data;
+};
+
+const POLL_INTERVAL_MS = 2000;
+// Kurze Netzwerk-Aussetzer beim Abfragen tolerieren (Cloudflare,
+// Deploy-Wechsel), statt die laufende Analyse als Fehler zu melden.
+const MAX_POLL_FAILURES = 15;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Fragt den Job-Status ab, bis er fertig oder fehlgeschlagen ist. */
+export const waitForAnalysis = async (
+  planId: string,
+  onProgress?: (p: AnalysisProgressInfo) => void,
+): Promise<AnalyzePlanResult> => {
+  let failures = 0;
+  for (;;) {
+    let job: AnalysisJob;
+    try {
+      job = await fetchAnalysisStatus(planId);
+      failures = 0;
+    } catch (e) {
+      const status = (e as { response?: { status?: number } })?.response?.status;
+      // 401/403/404 sind endgültig — nicht endlos weiterfragen.
+      if (status === 401 || status === 403 || status === 404) throw e;
+      failures += 1;
+      if (failures > MAX_POLL_FAILURES) throw e;
+      await sleep(POLL_INTERVAL_MS);
+      continue;
+    }
+    onProgress?.({ pagesDone: job.pages_done, pagesTotal: job.pages_total });
+    if (job.status === "completed" && job.result) return job.result;
+    if (job.status === "failed") {
+      throw new AnalysisFailedError(
+        job.error_detail ||
+          "Die KI-Analyse ist fehlgeschlagen. Bitte versuchen Sie es erneut.",
+        job.error_status,
+      );
+    }
+    await sleep(POLL_INTERVAL_MS);
+  }
+};
+
+/** Startet die Analyse als Hintergrund-Job (202) und wartet per
+ * Polling auf das Ergebnis. Läuft schon eine (409), wird diese
+ * übernommen statt einen Fehler zu zeigen. */
+export const analyzePlan = async (
+  planId: string,
+  onProgress?: (p: AnalysisProgressInfo) => void,
+): Promise<AnalyzePlanResult> => {
+  try {
+    await api.post(`/plans/${planId}/analyze`);
+  } catch (e) {
+    const status = (e as { response?: { status?: number } })?.response?.status;
+    if (status !== 409) throw e;
+  }
+  return waitForAnalysis(planId, onProgress);
 };
 
 /** Pre-delete impact summary — how many rooms/openings/proofs are

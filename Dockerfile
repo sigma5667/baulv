@@ -51,4 +51,8 @@ EXPOSE ${PORT}
 # Beta-Code, Registrierung) zählen im Prozess-Speicher; mit 2 Workern
 # galt jedes Limit doppelt. Erst mit REDIS_URL + geteilten Limitern
 # wieder hochsetzen (WEB_CONCURRENCY).
-CMD ["sh", "-c", "gunicorn app.main:app --bind 0.0.0.0:${PORT} --workers ${WEB_CONCURRENCY:-1} --worker-class uvicorn.workers.UvicornWorker --timeout 120"]
+# ``exec``: gunicorn ersetzt die Shell und wird PID 1 — sonst schluckt
+# ``sh`` das SIGTERM von Railway/Docker, es gibt keinen geordneten
+# Shutdown und laufende Plananalysen werden nicht als abgebrochen
+# markiert (Container wird nach der Frist per SIGKILL beendet).
+CMD ["sh", "-c", "exec gunicorn app.main:app --bind 0.0.0.0:${PORT} --workers ${WEB_CONCURRENCY:-1} --worker-class uvicorn.workers.UvicornWorker --timeout 120"]

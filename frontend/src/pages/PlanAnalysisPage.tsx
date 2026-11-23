@@ -25,6 +25,8 @@ import {
   fetchPlans,
   uploadPlan,
   analyzePlan,
+  waitForAnalysis,
+  type AnalysisProgressInfo,
   deletePlan,
   fetchPlanDeletionPreview,
   type PlanDeletionResult,
@@ -237,11 +239,27 @@ export function PlanAnalysisPage() {
     onError: (e) => setUploadError(normalizeError(e)),
   });
 
+  // 2026-11 — Analyse läuft als Hintergrund-Job; hier landet der
+  // Seitenfortschritt aus dem Status-Polling.
+  const [analyzeProgress, setAnalyzeProgress] =
+    useState<AnalysisProgressInfo | null>(null);
+  // Plan-IDs, deren laufenden Job wir nur weiter abfragen (nach
+  // Neuladen der Seite), statt eine neue Analyse zu starten.
+  const resumeRef = useRef<Set<string>>(new Set());
+  const resumeTriedRef = useRef<Set<string>>(new Set());
+
   const analyzeMutation = useMutation({
     mutationFn: (planId: string) => {
       // eslint-disable-next-line no-console
       console.info("[analyze] mutation starting", { planId });
-      return analyzePlan(planId);
+      setAnalyzeProgress(null);
+      // Selbst gestartete Läufe nie zusätzlich "wieder aufnehmen",
+      // auch wenn der Plan-Cache noch kurz "processing" zeigt.
+      resumeTriedRef.current.add(planId);
+      if (resumeRef.current.delete(planId)) {
+        return waitForAnalysis(planId, setAnalyzeProgress);
+      }
+      return analyzePlan(planId, setAnalyzeProgress);
     },
     onSuccess: (result, planId) => {
       // eslint-disable-next-line no-console
@@ -326,6 +344,23 @@ export function PlanAnalysisPage() {
   // sees the lock immediately. The lock releases on settled (success
   // or error) via the mutation's lifecycle.
   const uploadLockRef = useRef(false);
+
+  // 2026-11 — Seite neu geladen, während auf dem Server noch eine
+  // Analyse läuft: Fortschritt wieder anzeigen und auf das Ergebnis
+  // warten. Pro Plan nur einmal versuchen (kein Endlos-Kreislauf);
+  // ein toter Job kommt vom Server als "fehlgeschlagen" zurück.
+  useEffect(() => {
+    if (analyzeMutation.isPending) return;
+    const running = plans.find(
+      (p) =>
+        p.analysis_status === "processing" &&
+        !resumeTriedRef.current.has(p.id),
+    );
+    if (!running) return;
+    resumeTriedRef.current.add(running.id);
+    resumeRef.current.add(running.id);
+    analyzeMutation.mutate(running.id);
+  }, [plans, analyzeMutation]);
 
   const validateAndUpload = useCallback(
     async (files: File[]) => {
@@ -523,7 +558,9 @@ export function PlanAnalysisPage() {
       )}
 
       {/* Analysis progress panel — only while analysis is running */}
-      {analyzeMutation.isPending && <AnalysisProgress />}
+      {analyzeMutation.isPending && (
+        <AnalysisProgress progress={analyzeProgress} />
+      )}
 
       {analyzeError && (
         <AnalysisErrorBanner
@@ -949,7 +986,11 @@ const PHASES = [
   { label: "Ergebnisse werden gespeichert", startAt: 45 },
 ] as const;
 
-function AnalysisProgress() {
+function AnalysisProgress({
+  progress,
+}: {
+  progress: AnalysisProgressInfo | null;
+}) {
   const [elapsed, setElapsed] = useState(0);
   const startedAt = useRef(Date.now());
 
@@ -979,9 +1020,30 @@ function AnalysisProgress() {
         </span>
       </div>
       <p className="mt-1 text-xs text-muted-foreground">
-        Das kann 30–60 Sekunden dauern. Bitte schließen Sie diese Seite
-        nicht.
+        Das dauert meist 30–60 Sekunden, bei großen Plänen auch mehrere
+        Minuten. Die Analyse läuft auf dem Server weiter, auch wenn Sie
+        diese Seite verlassen.
       </p>
+      {progress && progress.pagesTotal !== null && progress.pagesTotal > 1 && (
+        <div className="mt-3">
+          <div className="flex justify-between text-xs text-muted-foreground">
+            <span>
+              Seite {Math.min(progress.pagesDone + 1, progress.pagesTotal)} von{" "}
+              {progress.pagesTotal}
+            </span>
+          </div>
+          <div className="mt-1 h-1.5 w-full overflow-hidden rounded bg-primary/10">
+            <div
+              className="h-full bg-primary transition-all"
+              style={{
+                width: `${Math.round(
+                  (progress.pagesDone / progress.pagesTotal) * 100,
+                )}%`,
+              }}
+            />
+          </div>
+        </div>
+      )}
       <ul className="mt-3 space-y-1.5 text-sm">
         {PHASES.map((phase, i) => {
           const done = i < activeIdx;
