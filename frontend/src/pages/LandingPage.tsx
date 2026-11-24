@@ -57,21 +57,20 @@ function useLandingStyles() {
 
 const KIND: Record<string, string> = { fenster: "Fenster", tuer: "Tür", "tür": "Tür" };
 
-function DedLine({ d }: { d: { o: string; a: number; r: string; x: boolean } }) {
+function DedLine({ d }: { d: { o: string; a: number } }) {
   const m = /^(\w+)\s+([\d.]+)×([\d.]+)\s+\((\d+)×\)/.exec(d.o) ?? [];
   const label = `${KIND[m[1] as string] ?? m[1] ?? "Öffnung"} ${fmt(+m[2])} × ${fmt(+m[3])}${
     +m[4] > 1 ? ` (${m[4]}×)` : ""
   }`;
-  const lim = /<\s*([\d.]+)/.exec(d.r);
-  const why = d.x ? "abgezogen" : lim ? `unter ${fmt(+lim[1], 1)} m², übermessen` : "übermessen";
+  // Bewusst ohne Urteil "abgezogen/übermessen": die Abzugsregel
+  // (2,5 vs. 5,0 m²) ist fachlich noch offen. Gezeigt wird nur, was
+  // erfasst wurde.
   return (
     <div className="proof__line ded">
       <span>
-        {label} <span className="why">{why}</span>
+        {label} <span className="why">erfasst</span>
       </span>
-      <span>
-        {fmt(d.a, 3)} m²{d.x ? "" : ", kein Abzug"}
-      </span>
+      <span>{fmt(d.a, 3)} m²</span>
     </div>
   );
 }
@@ -102,8 +101,8 @@ function ProofPanel({ r }: { r: BeispielRaum }) {
         </div>
       )}
       <div className="net">
-        <span>Netto Wand</span>
-        <span className="num">{fmt(w.net, 3)} m²</span>
+        <span>Rohmaß Wand</span>
+        <span className="num">{fmt(w.raw, 3)} m²</span>
       </div>
       {r.c && (
         <>
@@ -730,24 +729,24 @@ export function LandingPage() {
                     <div className="proof__line ded">
                       <span>
                         <span className="slot" id="s-fenster"><span className="v">Fenster 2,00 × 2,10</span></span>{" "}
-                        <span className="res why" id="r-fenster-why">unter 5,0 m², übermessen</span>
+                        <span className="res why" id="r-fenster-why">erfasst</span>
                       </span>
-                      <span className="res" id="r-fenster">4,200 m², kein Abzug</span>
+                      <span className="res" id="r-fenster">4,200 m²</span>
                     </div>
                     <div className="proof__line ded">
                       <span>
                         <span className="slot" id="s-tuer"><span className="v">Tür 0,90 × 2,00</span></span>{" "}
-                        <span className="res why" id="r-tuer-why">unter 5,0 m², übermessen</span>
+                        <span className="res why" id="r-tuer-why">erfasst</span>
                       </span>
-                      <span className="res" id="r-tuer">1,800 m², kein Abzug</span>
+                      <span className="res" id="r-tuer">1,800 m²</span>
                     </div>
-                    <div className="net"><span>Netto</span><span className="res" id="r-net">57,500 m²</span></div>
+                    <div className="net"><span>Rohmaß Wand</span><span className="res" id="r-net">57,500 m²</span></div>
                   </div>
                   <div className="copy" data-sc-cue="0.62 0.94 0.1 0.1">
                     <p className="you">Sie sehen jeden Schritt.</p>
                     <p className="small">
-                      Die KI liest den Plan. Gerechnet wird nach festen BauLV-Regeln, reproduzierbar,
-                      und jede Zeile landet im Nachweis der Position.
+                      Die KI liest den Plan. Gerechnet wird nach festen BauLV-Regeln, reproduzierbar:
+                      Rohmaß und jede Öffnung stehen als eigene Zeile im Nachweis der Position.
                     </p>
                   </div>
                 </div>
