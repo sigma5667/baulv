@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { looksLikeUnmarkedStaircase, factorReason } from "../lib/wallFactor";
 import { useParams, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -3098,6 +3099,21 @@ function WallCalculationTable({
                   </td>
                   <td className="px-3 py-2 text-right font-mono text-xs">
                     {fmtFactor(room.applied_factor)}
+                    <div
+                      className={`font-sans text-[11px] leading-tight ${
+                        looksLikeUnmarkedStaircase(room)
+                          ? "text-amber-700"
+                          : "text-muted-foreground"
+                      }`}
+                      title={
+                        looksLikeUnmarkedStaircase(room)
+                          ? "Typ oder Name deutet auf ein Treppenhaus. Der Aufschlag 1,5 × greift nur, wenn der Raum in der Gebäudestruktur als Treppenhaus markiert ist. Bitte prüfen."
+                          : undefined
+                      }
+                    >
+                      {factorReason(room)}
+                      {looksLikeUnmarkedStaircase(room) && " · bitte prüfen"}
+                    </div>
                   </td>
                   <td className="px-3 py-2 text-right">
                     {/* v24.3.2 — KI-Konfidenz-Pille. Schwellwert 0.7
