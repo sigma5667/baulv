@@ -1,375 +1,392 @@
-import { useMemo, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
-import { ArrowDown, ArrowRight } from "lucide-react";
-import { BetaBanner } from "../components/BetaBanner";
-import { Footer } from "../components/layout/Footer";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { ArrowRight } from "lucide-react";
 import { SupportChat } from "../components/SupportChat";
 import { joinWaitlist } from "../api/waitlist";
+import { BEISPIEL, type BeispielRaum } from "../landing/beispiel";
+// scroll-craft-Engine (unverändert übernommen). Das IIFE definiert nur
+// window.ScrollCraft; gemountet wird erst in der LandingPage.
+import "../landing/scrollcraft.js";
+// Beide Stylesheets werden NICHT global geladen, sondern nur während die
+// Landing gerendert ist als <style> eingehängt (siehe useLandingStyles).
+import engineCss from "../landing/scrollcraft.css?inline";
+import pageCss from "../landing/landing.css?inline";
 
-/**
- * Landing page, v25 redesign: "technisches Blatt".
+/*
+ * Öffentliche Startseite "/" (scroll-craft, Grammatik "Split stage").
  *
- * Design rules (deliberate, please keep):
- * - Brand blue (--primary, #2563eb) is used for lines, numbers and the
- *   CTA only — never as a surface fill. No gradients, no blobs.
- * - Logo orange (#f97316) appears exclusively as the room-detection
- *   marker inside the hero graphic.
- * - Sections are separated by 1px hairlines like fields on a plan
- *   sheet; headlines are left-aligned.
- * - IBM Plex Sans/Mono are self-hosted via @fontsource (see index.css).
- *   The built page makes zero third-party requests — keep it that way.
- * - Every figure in the hero follows from the plan dimensions shown
- *   next to it AND matches the real engine's Austrian measurement
- *   rules. Whoever checks the numbers finds they add up — that is
- *   the trust argument of the page.
+ * Alle Bilder sind echte, anonymisierte Screens der BauLV-App
+ * (public/landing/), die Beispielwerte stammen aus einem anonymisierten
+ * Projekt (src/landing/beispiel.ts). Keine Fremd-Requests: Schrift
+ * IBM Plex Sans über @fontsource, alle Assets vom eigenen Origin.
+ *
+ * Sichtbarkeit unverändert: App.tsx rendert diese Seite nur mit
+ * VITE_PUBLIC_LANDING=true ohne Beta-Gate, sonst hinter <PublicWithGate>.
+ *
+ * Seitenwechsel von hier weg passieren über native <a href>-Links
+ * (Vollladen). Die Engine hat kein destroy(); so läuft sie nie im
+ * Hintergrund einer anderen Route weiter.
  */
 
-// Hero example flat. rect = SVG coordinates at 40 px/m inside the
-// outer wall. Floor areas are exactly width × depth of the labelled
-// dimensions. Wall areas are perimeter × 2,50 m; like the real
-// calculation engine (malerarbeiten.py: openings on plaster are
-// deducted only above 5,0 m² — Austrian Übermessung), windows
-// (1,50×1,40 = 2,10) and doors (0,90×2,10 = 1,89) are NOT deducted;
-// only the terrace door (2,40×2,10 = 5,04) is.
-interface HeroRoom {
-  name: string;
-  dims: string;
-  floor: string;
-  wall: string;
-  rect: { x: number; y: number; w: number; h: number };
-  /** Baseline des Raumnamens; Default: Raummitte. */
-  labelY?: number;
+declare global {
+  interface Window {
+    ScrollCraft?: { mount: (root: Element, opts?: unknown) => unknown };
+  }
 }
 
-const ROOMS: HeroRoom[] = [
-  {
-    name: "Zimmer",
-    dims: "4,20 × 3,60",
-    floor: "15,12",
-    wall: "39,00", // 15,60 × 2,50; Fenster + Tür ≤ 5 m² übermessen
-    rect: { x: 74, y: 54, w: 168, h: 144 },
-  },
-  {
-    name: "Wohnen / Küche",
-    dims: "4,20 × 5,90",
-    floor: "24,78",
-    wall: "45,46", // 20,20 × 2,50 − Terrassentür 5,04
-    rect: { x: 246, y: 54, w: 168, h: 236 },
-  },
-  {
-    name: "Bad",
-    dims: "2,40 × 2,20",
-    floor: "5,28",
-    wall: "23,00", // 9,20 × 2,50; Tür übermessen
-    rect: { x: 74, y: 202, w: 96, h: 88 },
-  },
-  {
-    name: "Vorraum",
-    dims: "1,70 × 2,20",
-    floor: "3,74",
-    wall: "19,50", // 7,80 × 2,50; 4 Türen übermessen
-    rect: { x: 174, y: 202, w: 68, h: 88 },
-    // Beschriftung in die obere Raumhälfte — unten schwenkt der
-    // Türbogen der Eingangstür durch.
-    labelY: 222,
-  },
-];
+const fmt = (n: number, d = 2) =>
+  n.toFixed(d).replace(".", ",").replace(/\B(?=(\d{3})+(?!\d))/g, ".");
 
-const TOTALS = { floor: "48,92", wall: "126,96" };
-
-const BLUE = "#2563eb";
-const INK = "#0f172a";
-const ORANGE = "#f97316";
-
-/** 45°-Zwei-Punkt-Strich einer Maßkette. */
-function Tick({ x, y }: { x: number; y: number }) {
-  return <line x1={x - 3} y1={y + 3} x2={x + 3} y2={y - 3} stroke={BLUE} strokeWidth="1" />;
+function useLandingStyles() {
+  useEffect(() => {
+    const el = document.createElement("style");
+    el.setAttribute("data-landing", "");
+    el.textContent = engineCss + "\n" + pageCss;
+    document.head.appendChild(el);
+    return () => {
+      el.remove();
+      document.documentElement.classList.remove("sc-ready");
+      document.documentElement.style.removeProperty("--sc-canvas");
+    };
+  }, []);
 }
 
-/**
- * The signature element: a line-drawn floor plan whose rooms get
- * marked (orange), flowing into the resulting Mengenermittlung table.
- * Static base plan renders immediately; markers and table rows fade in
- * staggered. `prefers-reduced-motion` shows the finished state at once
- * (see .lp-a in index.css).
- */
-function HeroTransformation() {
+/* ---------------------------------------------------------------------- */
+/* Prüfen: der Besucher wählt einen echten Raum, rechts steht sein Nachweis */
+/* ---------------------------------------------------------------------- */
+
+const KIND: Record<string, string> = { fenster: "Fenster", tuer: "Tür", "tür": "Tür" };
+
+function DedLine({ d }: { d: { o: string; a: number; r: string; x: boolean } }) {
+  const m = /^(\w+)\s+([\d.]+)×([\d.]+)\s+\((\d+)×\)/.exec(d.o) ?? [];
+  const label = `${KIND[m[1] as string] ?? m[1] ?? "Öffnung"} ${fmt(+m[2])} × ${fmt(+m[3])}${
+    +m[4] > 1 ? ` (${m[4]}×)` : ""
+  }`;
+  const lim = /<\s*([\d.]+)/.exec(d.r);
+  const why = d.x ? "abgezogen" : lim ? `unter ${fmt(+lim[1], 1)} m², übermessen` : "übermessen";
   return (
-    // min-w-0: als Grid-Kind darf die Figur schmäler werden als ihr
-    // Tabellen-Inhalt — sonst ragt sie mobil über den rechten Rand.
-    <div className="min-w-0 border border-slate-200 bg-white">
-      {/* Plankopf */}
-      <div className="flex items-center justify-between border-b border-slate-200 px-4 py-2 font-plexmono text-[11px] uppercase tracking-wider text-slate-500">
-        <span>Grundriss · Top 3 · M 1:100</span>
-        <span>PDF-Upload</span>
-      </div>
-
-      <div className="p-4 sm:p-6">
-        {/* Plan */}
-        <svg
-          viewBox="0 0 468 332"
-          role="img"
-          aria-label="Beispiel-Grundriss mit vier Räumen und Maßketten; die Räume sind als erkannt markiert"
-          className="w-full"
-        >
-          {/* Maßketten */}
-          <g>
-            {/* oben: 4,20 | 0,10 (Wand, unbeschriftet) | 4,20 — Ticks
-                auf den lichten Kanten, damit jedes beschriftete
-                Segment exakt sein Maß misst (168 px = 4,20 m) */}
-            <line x1="74" y1="28" x2="414" y2="28" stroke={BLUE} strokeWidth="1" />
-            <line x1="74" y1="44" x2="74" y2="24" stroke={BLUE} strokeWidth="0.5" />
-            <line x1="242" y1="44" x2="242" y2="24" stroke={BLUE} strokeWidth="0.5" />
-            <line x1="246" y1="44" x2="246" y2="24" stroke={BLUE} strokeWidth="0.5" />
-            <line x1="414" y1="44" x2="414" y2="24" stroke={BLUE} strokeWidth="0.5" />
-            <Tick x={74} y={28} />
-            <Tick x={242} y={28} />
-            <Tick x={246} y={28} />
-            <Tick x={414} y={28} />
-            <text x="159" y="22" textAnchor="middle" fontSize="10" fill={BLUE} className="font-plexmono">
-              4,20
-            </text>
-            <text x="329" y="22" textAnchor="middle" fontSize="10" fill={BLUE} className="font-plexmono">
-              4,20
-            </text>
-            {/* links: 3,60 | 0,10 | 2,20 — Ticks auf lichten Kanten */}
-            <line x1="46" y1="54" x2="46" y2="290" stroke={BLUE} strokeWidth="1" />
-            <line x1="64" y1="54" x2="42" y2="54" stroke={BLUE} strokeWidth="0.5" />
-            <line x1="64" y1="198" x2="42" y2="198" stroke={BLUE} strokeWidth="0.5" />
-            <line x1="64" y1="202" x2="42" y2="202" stroke={BLUE} strokeWidth="0.5" />
-            <line x1="64" y1="290" x2="42" y2="290" stroke={BLUE} strokeWidth="0.5" />
-            <Tick x={46} y={54} />
-            <Tick x={46} y={198} />
-            <Tick x={46} y={202} />
-            <Tick x={46} y={290} />
-            <text
-              x="40"
-              y="127"
-              textAnchor="middle"
-              fontSize="10"
-              fill={BLUE}
-              transform="rotate(-90 40 127)"
-              className="font-plexmono"
-            >
-              3,60
-            </text>
-            <text
-              x="40"
-              y="245"
-              textAnchor="middle"
-              fontSize="10"
-              fill={BLUE}
-              transform="rotate(-90 40 245)"
-              className="font-plexmono"
-            >
-              2,20
-            </text>
-            {/* unten: 2,40 | 0,10 | 1,70 — damit Bad- und Vorraum-
-                Breite direkt am Plan ablesbar sind */}
-            <line x1="74" y1="314" x2="242" y2="314" stroke={BLUE} strokeWidth="1" />
-            <line x1="74" y1="300" x2="74" y2="318" stroke={BLUE} strokeWidth="0.5" />
-            <line x1="170" y1="300" x2="170" y2="318" stroke={BLUE} strokeWidth="0.5" />
-            <line x1="174" y1="300" x2="174" y2="318" stroke={BLUE} strokeWidth="0.5" />
-            <line x1="242" y1="300" x2="242" y2="318" stroke={BLUE} strokeWidth="0.5" />
-            <Tick x={74} y={314} />
-            <Tick x={170} y={314} />
-            <Tick x={174} y={314} />
-            <Tick x={242} y={314} />
-            <text x="122" y="328" textAnchor="middle" fontSize="10" fill={BLUE} className="font-plexmono">
-              2,40
-            </text>
-            <text x="208" y="328" textAnchor="middle" fontSize="10" fill={BLUE} className="font-plexmono">
-              1,70
-            </text>
-            {/* rechts: 5,90 */}
-            <line x1="440" y1="54" x2="440" y2="290" stroke={BLUE} strokeWidth="1" />
-            <line x1="424" y1="54" x2="444" y2="54" stroke={BLUE} strokeWidth="0.5" />
-            <line x1="424" y1="290" x2="444" y2="290" stroke={BLUE} strokeWidth="0.5" />
-            <Tick x={440} y={54} />
-            <Tick x={440} y={290} />
-            <text
-              x="452"
-              y="172"
-              textAnchor="middle"
-              fontSize="10"
-              fill={BLUE}
-              transform="rotate(90 452 172)"
-              className="font-plexmono"
-            >
-              5,90
-            </text>
-          </g>
-
-          {/* Wände: dunkle Außenkontur, Räume weiß ausgespart */}
-          <rect x="64" y="44" width="360" height="256" fill={INK} />
-          {ROOMS.map((r) => (
-            <rect key={r.name} x={r.rect.x} y={r.rect.y} width={r.rect.w} height={r.rect.h} fill="#ffffff" />
-          ))}
-
-          {/* Fenster (Doppellinie) */}
-          <g stroke="#64748b" strokeWidth="1">
-            {/* Zimmer, oben */}
-            <rect x="128" y="44" width="60" height="10" fill="#ffffff" stroke="none" />
-            <line x1="128" y1="47.5" x2="188" y2="47.5" />
-            <line x1="128" y1="50.5" x2="188" y2="50.5" />
-            {/* Wohnen, rechts */}
-            <rect x="414" y="142" width="10" height="60" fill="#ffffff" stroke="none" />
-            <line x1="417.5" y1="142" x2="417.5" y2="202" />
-            <line x1="420.5" y1="142" x2="420.5" y2="202" />
-            {/* Terrassentür Wohnen, unten */}
-            <rect x="282" y="290" width="96" height="10" fill="#ffffff" stroke="none" />
-            <line x1="282" y1="293.5" x2="378" y2="293.5" />
-            <line x1="282" y1="296.5" x2="378" y2="296.5" />
-          </g>
-
-          {/* Türen (Öffnung + Türblatt + Viertelkreis) */}
-          <g stroke="#94a3b8" strokeWidth="1" fill="none">
-            {/* Zimmer → Vorraum (schlägt ins Zimmer auf, hält den
-                engen Vorraum frei für die Beschriftung) */}
-            <rect x="190" y="198" width="36" height="4" fill="#ffffff" stroke="none" />
-            <line x1="190" y1="198" x2="190" y2="162" />
-            <path d="M 190 162 A 36 36 0 0 1 226 198" />
-            {/* Wohnen → Vorraum */}
-            <rect x="242" y="220" width="4" height="36" fill="#ffffff" stroke="none" />
-            <line x1="246" y1="220" x2="282" y2="220" />
-            <path d="M 282 220 A 36 36 0 0 1 246 256" />
-            {/* Bad → Vorraum */}
-            <rect x="170" y="228" width="4" height="36" fill="#ffffff" stroke="none" />
-            <line x1="170" y1="228" x2="134" y2="228" />
-            <path d="M 134 228 A 36 36 0 0 0 170 264" />
-            {/* Eingang */}
-            <rect x="186" y="290" width="36" height="10" fill="#ffffff" stroke="none" />
-            <line x1="186" y1="290" x2="186" y2="254" />
-            <path d="M 186 254 A 36 36 0 0 1 222 290" />
-          </g>
-
-          {/* Raumbeschriftung */}
-          {ROOMS.map((r) => {
-            const cx = r.rect.x + r.rect.w / 2;
-            const nameY = r.labelY ?? r.rect.y + r.rect.h / 2 - 4;
-            const small = r.rect.w < 100;
-            return (
-              <g key={r.name}>
-                <text
-                  x={cx}
-                  y={nameY}
-                  textAnchor="middle"
-                  fontSize={small ? 9 : 10}
-                  fill="#64748b"
-                >
-                  {r.name}
-                </text>
-                <text
-                  x={cx}
-                  y={nameY + 16}
-                  textAnchor="middle"
-                  fontSize={small ? 10 : 11}
-                  fill={INK}
-                  className="font-plexmono"
-                >
-                  {r.floor} m²
-                </text>
-              </g>
-            );
-          })}
-
-          {/* Erkennungs-Marker — einziger Einsatz des Logo-Orange */}
-          {ROOMS.map((r, i) => (
-            <rect
-              key={r.name}
-              x={r.rect.x + 5}
-              y={r.rect.y + 5}
-              width={r.rect.w - 10}
-              height={r.rect.h - 10}
-              rx="3"
-              fill={ORANGE}
-              fillOpacity="0.05"
-              stroke={ORANGE}
-              strokeWidth="1.5"
-              className="lp-a"
-              style={{ animationDelay: `${0.5 + i * 0.15}s` }}
-            />
-          ))}
-        </svg>
-
-        {/* Übergang Plan → Tabelle */}
-        <div
-          className="lp-a my-3 flex items-center gap-3"
-          style={{ animationDelay: "1.15s" }}
-          aria-hidden="true"
-        >
-          <span className="h-px flex-1 bg-slate-200" />
-          <span className="flex items-center gap-1.5 font-plexmono text-[11px] uppercase tracking-wider text-primary">
-            <ArrowDown className="h-3.5 w-3.5" />
-            automatisch ermittelt
-          </span>
-          <span className="h-px flex-1 bg-slate-200" />
-        </div>
-
-        {/* Ergebnis: Mengenermittlung */}
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <caption className="sr-only">
-              Mengenermittlung aus dem Grundriss: Boden- und Wandflächen je Raum
-            </caption>
-            <thead>
-              <tr className="border-b border-slate-200 font-plexmono text-[11px] uppercase tracking-wider text-slate-500">
-                <th scope="col" className="whitespace-nowrap py-2 pr-2 text-left font-normal">
-                  Raum
-                </th>
-                <th scope="col" className="hidden whitespace-nowrap px-2 py-2 text-right font-normal sm:table-cell">
-                  Maße (m)
-                </th>
-                <th scope="col" className="whitespace-nowrap px-2 py-2 text-right font-normal">
-                  Boden (m²)
-                </th>
-                <th scope="col" className="whitespace-nowrap py-2 pl-2 text-right font-normal">
-                  Wand (m²)
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {ROOMS.map((r, i) => (
-                <tr
-                  key={r.name}
-                  className="lp-a border-b border-slate-100"
-                  style={{ animationDelay: `${1.3 + i * 0.08}s` }}
-                >
-                  <th scope="row" className="py-2 pr-2 text-left font-normal text-slate-700">
-                    {r.name}
-                  </th>
-                  <td className="hidden whitespace-nowrap px-2 py-2 text-right font-plexmono text-slate-500 sm:table-cell">
-                    {r.dims}
-                  </td>
-                  <td className="px-2 py-2 text-right font-plexmono text-slate-900">{r.floor}</td>
-                  <td className="py-2 pl-2 text-right font-plexmono text-slate-900">{r.wall}</td>
-                </tr>
-              ))}
-              <tr className="lp-a font-medium" style={{ animationDelay: "1.65s" }}>
-                <th scope="row" className="py-2.5 pr-2 text-left font-medium text-slate-900">
-                  Summe
-                </th>
-                <td className="hidden px-2 py-2.5 sm:table-cell" />
-                <td className="border-t-2 border-slate-300 px-2 py-2.5 text-right font-plexmono text-slate-900">
-                  {TOTALS.floor}
-                </td>
-                <td className="border-t-2 border-slate-300 py-2.5 pl-2 text-right font-plexmono text-slate-900">
-                  {TOTALS.wall}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <p className="lp-a mt-3 text-xs leading-relaxed text-slate-500" style={{ animationDelay: "1.75s" }}>
-          Beispiel, direkt nachrechenbar: Boden = Länge × Breite, Wand = Umfang × lichte Höhe
-          2,50&nbsp;m. Öffnungen bis 5&nbsp;m² (Fenster 1,50&nbsp;×&nbsp;1,40, Türen
-          0,90&nbsp;×&nbsp;2,10) werden nach österreichischer Abrechnungslogik übermessen — nur
-          die Terrassentür (2,40&nbsp;×&nbsp;2,10&nbsp;m) wird abgezogen.
-        </p>
-      </div>
+    <div className="proof__line ded">
+      <span>
+        {label} <span className="why">{why}</span>
+      </span>
+      <span>
+        {fmt(d.a, 3)} m²{d.x ? "" : ", kein Abzug"}
+      </span>
     </div>
   );
 }
+
+function ProofPanel({ r }: { r: BeispielRaum }) {
+  const expr = (e: string) => e.split("×").map((x) => fmt(+x, 3)).join(" × ");
+  const w = r.w!;
+  return (
+    <div className="panel" aria-live="polite">
+      <p className="label">{r.u}</p>
+      <h3>{r.n}</h3>
+      <div className="proof__pos">
+        <b>01.01</b>
+        <span>Wandbeschichtung</span>
+      </div>
+      <div className="proof__line">
+        <span>{w.f}</span>
+        <span>
+          {expr(w.e)} = <b>{fmt(w.raw, 3)} m²</b>
+        </span>
+      </div>
+      {w.d.length ? (
+        w.d.map((d, i) => <DedLine key={i} d={d} />)
+      ) : (
+        <div className="proof__line ded">
+          <span className="why">Keine Öffnungen erfasst</span>
+          <span />
+        </div>
+      )}
+      <div className="net">
+        <span>Netto Wand</span>
+        <span className="num">{fmt(w.net, 3)} m²</span>
+      </div>
+      {r.c && (
+        <>
+          <div className="proof__pos" style={{ marginTop: 8 }}>
+            <b>02.01</b>
+            <span>Deckenbeschichtung</span>
+          </div>
+          <div className="proof__line">
+            <span>{r.c.f}</span>
+            <span className="num">
+              <b>{fmt(r.c.net, 3)} m²</b>
+            </span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function RoomPicker() {
+  const rooms = BEISPIEL.rooms.filter((r) => r.w);
+  const start = Math.max(0, rooms.findIndex((r) => r.n === "Wohnen" && r.p === 23));
+  const [sel, setSel] = useState(start);
+  const units = [...new Set(rooms.map((r) => r.u))];
+  return (
+    <>
+      <div className="check__plan">
+        <div className="sc-stack" data-sc-in data-sc-stagger="60">
+          <h2 className="h-act" id="pruefen-h">
+            Jeder Raum, eine Zeile.
+          </h2>
+          <p className="small">
+            Wählen Sie einen Raum aus dem Beispielprojekt. Rechts steht sein Rechenweg, so wie
+            BauLV ihn ablegt.
+          </p>
+        </div>
+        <div className="rooms">
+          {units.map((u) => (
+            <fieldset key={u}>
+              <legend className="label">{u}</legend>
+              <div className="grid">
+                {rooms.map((r, i) =>
+                  r.u !== u ? null : (
+                    <button
+                      key={i}
+                      type="button"
+                      className="room"
+                      aria-pressed={i === sel}
+                      onClick={() => setSel(i)}
+                    >
+                      <b>{r.n}</b>
+                      <span>
+                        {fmt(r.a)} m² · Umfang {fmt(r.p)} m
+                      </span>
+                    </button>
+                  ),
+                )}
+              </div>
+            </fieldset>
+          ))}
+        </div>
+      </div>
+      <div className="check__lv">
+        <div className="sticky">
+          <p className="label">Berechnungsnachweis</p>
+          <ProofPanel r={rooms[sel]} />
+          <p className="small note">
+            Beispielprojekt aus der BauLV-App: echter Grundriss, echte Werte, Namen
+            anonymisiert. Werte aus der KI-Plananalyse prüfen Sie vor der Verwendung im LV.
+          </p>
+        </div>
+      </div>
+    </>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Seiten-Choreografie: Fuge, Hero-Tiefe, Übergabe der Maße (Peak)          */
+/* ---------------------------------------------------------------------- */
+
+function useSplitStage(rootRef: React.RefObject<HTMLDivElement | null>) {
+  useEffect(() => {
+    const host = rootRef.current;
+    if (!host) return;
+    const root = document.documentElement;
+    const phone = matchMedia("(max-width: 860px)");
+    const still = matchMedia("(prefers-reduced-motion: reduce)");
+    const fine = matchMedia("(hover: hover) and (pointer: fine)");
+    const fuge = host.querySelector<HTMLElement>(".fuge")!;
+    const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
+    const ease = (t: number) => t * t * (3 - 2 * t);
+
+    // Engine einmal pro DOM mounten (StrictMode führt Effekte doppelt aus).
+    const h = host as HTMLDivElement & { __sc?: boolean };
+    if (!h.__sc && window.ScrollCraft) {
+      window.ScrollCraft.mount(host);
+      h.__sc = true;
+    }
+
+    type Act = { el: HTMLElement; pinned: boolean; kf: number[][]; top: number; h: number };
+    const acts: Act[] = [...host.querySelectorAll<HTMLElement>("[data-split]")].map((el) => ({
+      el,
+      pinned: el.dataset.scAct !== "flow",
+      kf: (el.dataset.split ?? "0:50").split(",").map((s) => s.split(":").map(Number)),
+      top: 0,
+      h: 0,
+    }));
+    let pts: number[][] = [];
+    let vw = 0;
+    let vh = 0;
+
+    // ---- the peak: chips leave the plan row and land in the proof ----
+    const peak = acts.find((a) => a.el.id === "uebergabe")!;
+    const stage = peak.el.querySelector<HTMLElement>("[data-sc-stage]")!;
+    const fly = peak.el.querySelector<HTMLElement>(".flyers")!;
+    const net = host.querySelector<HTMLElement>("#r-net")!;
+    const rowmark = peak.el.querySelector<HTMLElement>(".rowmark")!;
+    type Leg = {
+      s: HTMLElement; d: HTMLElement; f: HTMLElement; res: HTMLElement[];
+      a: number; b: number; x0: number; y0: number; x1: number; y1: number;
+    };
+    const legs: Leg[] = (
+      [
+        ["c-umfang", "s-umfang", 0.12, 0.3, []],
+        ["c-hoehe", "s-hoehe", 0.22, 0.4, ["r-raw"]],
+        ["c-fenster", "s-fenster", 0.46, 0.62, ["r-fenster", "r-fenster-why"]],
+        ["c-tuer", "s-tuer", 0.54, 0.7, ["r-tuer", "r-tuer-why"]],
+      ] as [string, string, number, number, string[]][]
+    ).map(([src, dst, a, b, after]) => {
+      const s = host.querySelector<HTMLElement>("#" + src)!;
+      const f = s.cloneNode(true) as HTMLElement;
+      f.removeAttribute("id");
+      f.removeAttribute("style");
+      f.className = "chip flyer";
+      fly.appendChild(f);
+      return {
+        s, f, a, b, d: host.querySelector<HTMLElement>("#" + dst)!,
+        res: after.map((id) => host.querySelector<HTMLElement>("#" + id)!),
+        x0: 0, y0: 0, x1: 0, y1: 0,
+      };
+    });
+
+    function measurePeak() {
+      const sr = stage.getBoundingClientRect();
+      for (const L of legs) {
+        const s = L.s.getBoundingClientRect();
+        const d = L.d.getBoundingClientRect();
+        const f = L.f.getBoundingClientRect();
+        L.x0 = s.left - sr.left;
+        L.y0 = s.top - sr.top;
+        L.x1 = d.left - sr.left + Math.max(0, d.width - f.width);
+        L.y1 = d.top - sr.top + (d.height - f.height) / 2;
+      }
+    }
+    function measure() {
+      vw = root.clientWidth;
+      vh = innerHeight;
+      pts = [];
+      for (const a of acts) {
+        a.top = a.el.getBoundingClientRect().top + scrollY;
+        a.h = a.el.offsetHeight;
+        const travel = a.pinned ? Math.max(a.h - vh, 1) : a.h;
+        for (const [t, v] of a.kf) {
+          const y = a.pinned ? a.top + t * travel : a.top - vh * 0.4 + t * travel;
+          pts.push([y, phone.matches && v !== 0 ? 50 : v]);
+        }
+        if (!a.pinned) pts.push([a.top + a.h - vh * 0.6, a.kf[a.kf.length - 1][1]]);
+      }
+      pts.sort((x, y) => x[0] - y[0]);
+      measurePeak();
+      last = -1;
+      lastP = -1;
+    }
+    function splitAt(y: number) {
+      if (!pts.length) return 50;
+      if (y <= pts[0][0]) return pts[0][1];
+      for (let i = 1; i < pts.length; i++) {
+        if (y <= pts[i][0]) {
+          const [y0, v0] = pts[i - 1];
+          const [y1, v1] = pts[i];
+          if (still.matches) return v1;
+          return v0 + (v1 - v0) * ease(clamp((y - y0) / Math.max(y1 - y0, 1), 0, 1));
+        }
+      }
+      return pts[pts.length - 1][1];
+    }
+    const progress = (a: Act) => clamp((scrollY - a.top) / Math.max(a.h - vh, 1), 0, 1);
+
+    function drawPeak(p: number) {
+      let sig = "";
+      rowmark.style.setProperty("--rm", clamp(p / 0.08, 0, 1).toFixed(2));
+      for (const L of legs) {
+        const t = clamp((p - L.a) / (L.b - L.a), 0, 1);
+        const e = ease(t);
+        const x = L.x0 + (L.x1 - L.x0) * e;
+        const y = L.y0 + (L.y1 - L.y0) * e - Math.sin(Math.PI * e) * (phone.matches ? 24 : 70);
+        L.f.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`;
+        L.f.style.opacity = t > 0 && t < 1 ? "1" : "0";
+        L.s.style.opacity = t > 0 ? "0.45" : "1";
+        L.d.style.setProperty("--o", clamp((t - 0.85) / 0.15, 0, 1).toFixed(2));
+        const out = clamp((p - L.b) / 0.05, 0, 1);
+        for (const r of L.res) r.style.setProperty("--o", out.toFixed(2));
+        sig += Math.round(e * 20) + "." + Math.round(out * 4) + ";";
+      }
+      const n = clamp((p - 0.76) / 0.06, 0, 1);
+      net.style.setProperty("--o", n.toFixed(2));
+      stage.setAttribute("data-sc-verify-state", sig + Math.round(n * 4));
+    }
+
+    // ---- hero depth ----
+    const hero = acts[0];
+    const planes = [...hero.el.querySelectorAll<HTMLElement>(".plane")];
+    let mx = 0, my = 0, tx = 0, ty = 0;
+    const onPointer = (e: PointerEvent) => {
+      if (!fine.matches || still.matches) return;
+      tx = e.clientX / innerWidth - 0.5;
+      ty = e.clientY / innerHeight - 0.5;
+    };
+
+    let last = -1;
+    let lastP = -1;
+    let raf = 0;
+    const check = acts.find((a) => a.el.id === "pruefen")!;
+    function frame() {
+      mx += (tx - mx) * 0.08;
+      my += (ty - my) * 0.08;
+      const y = scrollY;
+      if (y !== last || Math.abs(tx - mx) > 0.001 || Math.abs(ty - my) > 0.001) {
+        last = y;
+        const s = splitAt(y);
+        const horizontal = !phone.matches;
+        const len = horizontal ? vw : vh;
+        const px = (s / 100) * len;
+        root.style.setProperty(horizontal ? "--sx" : "--sy", px.toFixed(1) + "px");
+        root.style.setProperty(horizontal ? "--sy" : "--sx", horizontal ? "50svh" : "50vw");
+        root.style.setProperty("--shift", ((px - len / 2) / 2).toFixed(1) + "px");
+        const doc = Math.max(document.documentElement.scrollHeight - vh, 1);
+        const along = horizontal ? 70 + (y / doc) * (vh - 110) : 16 + (y / doc) * (vw * 0.62);
+        root.style.setProperty(horizontal ? "--my" : "--mx", along.toFixed(1) + "px");
+        // Fuge nur über der Split-Bühne zeigen, nicht über Formular und Footer.
+        const end = acts[acts.length - 1];
+        const past = y > end.top + end.h - vh * 1.02;
+        const inCheckPhone = phone.matches && y > check.top - vh * 0.5 && y < check.top + check.h - vh * 0.5;
+        fuge.dataset.hidden = String(past || inCheckPhone);
+        root.style.setProperty("--closeX", horizontal ? (px / 2).toFixed(1) + "px" : "0px");
+        const hp = progress(hero);
+        if (!still.matches)
+          for (const el of planes) {
+            const d = +(el.dataset.depth ?? 1);
+            el.style.transform = `translate(${(mx * 14 * d).toFixed(1)}px, ${(-hp * 120 * d + my * 10 * d).toFixed(1)}px)`;
+          }
+        const pp = still.matches ? 1 : progress(peak);
+        if (pp !== lastP) {
+          lastP = pp;
+          drawPeak(pp);
+        }
+      }
+      raf = requestAnimationFrame(frame);
+    }
+
+    measure();
+    addEventListener("pointermove", onPointer, { passive: true });
+    addEventListener("resize", measure);
+    addEventListener("load", measure);
+    phone.addEventListener("change", measure);
+    document.fonts?.ready.then(measure);
+    raf = requestAnimationFrame(frame);
+    return () => {
+      cancelAnimationFrame(raf);
+      removeEventListener("pointermove", onPointer);
+      removeEventListener("resize", measure);
+      removeEventListener("load", measure);
+      phone.removeEventListener("change", measure);
+      for (const L of legs) L.f.remove();
+      for (const k of ["--sx", "--sy", "--shift", "--my", "--mx", "--closeX"]) root.style.removeProperty(k);
+    };
+  }, [rootRef]);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Warteliste (v25) — unverändert übernommen                              */
+/* ---------------------------------------------------------------------- */
+
 
 /**
  * Wortlaut der Einwilligungs-Checkbox — MUSS zeichengleich mit
@@ -535,13 +552,15 @@ function WaitlistForm() {
         />
         <span className="text-sm leading-relaxed text-slate-700">
           {WAITLIST_CONSENT_TEXT}{" "}
-          <Link
-            to="/datenschutz"
+          {/* Natives <a>: die Landing verlässt man per Seitenwechsel,
+              damit die Scroll-Engine nicht im Hintergrund weiterläuft. */}
+          <a
+            href="/datenschutz"
             className="text-primary hover:underline"
             onClick={(e) => e.stopPropagation()}
           >
             Hinweise zum Datenschutz
-          </Link>
+          </a>
         </span>
       </label>
 
@@ -567,404 +586,280 @@ function WaitlistForm() {
   );
 }
 
-const STEPS = [
-  {
-    nr: "01",
-    title: "Plan hochladen",
-    desc: "Grundriss oder Schnitt als PDF, auch mehrere Pläne je Projekt.",
-  },
-  {
-    nr: "02",
-    title: "Erkennung prüfen",
-    desc: "BauLV erkennt Räume, Flächen und Öffnungen, Raumhöhen aus dem Schnitt. Sie sehen jeden Wert und korrigieren direkt.",
-  },
-  {
-    nr: "03",
-    title: "LV exportieren",
-    desc: "Positionen in österreichischer Baufachsprache, Mengen mit Rechenweg. Export als PDF oder Excel.",
-  },
-];
+/* ---------------------------------------------------------------------- */
+/* Seite                                                                  */
+/* ---------------------------------------------------------------------- */
 
-// Jede Karte nur mit Aussagen, die der Code bzw. die eigene
-// Datenschutzerklärung deckt. KEIN "Hosting in der EU" — die
-// Datenschutzerklärung dokumentiert Railway Corp. (USA) und
-// Anthropic PBC (USA) als Auftragsverarbeiter.
-const TRUST: { title: string; desc: string; mono?: string }[] = [
-  {
-    title: "Deterministisch statt Blackbox",
-    desc: "Die KI liest den Plan. Gerechnet wird regelbasiert und reproduzierbar, mit Berechnungsnachweis je Position:",
-    mono: "20,20 × 2,50 − 5,04 = 45,46 m²",
-  },
-  {
-    title: "Für den österreichischen Markt",
-    desc: "LV-Positionen in österreichischer Baufachsprache, Abrechnungslogik nach österreichischen Baustandards, inklusive Übermessung kleiner Öffnungen.",
-  },
-  {
-    title: "Ihre Daten, Ihre Kontrolle",
-    desc: "Datenexport und Löschung jederzeit direkt im Konto. Alle Auftragsverarbeiter transparent in der Datenschutzerklärung.",
-  },
-  {
-    title: "Ehrliche Beta",
-    desc: "BauLV ist in der Testphase, und das steht auch so auf der Seite. Sie testen kostenlos und sehen den echten Stand.",
-  },
-];
-
-const PLANS = [
-  {
-    name: "Basis",
-    price: "€ 49",
-    interval: "/ Monat netto",
-    features: ["3 aktive Projekte", "Manueller LV-Editor", "PDF-Export"],
-    cta: "Auf die Warteliste",
-    href: "#warteliste",
-    popular: false,
-  },
-  {
-    name: "Pro",
-    price: "€ 149",
-    interval: "/ Monat netto",
-    features: [
-      "Unbegrenzte Projekte",
-      "KI-Plananalyse (PDF → Räume & Flächen)",
-      "Automatische Wand- & Umfangberechnung",
-      "KI-generierte LV-Positionen",
-      "KI-Chatassistent",
-      "Excel + PDF Export",
-      "Prioritäts-Support",
-    ],
-    cta: "Auf die Warteliste",
-    href: "#warteliste",
-    popular: true,
-  },
-  {
-    name: "Enterprise",
-    price: "Auf Anfrage",
-    interval: "",
-    // Nur Angebotsvergleich/Team sind noch nicht gebaut — ehrlich
-    // als "in Entwicklung" gekennzeichnet. API-Zugang (MCP) und
-    // dedizierter Support existieren; PATs gelten nur für /mcp.
-    features: [
-      "Alles aus Pro",
-      "API-Zugang (MCP)",
-      "Dedizierter Support",
-      "Angebotsvergleich / Preisspiegel (in Entwicklung)",
-      "Team- und Multi-User-Konten (in Entwicklung)",
-    ],
-    cta: "Kontakt aufnehmen",
-    href: "mailto:kontakt@baulv.at?subject=Enterprise-Plan%20Anfrage",
-    popular: false,
-  },
-];
+const CTA = "Kostenlos testen";
 
 export function LandingPage() {
+  const rootRef = useRef<HTMLDivElement>(null);
+  useLandingStyles();
+  useSplitStage(rootRef);
+
   return (
-    <div className="min-h-screen bg-white font-plex text-slate-900 antialiased">
-      {/* Beta warning — dismissible, persisted in localStorage */}
-      <BetaBanner />
+    <div className="sc-landing" ref={rootRef}>
+      <span data-sc-progress />
 
-      {/* Navbar */}
-      <nav className="sticky top-0 z-40 border-b border-slate-200 bg-white/95 backdrop-blur">
-        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
-          <Link to="/" className="flex items-center gap-2.5">
-            <img src="/icons/icon.svg" alt="" className="h-7 w-7" />
-            <span className="text-lg font-semibold tracking-tight">BauLV</span>
-          </Link>
-          <div className="hidden items-center gap-6 md:flex">
-            <a href="#ablauf" className="text-sm text-slate-600 hover:text-slate-900">
-              So funktioniert's
-            </a>
-            <a href="#preise" className="text-sm text-slate-600 hover:text-slate-900">
-              Preise
-            </a>
-            <Link to="/api-pricing" className="text-sm text-slate-600 hover:text-slate-900">
-              API
-            </Link>
-            <Link to="/developers" className="text-sm text-slate-600 hover:text-slate-900">
-              Entwickler
-            </Link>
-            {/* Hover abdunkeln statt Opacity — /80-Blau auf Weiß fällt
-                unter 4,5:1 (WCAG AA). blue-700 bleibt im Markenton. */}
-            <Link to="/login" className="text-sm font-medium text-primary hover:text-blue-700">
-              Anmelden
-            </Link>
-            {/* v25 Warteliste: primärer CTA für Fremde ist der
-                Eintrag, nicht /register — die Registrierung liegt
-                hinter dem Beta-Gate und wäre eine Sackgasse. Die
-                Route selbst bleibt bestehen (Beta-Tester kommen über
-                den Gate-Flow hinein), sie wird nur nicht beworben. */}
-            <a
-              href="#warteliste"
-              className="bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-blue-700"
-            >
-              Auf die Warteliste
-            </a>
-          </div>
-          {/* Mobile */}
-          <div className="flex items-center gap-3 md:hidden">
-            <Link to="/login" className="text-sm font-medium text-primary">
-              Login
-            </Link>
-            <a
-              href="#warteliste"
-              className="bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground"
-            >
-              Warteliste
-            </a>
-          </div>
+      <div className="fuge" aria-hidden="true">
+        <div className="fuge__ticks" />
+        <div className="fuge__line" />
+        <div className="fuge__head">
+          <span>Plan</span>
+          <span>LV</span>
         </div>
-      </nav>
+        <div className="fuge__mark" />
+      </div>
 
-      {/* Hero: die Verwandlung Plan → Mengenermittlung */}
-      <header className="mx-auto max-w-6xl px-6 py-14 md:py-20">
-        <div className="grid items-center gap-12 lg:grid-cols-2">
-          <div>
-            <p className="text-sm font-medium text-primary">
-              Für österreichische Bauträger und Baumeister
-            </p>
-            <h1 className="mt-4 text-4xl font-semibold leading-tight tracking-tight md:text-5xl">
-              Mengenermittlung — automatisch aus dem Bauplan.
-            </h1>
-            <p className="mt-5 text-lg leading-relaxed text-slate-600">
-              BauLV liest Grundrisse und Schnitte als PDF, erkennt Räume, Flächen und Raumhöhen
-              und erstellt daraus ein prüfbares Leistungsverzeichnis. Jede Menge mit
-              nachvollziehbarem Rechenweg.
-            </p>
-            <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-              <a
-                href="#warteliste"
-                className="inline-flex items-center justify-center gap-2 bg-primary px-6 py-3 text-base font-medium text-primary-foreground hover:bg-blue-700"
-              >
-                Auf die Warteliste
-                <ArrowRight className="h-5 w-5" />
-              </a>
-              <a
-                href="#ablauf"
-                className="inline-flex items-center justify-center gap-2 border border-slate-300 px-6 py-3 text-base font-medium text-slate-700 hover:bg-slate-50"
-              >
-                So funktioniert's
-              </a>
-            </div>
-            <p className="mt-4 text-sm text-slate-500">
-              Unverbindlich eintragen · kein Vertrag, keine Zahlungsdaten · Start-Gewerk
-              Malerarbeiten
-            </p>
-          </div>
-          <HeroTransformation />
-        </div>
-      </header>
-
-      {/* Problem → Lösung */}
-      <section id="problem" className="border-t border-slate-200">
-        <div className="mx-auto max-w-6xl px-6 py-16 md:py-20">
-          <h2 className="max-w-xl text-2xl font-semibold tracking-tight md:text-3xl">
-            Das Aufmaß ist der Flaschenhals.
-          </h2>
-          <div className="mt-10 grid gap-10 md:grid-cols-2 md:gap-0 md:divide-x md:divide-slate-200">
-            <div className="md:pr-12">
-              <h3 className="font-plexmono text-[11px] uppercase tracking-wider text-slate-500">
-                Von Hand
-              </h3>
-              <ul className="mt-4 space-y-4 text-slate-600">
-                <li className="flex gap-3">
-                  <span className="select-none text-slate-300" aria-hidden="true">
-                    —
-                  </span>
-                  Skalieren, Ablesen, Notieren — Raum für Raum, Plan für Plan.
-                </li>
-                <li className="flex gap-3">
-                  <span className="select-none text-slate-300" aria-hidden="true">
-                    —
-                  </span>
-                  Jede Übertragung in Excel oder ins LV ist eine eigene Fehlerquelle.
-                </li>
-                <li className="flex gap-3">
-                  <span className="select-none text-slate-300" aria-hidden="true">
-                    —
-                  </span>
-                  Der Rechenweg steht am Ende nirgends. Nachprüfen heißt Nachmessen.
-                </li>
-              </ul>
-            </div>
-            <div className="md:pl-12">
-              <h3 className="font-plexmono text-[11px] uppercase tracking-wider text-primary">
-                Mit BauLV
-              </h3>
-              <ul className="mt-4 space-y-4 text-slate-900">
-                <li className="flex gap-3">
-                  <span className="select-none text-primary" aria-hidden="true">
-                    —
-                  </span>
-                  Plan als PDF hochladen: Räume, Flächen und Öffnungen werden erkannt.
-                </li>
-                <li className="flex gap-3">
-                  <span className="select-none text-primary" aria-hidden="true">
-                    —
-                  </span>
-                  Jeder Wert bleibt sichtbar und korrigierbar, bevor er ins LV geht.
-                </li>
-                <li className="flex gap-3">
-                  <span className="select-none text-primary" aria-hidden="true">
-                    —
-                  </span>
-                  Jede Menge trägt Formel und Herkunft — prüfbar statt Blackbox.
-                </li>
-              </ul>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* So funktioniert's */}
-      <section id="ablauf" className="border-t border-slate-200">
-        <div className="mx-auto max-w-6xl px-6 py-16 md:py-20">
-          <h2 className="text-2xl font-semibold tracking-tight md:text-3xl">So funktioniert's</h2>
-          <p className="mt-2 text-slate-600">Kein CAD-Import, kein Setup. Ein PDF genügt.</p>
-          <ol className="mt-10 grid gap-10 md:grid-cols-3">
-            {STEPS.map((s) => (
-              <li key={s.nr} className="border-t border-slate-200 pt-5">
-                <span className="font-plexmono text-sm text-primary">{s.nr}</span>
-                <h3 className="mt-2 text-lg font-semibold">{s.title}</h3>
-                <p className="mt-2 text-sm leading-relaxed text-slate-600">{s.desc}</p>
-              </li>
-            ))}
-          </ol>
-        </div>
-      </section>
-
-      {/* Vertrauen */}
-      <section id="vertrauen" className="border-t border-slate-200 bg-slate-50">
-        <div className="mx-auto max-w-6xl px-6 py-16 md:py-20">
-          <h2 className="text-2xl font-semibold tracking-tight md:text-3xl">
-            Worauf Sie sich verlassen können
-          </h2>
-          <div className="mt-10 grid gap-px overflow-hidden border border-slate-200 bg-slate-200 sm:grid-cols-2 lg:grid-cols-4">
-            {TRUST.map((t) => (
-              <div key={t.title} className="bg-white p-6">
-                <h3 className="font-semibold">{t.title}</h3>
-                <p className="mt-2 text-sm leading-relaxed text-slate-600">{t.desc}</p>
-                {t.mono && (
-                  <p className="mt-2 font-plexmono text-xs text-slate-900">{t.mono}</p>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* Preise */}
-      <section id="preise" className="border-t border-slate-200">
-        <div className="mx-auto max-w-6xl px-6 py-16 md:py-20">
-          <h2 className="text-2xl font-semibold tracking-tight md:text-3xl">Preise</h2>
-          <p className="mt-2 text-slate-600">Netto, monatlich, jederzeit kündbar.</p>
-          <div className="mt-10 grid gap-px overflow-hidden border border-slate-200 bg-slate-200 md:grid-cols-3">
-            {PLANS.map((plan) => (
-              <div
-                key={plan.name}
-                className={`flex flex-col border-t-2 bg-white p-8 ${
-                  plan.popular ? "border-primary" : "border-transparent"
-                }`}
-              >
-                <div className="flex items-baseline justify-between">
-                  <h3 className="text-lg font-semibold">{plan.name}</h3>
-                  {plan.popular && (
-                    <span className="font-plexmono text-[11px] uppercase tracking-wider text-primary">
-                      Empfohlen
-                    </span>
-                  )}
-                </div>
-                <div className="mt-4 flex h-12 items-end">
-                  <span
-                    className={`font-plexmono font-medium ${
-                      plan.interval ? "text-4xl" : "text-2xl"
-                    }`}
-                  >
-                    {plan.price}
-                  </span>
-                  {plan.interval && (
-                    <span className="ml-2 pb-1 text-sm text-slate-500">{plan.interval}</span>
-                  )}
-                </div>
-                <ul className="mb-8 mt-6 flex-1 space-y-3">
-                  {plan.features.map((f) => (
-                    <li key={f} className="flex gap-3 text-sm text-slate-700">
-                      <span className="select-none text-primary" aria-hidden="true">
-                        —
-                      </span>
-                      {f}
-                    </li>
-                  ))}
-                </ul>
-                {/* Interne Routen als <Link>, mailto: und #anker als
-                    natives <a> — ein <Link to="#warteliste"> würde
-                    react-router als Pfad-Navigation deuten. */}
-                {plan.href.startsWith("/") ? (
-                  <Link
-                    to={plan.href}
-                    className={`inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium ${
-                      plan.popular
-                        ? "bg-primary text-primary-foreground hover:bg-blue-700"
-                        : "border border-slate-300 text-slate-700 hover:bg-slate-50"
-                    }`}
-                  >
-                    {plan.cta}
-                    <ArrowRight className="h-4 w-4" />
-                  </Link>
-                ) : (
-                  <a
-                    href={plan.href}
-                    className={`inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium ${
-                      plan.popular
-                        ? "bg-primary text-primary-foreground hover:bg-blue-700"
-                        : "border border-slate-300 text-slate-700 hover:bg-slate-50"
-                    }`}
-                  >
-                    {plan.cta}
-                    <ArrowRight className="h-4 w-4" />
+      <main>
+        {/* 1 · Gegenüberstellung */}
+        <section className="hero" data-sc-act="pin" data-sc-span="1.6" data-split="0:50">
+          <h1 className="sr-only-l">Malerflächen aus Ihrem Plan – Raum für Raum nachrechenbar.</h1>
+          <div data-sc-stage>
+            <div className="side side--plan">
+              <div className="half">
+                <div className="pad">
+                  <figure className="sheet sheet--far plane" data-depth="0.35">
+                    <img src="/landing/plananalyse.webp" width={1800} height={1319} alt="BauLV Plananalyse: hochgeladener Grundriss und Liste der erkannten Räume" />
+                  </figure>
+                  <figure className="sheet sheet--near plane" data-depth="1">
+                    <img src="/landing/raeume.webp" width={1800} height={1268} alt="Tabelle der aus dem Plan erkannten Räume mit Fläche, Umfang und Raumhöhe" />
+                  </figure>
+                  <a className="brand" href="/">
+                    <img src="/icons/icon.svg" width={30} height={30} alt="" />
+                    BauLV
                   </a>
-                )}
+                  <div className="copy" data-sc-cue="0 0.82 0 0.12">
+                    <p className="h-hero" aria-hidden="true">Malerflächen aus Ihrem Plan –</p>
+                    <p className="lede">Räume, Flächen und Öffnungen, direkt aus Ihrem Grundriss-PDF.</p>
+                  </div>
+                </div>
               </div>
-            ))}
+            </div>
+            <div className="side side--lv">
+              <div className="half">
+                <div className="pad">
+                  <figure className="sheet sheet--far plane" data-depth="0.35">
+                    <img src="/landing/lv.webp" width={1800} height={745} alt="BauLV Leistungsverzeichnis Malerarbeiten mit drei Positionen und Mengen" />
+                  </figure>
+                  <figure className="sheet sheet--near plane" data-depth="1">
+                    <img src="/landing/nachweis.webp" width={1800} height={1342} alt="Aufgeklappte LV-Position mit Berechnungsnachweis je Raum" />
+                  </figure>
+                  <a className="login" href="/login">Anmelden</a>
+                  <div className="copy" data-sc-cue="0 0.82 0 0.12">
+                    <p className="h-hero" aria-hidden="true">Raum für Raum nachrechenbar.</p>
+                    <a className="cta" href="#warteliste">{CTA}</a>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
-          <p className="mt-8 text-sm text-slate-500">
-            Alle Preise netto, zzgl. gesetzlicher USt. Angebot ausschließlich für Unternehmer
-            (§&nbsp;1 UGB). Während der Beta-Phase testen Sie kostenlos mit allen Funktionen des
-            Pro-Plans.
-          </p>
-        </div>
-      </section>
+        </section>
 
-      {/* Abschluss: Warteliste (v25) — bleibt auf dem weißen Blatt;
-          die dicke Tinte-Linie schließt die Seite wie ein
-          Plankopf-Feld ab. Alle CTAs der Seite ankern hierher. */}
-      <section id="warteliste" className="border-t-2 border-slate-900">
-        <div className="mx-auto max-w-6xl px-6 py-16 md:py-20">
-          <div className="grid gap-12 lg:grid-cols-2">
-            <div>
-              <h2 className="text-2xl font-semibold tracking-tight md:text-3xl">
-                Beim Start dabei sein.
-              </h2>
-              <p className="mt-3 text-slate-600">
-                BauLV ist in der geschlossenen Beta. Tragen Sie sich
-                unverbindlich ein — wir melden uns per E-Mail, sobald
-                BauLV für Sie freigeschaltet ist.
+        {/* 2 · Lesen: echte Bildschirmaufnahme der Raumtabelle, gescrubbt */}
+        <section className="read" data-sc-act="scrub" data-sc-span="2.4" data-split="0:50">
+          <div data-sc-stage>
+            <div className="side side--plan">
+              <div className="half">
+                <div className="pad">
+                  <figure className="sheet frame">
+                    <img className="sc-stage__poster" src="/landing/rooms/001.webp" width={1280} height={985} alt="" />
+                    <canvas data-sc-sequence="/landing/rooms/{iii}.webp:90:1" role="img" aria-label="Bildschirmaufnahme: die Raumtabelle der Plananalyse wird durchgescrollt" />
+                  </figure>
+                  <div className="copy" data-sc-cue="0.06 0.94 0.12 0.1">
+                    <h2 className="h-act">33 Räume aus einem PDF.</h2>
+                    <p className="small">Wo der Plan keine Zahl hergibt, schätzt BauLV nicht. Dort steht „Bitte eintragen“.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="side side--lv">
+              <div className="half">
+                <div className="pad">
+                  <figure className="sheet sheet--far" data-sc-cue="0 0.9 0 0.1">
+                    <img src="/landing/struktur.webp" width={1800} height={1319} alt="BauLV Gebäudestruktur: Gebäude, Geschoß, Wohnungen und Räume mit Öffnungen" />
+                  </figure>
+                  <div className="copy" data-sc-cue="0.1 0.94 0.15 0.1">
+                    <p className="label">Gebäudestruktur</p>
+                    <p className="lede">Geordnet nach Gebäude, Geschoß und Wohnung. Gerechnet ist noch nichts.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* 3 · Übergabe (Peak): Maße verlassen die echte Tabellenzeile */}
+        <section className="peak" data-sc-act="pin" data-sc-span="3.6" data-split="0:50" id="uebergabe">
+          <div data-sc-stage data-sc-verify-state="0">
+            <div className="side side--plan">
+              <div className="half">
+                <div className="pad">
+                  <figure className="sheet frame">
+                    <img src="/landing/rooms/090.webp" width={1280} height={985} alt="Raumtabelle, letzte Zeile: Wohnen, 27,32 m² Fläche, 23,00 m Umfang, 2,50 m Raumhöhe" />
+                    <div className="rowmark" aria-hidden="true" />
+                    <span className="chip src chip--num" id="c-umfang" style={{ left: "40.4%", top: "94.7%" }}>23,00</span>
+                    <span className="chip src chip--num" id="c-hoehe" style={{ left: "47.9%", top: "94.7%" }}>2,50</span>
+                  </figure>
+                  <div className="openings">
+                    <p className="label">Öffnungen</p>
+                    <span className="chip" id="c-fenster"><small>Fenster</small> 2,00 × 2,10 m</span>
+                    <span className="chip" id="c-tuer"><small>Tür</small> 0,90 × 2,00 m</span>
+                  </div>
+                  <div className="copy--plan" data-sc-cue="0 0.9 0 0.08">
+                    <h2 className="h-act">Ein Raum aus dem Plan.</h2>
+                    <p className="small">Wohnen, Wohnung 1. Die Maße stehen so in der Raumtabelle.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="side side--lv">
+              <div className="half">
+                <div className="pad">
+                  <div className="proof" aria-label="Berechnungsnachweis für den Raum Wohnen">
+                    <div className="proof__pos"><b>01.01</b><span>Wandbeschichtung Dispersion weiß, 2× Anstrich</span></div>
+                    <p className="label">Berechnungsnachweis · Wohnen</p>
+                    <div className="proof__line">
+                      <span>Umfang × Höhe <span className="f">(Rohmaß)</span></span>
+                      <span>
+                        <span className="slot" id="s-umfang"><span className="v">23,000</span></span> ×{" "}
+                        <span className="slot" id="s-hoehe"><span className="v">2,500</span></span> ={" "}
+                        <span className="res" id="r-raw">57,500 m²</span>
+                      </span>
+                    </div>
+                    <div className="proof__line ded">
+                      <span>
+                        <span className="slot" id="s-fenster"><span className="v">Fenster 2,00 × 2,10</span></span>{" "}
+                        <span className="res why" id="r-fenster-why">unter 5,0 m², übermessen</span>
+                      </span>
+                      <span className="res" id="r-fenster">4,200 m², kein Abzug</span>
+                    </div>
+                    <div className="proof__line ded">
+                      <span>
+                        <span className="slot" id="s-tuer"><span className="v">Tür 0,90 × 2,00</span></span>{" "}
+                        <span className="res why" id="r-tuer-why">unter 5,0 m², übermessen</span>
+                      </span>
+                      <span className="res" id="r-tuer">1,800 m², kein Abzug</span>
+                    </div>
+                    <div className="net"><span>Netto</span><span className="res" id="r-net">57,500 m²</span></div>
+                  </div>
+                  <div className="copy" data-sc-cue="0.62 0.94 0.1 0.1">
+                    <p className="you">Sie sehen jeden Schritt.</p>
+                    <p className="small">
+                      Die KI liest den Plan. Gerechnet wird nach festen BauLV-Regeln, reproduzierbar,
+                      und jede Zeile landet im Nachweis der Position.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="flyers" aria-hidden="true" />
+          </div>
+        </section>
+
+        {/* 4 · Prüfen: der Besucher bedient echte Beispieldaten */}
+        <section className="check" data-sc-act="flow" data-split="0:50" id="pruefen" aria-labelledby="pruefen-h">
+          <RoomPicker />
+        </section>
+
+        {/* 5 · Liefern */}
+        <section className="ship" data-sc-act="pin" data-sc-span="1.8" data-split="0:50">
+          <div data-sc-stage>
+            <div className="side side--plan">
+              <div className="half">
+                <div className="pad">
+                  <figure className="sheet" data-sc-cue="0 0.92 0 0.1">
+                    <img src="/landing/projekt.webp" width={1800} height={853} alt="BauLV Projektübersicht mit Plananalyse, Leistungsverzeichnis, Gebäudestruktur und Mengenermittlung als PDF" />
+                  </figure>
+                  <div className="copy" data-sc-cue="0 0.92 0 0.1">
+                    <p className="label">Hinein</p>
+                    <h2 className="h-act">Ein Grundriss als PDF.</h2>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="side side--lv">
+              <div className="half">
+                <div className="pad">
+                  <figure className="sheet" data-sc-reveal="down" data-sc-reveal-at="0.12 0.55">
+                    <img src="/landing/nachweis.webp" width={1800} height={1342} alt="LV-Position Wandbeschichtung mit aufgeklapptem Berechnungsnachweis" />
+                  </figure>
+                  <div className="copy" data-sc-cue="0.3 0.94 0.15 0.1">
+                    <p className="label">Heraus</p>
+                    <h2 className="h-act">Positionen mit Menge und Rechenweg.</h2>
+                    <p className="small">In österreichischer Baufachsprache. Export als PDF oder Excel.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* 6 · Entscheidung: die Fuge wandert an den Rand, das LV gewinnt */}
+        <section className="close" data-sc-act="pin" data-sc-span="1.5" data-split="0:50,0.55:0">
+          <div data-sc-stage>
+            <div className="side side--plan">
+              <div className="half">
+                <div className="pad">
+                  <span className="brand" aria-hidden="true">
+                    <img src="/icons/icon.svg" width={30} height={30} alt="" />
+                    BauLV
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div className="side side--lv">
+              <div className="half">
+                <div className="final" data-sc-cue="0 1 0 0">
+                  <h2 className="h-hero">
+                    Sie prüfen.
+                    <br />
+                    BauLV rechnet.
+                  </h2>
+                  <p className="lede">
+                    BauLV ist in der Testphase. Sie testen kostenlos, mit allen Funktionen, und sehen den echten Stand.
+                  </p>
+                  <a className="cta" href="#warteliste">{CTA}</a>
+                  <p className="small">Für Unternehmen (B2B). Entwickelt in Österreich.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* Ziel aller CTAs: bestehende Warteliste (Double-Opt-In) */}
+        <section id="warteliste" className="signup" aria-labelledby="warteliste-h">
+          <div className="signup__inner">
+            <div className="sc-stack">
+              <p className="label">{CTA}</p>
+              <h2 className="h-act" id="warteliste-h">Platz in der Testphase sichern.</h2>
+              <p className="lede">
+                BauLV ist in der geschlossenen Testphase. Tragen Sie sich unverbindlich ein, wir melden uns per
+                E-Mail, sobald Ihr Zugang freigeschaltet ist.
               </p>
-              <p className="mt-4 text-sm leading-relaxed text-slate-500">
-                Kein Vertrag, keine Kosten, keine Zahlungsdaten. Sie
-                bestätigen Ihre Anmeldung per E-Mail (Double-Opt-In)
-                und können sich jederzeit über den Link in jeder
-                E-Mail wieder abmelden.
+              <p className="small">
+                Kein Vertrag, keine Kosten, keine Zahlungsdaten. Sie bestätigen die Anmeldung per E-Mail
+                (Double-Opt-In) und können sich jederzeit über den Link in jeder E-Mail abmelden.
               </p>
             </div>
             <WaitlistForm />
           </div>
+        </section>
+      </main>
+
+      <footer className="lfoot">
+        <div className="lfoot__inner">
+          <span>© 2026 BauLV</span>
+          <nav aria-label="Rechtliches und Links">
+            <a href="/login">Anmelden</a>
+            <a href="/api-pricing">API für Entwickler</a>
+            <a href="/impressum">Impressum</a>
+            <a href="/datenschutz">Datenschutz</a>
+            <a href="/agb">AGB</a>
+          </nav>
         </div>
-      </section>
+      </footer>
 
-      {/* Footer */}
-      <Footer />
-
-      {/* Floating support-chat widget — public, rate-limited endpoint,
-          only mounted on the landing page (not inside the app shell). */}
       <SupportChat />
     </div>
   );
