@@ -183,6 +183,21 @@ class Room(Base):
     unit: Mapped["Unit"] = relationship(back_populates="rooms")
     openings: Mapped[list["Opening"]] = relationship(back_populates="room", cascade="all, delete-orphan")
 
+    # Anzeige der Wohnung (2026-11): nur lesen, nur wenn ``unit`` bereits
+    # geladen ist — siehe ``app/services/unit_label.py``.
+    @property
+    def unit_name(self) -> str | None:
+        from app.services.unit_label import loaded_attr
+
+        unit = loaded_attr(self, "unit")
+        return unit.name if unit is not None else None
+
+    @property
+    def unit_label(self) -> str | None:
+        from app.services.unit_label import unit_label
+
+        return unit_label(self.unit_name)
+
 
 class Opening(Base):
     __tablename__ = "openings"

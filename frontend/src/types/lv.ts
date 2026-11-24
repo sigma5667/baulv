@@ -16,6 +16,10 @@ export interface Berechnungsnachweis {
   net_quantity: number;
   unit: string;
   notes: string | null;
+  // Anzeige (2026-11): Raumname + Wohnungsbezeichnung ("TOP 5"), leer
+  // wenn keine echte TOP erkennbar ist.
+  room_name?: string | null;
+  unit_label?: string | null;
 }
 
 export interface DeductionDetail {

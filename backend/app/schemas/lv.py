@@ -71,6 +71,10 @@ class BerechnungsnachweisResponse(BaseModel):
     net_quantity: float
     unit: str
     notes: str | None
+    # Anzeige (2026-11): Raumname + Wohnungsbezeichnung ("TOP 5") — leer,
+    # wenn nicht geladen bzw. keine echte TOP erkennbar.
+    room_name: str | None = None
+    unit_label: str | None = None
 
 
 class PositionResponse(BaseModel):

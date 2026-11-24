@@ -296,7 +296,9 @@ async def list_lvs(
             .options(
                 selectinload(Leistungsverzeichnis.gruppen)
                 .selectinload(Leistungsgruppe.positionen)
-                .selectinload(Position.berechnungsnachweise),
+                .selectinload(Position.berechnungsnachweise)
+                .selectinload(Berechnungsnachweis.room)
+                .selectinload(Room.unit),
             )
             .order_by(Leistungsverzeichnis.created_at.desc())
         )
@@ -327,7 +329,9 @@ async def get_lv(
             .options(
                 selectinload(Leistungsverzeichnis.gruppen)
                 .selectinload(Leistungsgruppe.positionen)
-                .selectinload(Position.berechnungsnachweise),
+                .selectinload(Position.berechnungsnachweise)
+                .selectinload(Berechnungsnachweis.room)
+                .selectinload(Room.unit),
             )
         )
         result = await db.execute(stmt)
@@ -956,7 +960,11 @@ async def update_position(
     stmt = (
         select(Position)
         .where(Position.id == position_id)
-        .options(selectinload(Position.berechnungsnachweise))
+        .options(
+            selectinload(Position.berechnungsnachweise)
+            .selectinload(Berechnungsnachweis.room)
+            .selectinload(Room.unit)
+        )
     )
     result = await db.execute(stmt)
     position = result.scalars().first()

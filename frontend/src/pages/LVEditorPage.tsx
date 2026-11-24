@@ -1432,17 +1432,26 @@ function fixed(value: unknown, digits: number): string {
   return Number.isFinite(n) ? n.toFixed(digits) : "—";
 }
 
+/** "TOP 5 · Bad" bzw. nur "Bad"; ohne Raumbezug "—". */
+function nachweisRaum(n: Pick<Berechnungsnachweis, "room_name" | "unit_label">): string {
+  const name = (n.room_name ?? "").trim();
+  const top = (n.unit_label ?? "").trim();
+  if (top && name) return `${top} · ${name}`;
+  return name || top || "—";
+}
+
 function BerechnungsnachweisRow({ nachweis }: { nachweis: Berechnungsnachweis }) {
   const factor = Number(nachweis.rule_factor);
   return (
     <tr>
-      <td className="py-1">{(nachweis.formula_description ?? "").split(" ").slice(0, 3).join(" ")}</td>
+      <td className="py-1">{nachweisRaum(nachweis)}</td>
       <td className="py-1 font-mono text-muted-foreground">
+        <span className="mr-1 font-sans">{nachweis.formula_description}:</span>
         {nachweis.formula_expression}
       </td>
       <td className="py-1 text-right font-mono">{fixed(nachweis.raw_quantity, 3)}</td>
       <td className="py-1 text-right font-mono">
-        {Number.isFinite(factor) && factor !== 1 ? `×${factor.toFixed(2)}` : "—"}
+        {Number.isFinite(factor) ? `×${factor.toFixed(2).replace(".", ",")}` : "—"}
       </td>
       <td className="py-1 text-muted-foreground">{nachweis.rule_ref ?? ""}</td>
       <td className="py-1 text-right font-mono font-medium">

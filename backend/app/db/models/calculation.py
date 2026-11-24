@@ -42,6 +42,22 @@ class Berechnungsnachweis(Base):
     position: Mapped["Position"] = relationship(back_populates="berechnungsnachweise")
     room: Mapped["Room"] = relationship()
 
+    # Anzeige im Nachweis (2026-11): Raumname + Wohnung statt der Formel
+    # in der Spalte "Raum". Nur aus bereits geladenen Beziehungen.
+    @property
+    def room_name(self) -> str | None:
+        from app.services.unit_label import loaded_attr
+
+        room = loaded_attr(self, "room")
+        return room.name if room is not None else None
+
+    @property
+    def unit_label(self) -> str | None:
+        from app.services.unit_label import loaded_attr
+
+        room = loaded_attr(self, "room")
+        return room.unit_label if room is not None else None
+
 
 from app.db.models.lv import Position  # noqa: E402
 from app.db.models.project import Room  # noqa: E402
