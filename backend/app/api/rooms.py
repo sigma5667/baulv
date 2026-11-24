@@ -306,7 +306,7 @@ async def create_room(
 
     await db.flush()
     # Reload with openings so the wall calculation sees them.
-    stmt = select(Room).where(Room.id == room.id).options(selectinload(Room.openings))
+    stmt = select(Room).where(Room.id == room.id).options(selectinload(Room.openings), selectinload(Room.unit))
     result = await db.execute(stmt)
     room = result.scalars().first()
     await _recalculate_walls_and_persist(room, db)
@@ -342,7 +342,7 @@ async def list_project_rooms(
         select(Room)
         .join(Unit).join(Floor).join(Building)
         .where(Building.project_id == project_id)
-        .options(selectinload(Room.openings))
+        .options(selectinload(Room.openings), selectinload(Room.unit))
         .order_by(Room.name)
     )
     if plan_id is not None:
@@ -358,7 +358,7 @@ async def get_room(
     db: AsyncSession = Depends(get_db),
 ):
     await verify_room_owner(room_id, user, db)
-    stmt = select(Room).where(Room.id == room_id).options(selectinload(Room.openings))
+    stmt = select(Room).where(Room.id == room_id).options(selectinload(Room.openings), selectinload(Room.unit))
     result = await db.execute(stmt)
     room = result.scalars().first()
     if not room:
@@ -376,7 +376,7 @@ async def update_room(
     await verify_room_owner(room_id, user, db)
     # Reload with openings so the recalc below doesn't race the ORM
     # lazy-load in async mode.
-    stmt = select(Room).where(Room.id == room_id).options(selectinload(Room.openings))
+    stmt = select(Room).where(Room.id == room_id).options(selectinload(Room.openings), selectinload(Room.unit))
     result = await db.execute(stmt)
     room = result.scalars().first()
     if not room:
@@ -480,7 +480,7 @@ async def calculate_walls_for_room(
     can update its row without re-fetching the whole rooms list.
     """
     await verify_room_owner(room_id, user, db)
-    stmt = select(Room).where(Room.id == room_id).options(selectinload(Room.openings))
+    stmt = select(Room).where(Room.id == room_id).options(selectinload(Room.openings), selectinload(Room.unit))
     result = await db.execute(stmt)
     room = result.scalars().first()
     if not room:
@@ -528,7 +528,7 @@ async def bulk_calculate_walls(
         select(Room)
         .join(Unit).join(Floor).join(Building)
         .where(Building.project_id == project_id)
-        .options(selectinload(Room.openings))
+        .options(selectinload(Room.openings), selectinload(Room.unit))
     )
     result = await db.execute(stmt)
     rooms = list(result.scalars().all())
@@ -574,7 +574,7 @@ async def create_opening(
     await db.flush()
     # Keep the cached wall area in sync. Reload the room with openings
     # so the calc sees the row we just added.
-    stmt = select(Room).where(Room.id == room_id).options(selectinload(Room.openings))
+    stmt = select(Room).where(Room.id == room_id).options(selectinload(Room.openings), selectinload(Room.unit))
     room = (await db.execute(stmt)).scalars().first()
     if room is not None:
         # Kein ``db`` → keine Geschoss-Höhen-Auflösung (Option A):
@@ -600,7 +600,7 @@ async def update_opening(
     stmt = (
         select(Room)
         .where(Room.id == opening.room_id)
-        .options(selectinload(Room.openings))
+        .options(selectinload(Room.openings), selectinload(Room.unit))
     )
     room = (await db.execute(stmt)).scalars().first()
     if room is not None:
@@ -623,7 +623,7 @@ async def delete_opening(
     await db.flush()
     # Recompute after the delete so the cached net area reflects the
     # removed opening.
-    stmt = select(Room).where(Room.id == room_id).options(selectinload(Room.openings))
+    stmt = select(Room).where(Room.id == room_id).options(selectinload(Room.openings), selectinload(Room.unit))
     room = (await db.execute(stmt)).scalars().first()
     if room is not None:
         # Kein ``db`` → keine Geschoss-Höhen-Auflösung (Option A):

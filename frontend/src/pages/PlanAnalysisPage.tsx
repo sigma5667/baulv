@@ -1852,6 +1852,7 @@ function RoomTable({
                         title="Klicken zum Umbenennen"
                         className="group inline-flex items-center gap-1 rounded px-1 transition-colors hover:bg-accent"
                       >
+                        <UnitTag label={room.unit_label} />
                         <span>{room.name}</span>
                         <span className="text-muted-foreground opacity-0 transition-opacity group-hover:opacity-50">
                           ✎
@@ -2530,6 +2531,19 @@ function ceilingSourceLabel(source: string): string {
   }
 }
 
+/**
+ * Wohnung vor dem Raumnamen ("TOP 5 · Bad"). Nur wenn die Analyse eine
+ * echte TOP-Bezeichnung geliefert hat — sonst nichts (nichts erfinden).
+ */
+function UnitTag({ label }: { label?: string | null }) {
+  if (!label) return null;
+  return (
+    <span className="mr-1 whitespace-nowrap text-muted-foreground">
+      {label} ·{" "}
+    </span>
+  );
+}
+
 // v24.4.x (Punkt 0) — Räume ohne Wandbezug (Außenflächen). Sie haben
 // zwar eine Bodenfläche, aber keine umschließenden Wände im Sinne einer
 // Wandflächen-Mengenermittlung — daher dürfen sie nicht in die
@@ -2933,6 +2947,7 @@ function WallCalculationTable({
               return (
                 <tr key={room.id} className={rowClass}>
                   <td className="px-3 py-2 font-medium">
+                    <UnitTag label={room.unit_label} />
                     {room.name}
                     {room.is_staircase && (
                       <span

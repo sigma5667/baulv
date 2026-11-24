@@ -60,6 +60,9 @@ export type PerimeterSource =
 export interface Room {
   id: string;
   unit_id: string;
+  // Wohnung (2026-11): nur bei echter Bezeichnung ("TOP 5") gesetzt.
+  unit_name?: string | null;
+  unit_label?: string | null;
   plan_id: string | null;
   name: string;
   room_number: string | null;

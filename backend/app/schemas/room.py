@@ -105,6 +105,11 @@ class RoomResponse(BaseModel):
     is_wet_room: bool
     has_dachschraege: bool
     is_staircase: bool
+    # Anzeige der Wohnung (2026-11): Einheiten-Name und — nur wenn es
+    # eine echte Wohnungsbezeichnung ist ("TOP 5") — das Label. Leer,
+    # wenn die Einheit nicht geladen ist oder nur ein Platzhalter.
+    unit_name: str | None = None
+    unit_label: str | None = None
     # v24.4.3 — Aktiv-Flag. True = fließt in Aggregation/PDF/LV ein;
     # False = bleibt im UI sichtbar (grau + durchgestrichen) aber wird
     # aus allen Berechnungs-Pfaden ausgeklammert.
