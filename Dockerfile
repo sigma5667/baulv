@@ -13,6 +13,12 @@ COPY frontend/package.json frontend/package-lock.json* ./
 RUN npm install
 
 COPY frontend/ .
+# Vite liest VITE_* zur BUILD-Zeit. Railway reicht Service-Variablen
+# nur als Build-Argument durch, wenn sie hier als ARG deklariert sind —
+# ohne diese Zeilen wäre der Schalter in Railway wirkungslos und die
+# Startseite bliebe hinter dem Beta-Gate. Default: aus.
+ARG VITE_PUBLIC_LANDING=false
+ENV VITE_PUBLIC_LANDING=$VITE_PUBLIC_LANDING
 RUN npm run build
 
 
