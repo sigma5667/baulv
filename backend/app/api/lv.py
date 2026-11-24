@@ -1,6 +1,7 @@
 import asyncio
 import io
 import logging
+from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -12,6 +13,8 @@ from sqlalchemy.orm import selectinload
 from app.db.session import get_db
 from app.db.models.lv import Leistungsverzeichnis, Leistungsgruppe, Position
 from app.db.models.project import Building, Floor, Room, Unit
+from app.db.models.calculation import Berechnungsnachweis
+from app.services.wall_calculator import OPENING_DEDUCTION_THRESHOLD_M2
 from app.db.models.user import User
 from app.schemas.lv import LVCreate, LVUpdate, LVResponse, PositionUpdate, PositionResponse
 from app.schemas.template import LVFromTemplateRequest, LVFromTemplateResponse
@@ -585,6 +588,125 @@ def _is_wall_position(position: "Position") -> bool:
     return any(kw in _position_haystack(position) for kw in _WALL_POSITION_KEYWORDS)
 
 
+# ---------------------------------------------------------------------------
+# Nachweis-Zeilen für "Wandflächen übernehmen"
+# ---------------------------------------------------------------------------
+# Bis 2026-11 hat ``sync_wall_areas`` nur ``Position.menge`` überschrieben und
+# die alten Berechnungsnachweise aus "LV berechnen" stehen lassen. Die Menge
+# (Σ Netto-Wandflächen aus der Wandberechnung) und die Summe der angezeigten
+# Nachweis-Zeilen liefen dadurch auseinander (Live: 1.071,27 m² vs.
+# 1.100,625 m²). Jetzt ersetzt der Sync die Zeilen gleich mit — je Raum genau
+# der übernommene Wert — und die Menge ist exakt die Summe dieser Zeilen.
+# Die Abzugsregeln selbst bleiben, wie sie sind (Wandberechnung: einzelne
+# Öffnung ab 2,5 m² wird abgezogen); die Zeile benennt nur, welche gilt.
+
+_SYNC_RULE_WALL = "wandberechnung"
+_SYNC_PARAGRAPH_WALL = (
+    "BauLV-Regel Wandberechnung: einzelne Öffnungen ab 2,5 m² werden abgezogen"
+)
+_SYNC_RULE_CEILING = "deckenflaeche"
+
+
+def _dec(value) -> Decimal:
+    return Decimal(str(value if value is not None else 0))
+
+
+def _fmt3(value) -> str:
+    return f"{_dec(value):.3f}"
+
+
+def _sync_wall_rows(rooms) -> list[dict]:
+    """One Nachweis row per room that contributes to the wall total.
+
+    Exactly the rooms (and values) the wall total is built from: active
+    rooms with a cached ``wall_area_net_m2``. ``net_quantity`` *is* that
+    cached value, so Σ rows == Position.menge by construction.
+    """
+    rows: list[dict] = []
+    for r in rooms:
+        if r.wall_area_net_m2 is None:
+            continue
+        factor = _dec(r.applied_factor) if r.applied_factor is not None else Decimal("1")
+        expr = f"{_fmt3(r.perimeter_m)} × {_fmt3(r.height_m)}"
+        desc = "Umfang × Höhe"
+        if factor != Decimal("1"):
+            expr += f" × {factor.normalize()}"
+            desc += " × Faktor"
+        deductions = []
+        deducted_total = Decimal("0")
+        for o in getattr(r, "openings", None) or []:
+            w, h, n = _dec(o.width_m), _dec(o.height_m), int(o.count or 1)
+            single = w * h
+            take = bool(r.deductions_enabled) and single >= Decimal(str(OPENING_DEDUCTION_THRESHOLD_M2))
+            area = single * max(n, 1)
+            if take:
+                deducted_total += area
+            if not r.deductions_enabled:
+                reason = "Abzüge für diesen Raum ausgeschaltet"
+            elif take:
+                reason = "≥ 2.5 m² (BauLV-Regel Wandberechnung)"
+            else:
+                reason = "< 2.5 m² (BauLV-Regel Wandberechnung, übermessen)"
+            deductions.append({
+                "opening": f"{o.opening_type} {w:.3f}×{h:.3f} ({max(n, 1)}×)",
+                "area": float(round(area, 3)),
+                "deducted": take,
+                "reason": reason,
+            })
+        raw = _dec(r.wall_area_gross_m2) if r.wall_area_gross_m2 is not None else _dec(r.wall_area_net_m2) + deducted_total
+        net = _dec(r.wall_area_net_m2)
+        notes = None
+        if (raw - deducted_total).quantize(Decimal("0.01")) != net.quantize(Decimal("0.01")) and net != 0:
+            notes = (
+                "Öffnungen oder Maße seit der letzten Wandberechnung geändert — "
+                "bitte Wandflächen neu berechnen."
+            )
+        rows.append({
+            "room_id": r.id, "raw": raw, "net": net, "desc": desc, "expr": expr,
+            "factor": factor, "rule": _SYNC_RULE_WALL, "paragraph": _SYNC_PARAGRAPH_WALL,
+            "deductions": deductions, "notes": notes,
+        })
+    return rows
+
+
+def _sync_ceiling_rows(rooms) -> list[dict]:
+    rows: list[dict] = []
+    for r in rooms:
+        if r.area_m2 is None:
+            continue
+        a = _dec(r.area_m2)
+        rows.append({
+            "room_id": r.id, "raw": a, "net": a, "desc": "Grundfläche = Deckenfläche",
+            "expr": _fmt3(a), "factor": Decimal("1"), "rule": _SYNC_RULE_CEILING,
+            "paragraph": None, "deductions": [], "notes": None,
+        })
+    return rows
+
+
+def _replace_rows_and_set_menge(pos: "Position", rows: list[dict]) -> Decimal:
+    """Swap the position's Nachweis rows and set menge = Σ net rows."""
+    for bn in list(pos.berechnungsnachweise):
+        pos.berechnungsnachweise.remove(bn)
+    total = Decimal("0")
+    for row in rows:
+        total += row["net"]
+        pos.berechnungsnachweise.append(Berechnungsnachweis(
+            room_id=row["room_id"],
+            raw_quantity=float(row["raw"]),
+            formula_description=row["desc"],
+            formula_expression=row["expr"],
+            onorm_factor=float(row["factor"]),
+            onorm_rule_ref=row["rule"],
+            onorm_paragraph=row["paragraph"],
+            deductions=row["deductions"],
+            net_quantity=float(row["net"]),
+            unit=pos.einheit or "m2",
+            notes=row["notes"],
+        ))
+    pos.menge = float(total)
+    return total
+
+
 @router.post("/{lv_id}/sync-wall-areas")
 async def sync_wall_areas(
     lv_id: UUID,
@@ -650,6 +772,7 @@ async def sync_wall_areas(
             .join(Unit).join(Floor).join(Building)
             .where(Building.project_id == lv.project_id)
             .where(Room.is_active.is_(True))
+            .options(selectinload(Room.openings))
         )
         rooms = (await db.execute(stmt)).scalars().all()
 
@@ -695,8 +818,11 @@ async def sync_wall_areas(
             select(Position)
             .join(Leistungsgruppe, Position.gruppe_id == Leistungsgruppe.id)
             .where(Leistungsgruppe.lv_id == lv_id)
+            .options(selectinload(Position.berechnungsnachweise))
         )
         positions = list((await db.execute(pos_stmt)).scalars().all())
+        wall_rows = _sync_wall_rows(rooms)
+        ceiling_rows = _sync_ceiling_rows(rooms)
 
         wall_updated = 0
         ceiling_updated = 0
@@ -731,7 +857,7 @@ async def sync_wall_areas(
                         lv_id, pos.id, (pos.kurztext or "")[:60],
                     )
                     continue
-                pos.menge = total_ceiling_rounded
+                _replace_rows_and_set_menge(pos, ceiling_rows)
                 ceiling_updated += 1
                 logger.info(
                     "sync_wall_areas.apply lv_id=%s position_id=%s "
@@ -748,7 +874,7 @@ async def sync_wall_areas(
                         lv_id, pos.id, (pos.kurztext or "")[:60],
                     )
                     continue
-                pos.menge = total_wall_rounded
+                _replace_rows_and_set_menge(pos, wall_rows)
                 wall_updated += 1
                 logger.info(
                     "sync_wall_areas.apply lv_id=%s position_id=%s "
