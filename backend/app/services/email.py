@@ -406,7 +406,8 @@ def send_waitlist_confirm_email(
         central §14-UGB component so this mail — like every future
         one — carries a working Abmelde-Link.
     name
-        Optional friendly name for the salutation.
+        Accepted for API compatibility but deliberately NOT rendered:
+        no user-supplied text goes to an unconfirmed address.
     """
     # Token-Disziplin wie beim Passwort-Reset: nie loggen, auch nicht
     # bei DEBUG. Nur Empfänger + Versuchsstatus.
@@ -414,7 +415,14 @@ def send_waitlist_confirm_email(
 
     from app.services.email_footer import footer_html, footer_text
 
-    salutation = f"Hallo {name}," if name else "Hallo,"
+    # Sicherheits-Check 2026-11-24: KEIN Fremdtext vor dem Opt-in.
+    # Diese Mail geht an eine noch unbestätigte Adresse, die jeder ins
+    # Formular tippen kann. Würde der frei eingebbare Name hier
+    # erscheinen, könnte ein Dritter beliebigen Text oder Links in eine
+    # echte BauLV-Mail an Fremde schmuggeln (escaped, aber lesbar). Der
+    # Name bleibt gespeichert und wird erst nach der Bestätigung genutzt.
+    del name
+    salutation = "Guten Tag,"
     base = settings.app_base_url.rstrip("/")
     confirm_link = f"{base}/warteliste/bestaetigen?token={confirm_token}"
     unsubscribe_link = (

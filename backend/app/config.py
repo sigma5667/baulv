@@ -186,6 +186,13 @@ class Settings(BaseSettings):
     # (§ 14 UGB) bricht den Start hart ab — siehe
     # ``email_footer.assert_company_data_ready_for_waitlist``.
     waitlist_enabled: bool = False
+    # Eigenes Secret für die Abmelde-Links der Warteliste (Railway-Env
+    # ``WAITLIST_UNSUBSCRIBE_SECRET``). Leer = Rückfall auf
+    # ``jwt_secret`` (bisheriges Verhalten). Vor dem ersten Mailversand
+    # setzen und danach NIE rotieren: jeder verschickte Abmelde-Link
+    # hängt daran, und Abmelden muss dauerhaft funktionieren. Getrennt
+    # vom JWT-Secret, damit dessen Rotation die Links nicht tötet.
+    waitlist_unsubscribe_secret: str = ""
 
     # Optional Redis URL (e.g. ``redis://default:pwd@host:6379/0``) used
     # by the MCP per-key rate-limiter. When **set**, the limiter uses

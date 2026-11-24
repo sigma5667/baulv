@@ -89,6 +89,8 @@ REFERRER_POLICY_VALUE = "strict-origin-when-cross-origin"
 #  * object-src 'none'   — Kein <object>/<embed>.
 #  * base-uri 'self'     — Verhindert <base>-Tag-Injection.
 #  * form-action 'self'  — Formulare nur ans eigene Backend.
+#  * frame-ancestors 'none' — CSP-Gegenstück zu X-Frame-Options: DENY
+#    (Clickjacking); moderne Browser werten nur noch dieses aus.
 CSP_VALUE = (
     "default-src 'self'; "
     "script-src 'self'; "
@@ -99,7 +101,8 @@ CSP_VALUE = (
     "frame-src 'none'; "
     "object-src 'none'; "
     "base-uri 'self'; "
-    "form-action 'self'"
+    "form-action 'self'; "
+    "frame-ancestors 'none'"
 )
 
 

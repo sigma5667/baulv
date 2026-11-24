@@ -90,9 +90,20 @@ def mint_confirm_token() -> tuple[str, str, datetime]:
     return plaintext, hash_confirm_token(plaintext), expires_at
 
 
+def _unsubscribe_key() -> bytes:
+    """``WAITLIST_UNSUBSCRIBE_SECRET`` wenn gesetzt, sonst ``jwt_secret``.
+
+    Sicherheits-Check 2026-11-24: am JWT-Secret hängend würde jede
+    JWT-Rotation alle bereits verschickten Abmelde-Links ungültig
+    machen. Das eigene Secret entkoppelt beides.
+    """
+    secret = (settings.waitlist_unsubscribe_secret or "").strip() or settings.jwt_secret
+    return secret.encode("utf-8")
+
+
 def _unsubscribe_signature(email: str) -> str:
     return hmac.new(
-        settings.jwt_secret.encode("utf-8"),
+        _unsubscribe_key(),
         (_UNSUBSCRIBE_CONTEXT + email).encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
