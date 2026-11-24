@@ -2942,14 +2942,25 @@ function WallCalculationTable({
               // bleibt voll opaque (per ``[&_td:last-child]:opacity-100``-
               // Override wäre möglich, aber 50%-Toggle ist auch
               // ablesbar und Sehrechte gehen nicht verloren).
-              const rowClass = room.is_active
-                ? "hover:bg-muted/30"
-                : "bg-muted/10 opacity-50 [&_td:not(:last-child)]:line-through";
+              // Außenflächen (Balkon/Terrasse/Loggia/Garten): sichtbar,
+              // aber ausgegraut und ohne Netto — sie zählen weder hier
+              // noch im LV (gleiche Regel: backend/app/services/wall_scope.py).
+              const aussen = isAussenflaeche(room);
+              const rowClass = !room.is_active
+                ? "bg-muted/10 opacity-50 [&_td:not(:last-child)]:line-through"
+                : aussen
+                  ? "bg-muted/20 text-muted-foreground"
+                  : "hover:bg-muted/30";
               return (
                 <tr key={room.id} className={rowClass}>
                   <td className="px-3 py-2 font-medium">
                     <UnitTag label={room.unit_label} />
                     {room.name}
+                    {aussen && room.is_active && (
+                      <span className="ml-2 inline-flex rounded-full bg-muted px-2 py-0.5 text-xs font-normal text-muted-foreground">
+                        nicht gewertet – kein Innenwandbezug
+                      </span>
+                    )}
                     {room.is_staircase && (
                       <span
                         className="ml-2 inline-flex items-center gap-1 rounded-full bg-purple-100 px-2 py-0.5 text-xs text-purple-700"
@@ -3092,7 +3103,7 @@ function WallCalculationTable({
                     </label>
                   </td>
                   <td className="px-3 py-2 text-right font-mono font-medium">
-                    {fmt2(room.wall_area_net_m2)}
+                    {aussen ? "—" : fmt2(room.wall_area_net_m2)}
                   </td>
                   <td className="px-3 py-2 text-muted-foreground">
                     {room.room_type ?? "—"}

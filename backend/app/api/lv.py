@@ -15,6 +15,7 @@ from app.db.models.lv import Leistungsverzeichnis, Leistungsgruppe, Position
 from app.db.models.project import Building, Floor, Room, Unit
 from app.db.models.calculation import Berechnungsnachweis
 from app.services.wall_calculator import OPENING_DEDUCTION_THRESHOLD_M2
+from app.services.wall_scope import counts_for_wall_sum
 from app.db.models.user import User
 from app.schemas.lv import LVCreate, LVUpdate, LVResponse, PositionUpdate, PositionResponse
 from app.schemas.template import LVFromTemplateRequest, LVFromTemplateResponse
@@ -795,8 +796,11 @@ async def sync_wall_areas(
                 "Wandflächen übernommen werden können.",
             )
 
+        # Eine Regel für Tabelle, Sync und "LV berechnen": Außenflächen
+        # und umfanglose Räume zählen nicht (app/services/wall_scope.py).
+        wall_rooms = [r for r in rooms if counts_for_wall_sum(r)]
         total_wall = sum(
-            float(r.wall_area_net_m2) for r in rooms if r.wall_area_net_m2 is not None
+            float(r.wall_area_net_m2) for r in wall_rooms if r.wall_area_net_m2 is not None
         )
         # v15 used ``r.floor_area_m2`` here — that column doesn't
         # exist on Room (the slab area is named ``area_m2``, matching
@@ -825,7 +829,7 @@ async def sync_wall_areas(
             .options(selectinload(Position.berechnungsnachweise))
         )
         positions = list((await db.execute(pos_stmt)).scalars().all())
-        wall_rows = _sync_wall_rows(rooms)
+        wall_rows = _sync_wall_rows(wall_rooms)
         ceiling_rows = _sync_ceiling_rows(rooms)
 
         wall_updated = 0

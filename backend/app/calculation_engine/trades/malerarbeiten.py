@@ -17,6 +17,7 @@ Key rules implemented:
 - Multiple colors: factor 1.1 per additional color
 """
 
+from app.services.wall_scope import is_aussenflaeche
 from decimal import Decimal
 
 from app.calculation_engine.base_trade import TradeCalculator
@@ -58,9 +59,13 @@ class MalerarbeitenCalculator(TradeCalculator):
                 continue
 
             # --- Wall area (Wandfläche) ---
-            wall_line = self._calc_wall(room)
-            if wall_line:
-                wall_lines.append(wall_line)
+            # Außenflächen (Balkon/Terrasse/Loggia/Garten) haben keinen
+            # Innenwandbezug — gleiche Regel wie Wandberechnungs-Tabelle
+            # und "Wandflächen übernehmen" (app/services/wall_scope.py).
+            if not is_aussenflaeche(room.name, room.room_type):
+                wall_line = self._calc_wall(room)
+                if wall_line:
+                    wall_lines.append(wall_line)
 
             # --- Ceiling area (Deckenfläche) ---
             ceiling_line = self._calc_ceiling(room)
