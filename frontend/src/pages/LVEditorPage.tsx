@@ -1425,20 +1425,28 @@ function PositionRow({
   );
 }
 
+// Number cells must never take the whole editor down: a missing/renamed
+// API field used to crash the page on ``undefined.toFixed`` (2026-11-24).
+function fixed(value: unknown, digits: number): string {
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) ? n.toFixed(digits) : "—";
+}
+
 function BerechnungsnachweisRow({ nachweis }: { nachweis: Berechnungsnachweis }) {
+  const factor = Number(nachweis.rule_factor);
   return (
     <tr>
-      <td className="py-1">{nachweis.formula_description.split(" ").slice(0, 3).join(" ")}</td>
+      <td className="py-1">{(nachweis.formula_description ?? "").split(" ").slice(0, 3).join(" ")}</td>
       <td className="py-1 font-mono text-muted-foreground">
         {nachweis.formula_expression}
       </td>
-      <td className="py-1 text-right font-mono">{nachweis.raw_quantity.toFixed(3)}</td>
+      <td className="py-1 text-right font-mono">{fixed(nachweis.raw_quantity, 3)}</td>
       <td className="py-1 text-right font-mono">
-        {nachweis.rule_factor !== 1 ? `×${nachweis.rule_factor.toFixed(2)}` : "—"}
+        {Number.isFinite(factor) && factor !== 1 ? `×${factor.toFixed(2)}` : "—"}
       </td>
       <td className="py-1 text-muted-foreground">{nachweis.rule_ref ?? ""}</td>
       <td className="py-1 text-right font-mono font-medium">
-        {nachweis.net_quantity.toFixed(3)}
+        {fixed(nachweis.net_quantity, 3)}
       </td>
     </tr>
   );

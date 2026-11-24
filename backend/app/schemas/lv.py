@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class LVCreate(BaseModel):
@@ -45,10 +45,15 @@ class BerechnungsnachweisResponse(BaseModel):
     so the API surface stays norm-neutral — the application is a
     calculation engine, not a standards reference.
 
-    ``populate_by_name`` + ``Field(alias=...)`` means the ORM row's
-    ``onorm_factor`` attribute still fills the ``rule_factor`` field
-    without a manual projection layer; the response JSON uses the
-    generic keys exclusively.
+    ``validation_alias`` means the ORM row's ``onorm_factor`` attribute
+    still fills the ``rule_factor`` field without a manual projection
+    layer, while the response JSON uses the generic keys exclusively.
+
+    It must be ``validation_alias``, not ``alias``: FastAPI serialises
+    responses ``by_alias=True``, so a plain ``alias`` put ``onorm_factor``
+    back on the wire. The frontend reads ``rule_factor`` and crashed on
+    ``undefined.toFixed`` when a position with Nachweis rows was expanded
+    (Live-Befund 2026-11-24).
     """
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
@@ -59,9 +64,9 @@ class BerechnungsnachweisResponse(BaseModel):
     raw_quantity: float
     formula_description: str
     formula_expression: str
-    rule_factor: float = Field(alias="onorm_factor")
-    rule_ref: str | None = Field(default=None, alias="onorm_rule_ref")
-    rule_paragraph: str | None = Field(default=None, alias="onorm_paragraph")
+    rule_factor: float = Field(validation_alias=AliasChoices("onorm_factor", "rule_factor"))
+    rule_ref: str | None = Field(default=None, validation_alias=AliasChoices("onorm_rule_ref", "rule_ref"))
+    rule_paragraph: str | None = Field(default=None, validation_alias=AliasChoices("onorm_paragraph", "rule_paragraph"))
     deductions: list[dict]
     net_quantity: float
     unit: str
