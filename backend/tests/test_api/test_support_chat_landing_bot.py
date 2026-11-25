@@ -57,6 +57,7 @@ def test_prompt_contains_required_statements():
         "baulv.at/impressum",
         "Das kann ich nicht sicher sagen.",
         "2,50 m",
+        "Region EU (europe-west4)",  # seit cef9947 so in /datenschutz
     ):
         assert needle in SYSTEM_PROMPT, needle
 
