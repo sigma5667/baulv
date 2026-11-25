@@ -71,3 +71,15 @@ def test_prompt_never_claims_norm_conformity_or_unbuilt_features():
 def test_in_app_advisor_keeps_its_own_prompt():
     berater = (PROMPTS / "construction_assistant.txt").read_text(encoding="utf-8")
     assert berater.strip() and berater != SYSTEM_PROMPT
+
+
+def test_create_call_uses_only_kwargs_known_to_the_locked_sdk():
+    """Produktion installiert anthropic aus requirements.lock; das lokale
+    venv kann älter sein. ``temperature`` existiert in der gesperrten
+    Version nicht mehr (TypeError → 503, 2026-11-25). Der Aufruf darf
+    nur Parameter nutzen, die überall gelten."""
+    src = (Path(__file__).resolve().parents[2] / "app" / "api" / "support_chat.py").read_text(encoding="utf-8")
+    call = src.split("await client.messages.create(", 1)[1]
+    call = re.split(r"^\s*\)\s*$", call, maxsplit=1, flags=re.MULTILINE)[0]  # bis zur schließenden Zeile
+    kwargs = set(re.findall(r"^\s*(\w+)=", call, re.MULTILINE))
+    assert kwargs == {"model", "max_tokens", "system", "messages"}, kwargs

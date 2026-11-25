@@ -122,9 +122,6 @@ MAX_HISTORY_MESSAGES = 10
 MAX_HISTORY_MESSAGE_CHARS = 1000
 # ~80 Wörter Zielwert (Prompt); 350 Tokens lassen Luft ohne Abschneiden.
 MAX_REPLY_TOKENS = 350
-# Niedrig: Faktenfragen sollen stabil gleich beantwortet werden
-# (Testlauf 2026-11-25: bei Standard-Temperatur schwankten Hinweise).
-REPLY_TEMPERATURE = 0.2
 
 # AI Act Art. 50: der erste Beitrag des Bots im Gespräch weist ihn als
 # KI aus — im Code erzwungen, nicht nur im Prompt verlangt.
@@ -281,7 +278,11 @@ async def support_chat(
         response = await client.messages.create(
             model=SUPPORT_CHAT_MODEL,
             max_tokens=MAX_REPLY_TOKENS,
-            temperature=REPLY_TEMPERATURE,
+            # KEIN ``temperature``: die in Produktion gesperrte
+            # anthropic-Version (requirements.lock, 1.15.0) kennt den
+            # Parameter in messages.create nicht mehr (TypeError → 503,
+            # Live-Befund 2026-11-25). Stabilität kommt aus den festen
+            # Antwortvorgaben im Prompt.
             system=system_blocks,
             messages=claude_messages,
         )
