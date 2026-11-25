@@ -331,6 +331,10 @@ async def _run_job(job_id: UUID, plan_id: UUID, user_id: UUID, is_schnitt: bool)
         logger.info("plan_job.completed job=%s plan=%s", job_id, plan_id)
     finally:
         hb.cancel()
+        # Den Abbruch abwarten: sonst überlebt ein halb laufender
+        # Heartbeat-Schreibvorgang das Jobende (Tests: sporadischer
+        # Hänger beim Abbau der Event-Loop, ~1 von 4 Läufen).
+        await asyncio.gather(hb, return_exceptions=True)
 
 
 async def _rollback_and_fail(db: AsyncSession, job_id: UUID) -> None:
