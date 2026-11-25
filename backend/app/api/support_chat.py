@@ -23,6 +23,7 @@ Debugging:
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections import defaultdict, deque
 from pathlib import Path
@@ -119,7 +120,29 @@ class SupportChatRequest(BaseModel):
 MAX_USER_MESSAGE_CHARS = 1000
 MAX_HISTORY_MESSAGES = 10
 MAX_HISTORY_MESSAGE_CHARS = 1000
-MAX_REPLY_TOKENS = 600
+# ~80 Wörter Zielwert (Prompt); 350 Tokens lassen Luft ohne Abschneiden.
+MAX_REPLY_TOKENS = 350
+# Niedrig: Faktenfragen sollen stabil gleich beantwortet werden
+# (Testlauf 2026-11-25: bei Standard-Temperatur schwankten Hinweise).
+REPLY_TEMPERATURE = 0.2
+
+# AI Act Art. 50: der erste Beitrag des Bots im Gespräch weist ihn als
+# KI aus — im Code erzwungen, nicht nur im Prompt verlangt.
+AI_DISCLOSURE = "Ich bin ein KI-Assistent."
+_MARKDOWN_RE = re.compile(r"\*\*|__|^#{1,6}\s*|`", re.MULTILINE)
+
+
+def finalize_reply(reply: str, *, first_reply: bool) -> str:
+    """Antwort für das Widget aufbereiten.
+
+    * Das Widget zeigt reinen Text: Markdown-Zeichen würden wörtlich als
+      Sternchen/Rauten erscheinen und werden entfernt.
+    * Erste Antwort im Gespräch beginnt immer mit dem KI-Hinweis.
+    """
+    out = _MARKDOWN_RE.sub("", reply).strip()
+    if first_reply and not out.startswith("Ich bin ein KI-Assistent"):
+        out = f"{AI_DISCLOSURE} {out}"
+    return out
 
 
 def _trim_history(messages: list[SupportMessage]) -> list[dict[str, str]]:
@@ -258,6 +281,7 @@ async def support_chat(
         response = await client.messages.create(
             model=SUPPORT_CHAT_MODEL,
             max_tokens=MAX_REPLY_TOKENS,
+            temperature=REPLY_TEMPERATURE,
             system=system_blocks,
             messages=claude_messages,
         )
@@ -283,7 +307,8 @@ async def support_chat(
                 response.content,
             )
             raise HTTPException(status_code=503, detail=GENERIC_UNAVAILABLE)
-        return SupportChatResponse(reply=reply)
+        first_reply = not any(m["role"] == "assistant" for m in claude_messages)
+        return SupportChatResponse(reply=finalize_reply(reply, first_reply=first_reply))
 
     except HTTPException:
         raise

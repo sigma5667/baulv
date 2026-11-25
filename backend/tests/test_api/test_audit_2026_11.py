@@ -321,7 +321,8 @@ async def test_support_chat_global_daily_limit(db_session, fake_anthropic, monke
         resp = await support_chat_module.support_chat(
             _chat("Hallo"), _mock_request(), db=db_session
         )
-        assert resp.reply == "Antwort"
+        # Erste Antwort trägt seit 2026-11-25 den erzwungenen KI-Hinweis.
+        assert resp.reply == f"{support_chat_module.AI_DISCLOSURE} Antwort"
     with pytest.raises(HTTPException) as exc:
         await support_chat_module.support_chat(_chat("Hallo"), _mock_request(), db=db_session)
     assert exc.value.status_code == 503
