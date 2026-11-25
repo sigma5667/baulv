@@ -133,10 +133,15 @@ export function DatenschutzPage() {
             </p>
             <ul className="ml-5 list-disc space-y-2">
               <li>
-                <strong>Hosting — Railway Corp. (USA):</strong> Betrieb von
-                Anwendungsservern und Datenbank. Datenübermittlung in die USA
-                erfolgt auf Grundlage der EU-Standardvertragsklauseln (SCCs)
-                und des EU-US Data Privacy Framework.
+                <strong>Hosting — Railway Corp. (USA), Region EU:</strong>{" "}
+                Betrieb von Anwendungsservern, Datenbank und Dateispeicher für
+                hochgeladene Pläne in der Railway-Region europe-west4 (EU).
+                Datenbank und hochgeladene Pläne liegen seit 18.11.2026 in
+                dieser EU-Region. Railway ist ein US-Unternehmen; ein Zugriff
+                aus den USA ist daher nicht ausgeschlossen. Eine solche
+                Datenübermittlung erfolgt auf Grundlage der
+                EU-Standardvertragsklauseln (SCCs) und des EU-US Data Privacy
+                Framework.
               </li>
               <li>
                 <strong>Zahlungsabwicklung — Stripe Payments Europe Ltd.
