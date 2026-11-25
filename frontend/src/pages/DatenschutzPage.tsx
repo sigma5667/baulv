@@ -540,7 +540,11 @@ export function DatenschutzPage() {
           <div>
             <h2 className="mb-2 text-lg font-semibold">Stand</h2>
             <p>
-              Version 1.2 — gültig ab 18. Mai 2026. Geändert gegenüber
+              Version 1.2 — gültig ab 18. Mai 2026, Stand 25. November
+              2026. Aktualisiert am 25. November 2026 (ohne neue Version):
+              Abschnitt 5, Hosting, nennt die Railway-Region EU
+              (europe-west4), in der Datenbank und hochgeladene Pläne seit
+              18. November 2026 liegen. Geändert gegenüber
               v1.1 (Mai 2026): Abschnitt 6 „Speicherdauer" detailliert
               je Daten-Kategorie aufgeschlüsselt und die Aufbewahrung
               des Audit-Logs korrekt mit 24 Monaten ausgewiesen (zuvor
